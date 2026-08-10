@@ -61,6 +61,8 @@ erDiagram
         text kind "image|video|thumbnail (CHECK)"
         text storage_url
         text checksum "결정론 렌더 검증"
+        text quality_status "passed|failed|needs_review (CHECK, FR-Q)"
+        jsonb quality_report "품질 게이트 판정 사유(항목별 pass/fail)"
         timestamptz created_ts
     }
     publication {

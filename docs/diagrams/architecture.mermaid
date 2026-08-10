@@ -26,6 +26,10 @@ flowchart TB
         VID["ffmpeg/moviepy 영상 합성<br/>(자막+슬라이드+TTS)"]
     end
 
+    subgraph QUALITY["품질 게이트 — 발행 전 하한 (FR-Q)"]
+        QGATE["규격·가독성 자동검사(FR-Q1/Q4)<br/>+ needs_review 사람검수(초기, FR-Q3)<br/>미통과=발행 차단"]
+    end
+
     subgraph PUBAPI["발행 어댑터 — 공식 API만"]
         IGAPI["Instagram Graph API<br/>(피드 이미지 · 릴스 영상)"]
         YTAPI["YouTube Data API v3<br/>(쇼츠 영상)"]
@@ -42,8 +46,10 @@ flowchart TB
     CRON --> ORCH
     CORE -.판단 호출.-> CLAUDE
     A_MEDIA --> RENDER
+    RENDER --> QGATE
+    QGATE -->|passed| DB
+    QGATE -. 통과 자산만 발행 .-> A_PUB
     A_PUB --> PUBAPI
     CORE <--> DB
-    RENDER --> DB
     PUBAPI -.지표 폴링.-> A_ANALYST
     UI <--> DB
