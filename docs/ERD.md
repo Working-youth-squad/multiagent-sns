@@ -15,7 +15,7 @@
 | `topic` | 개발자 주제 풀 | status enum |
 | `topic_stats` | 주제×포맷×채널 성과 집계(밴딧 입력) | (topic_id, format, platform) 유일 |
 | `content_item` | 생성 콘텐츠(대본/카피/문안 + 렌더 스펙) | format·status enum |
-| `media_asset` | 렌더된 미디어 파일 + checksum | kind enum |
+| `media_asset` | 렌더된 미디어 파일 + checksum + 품질게이트 결과 | kind enum, `quality_status` enum(passed/failed/needs_review) |
 | `publication` | 채널 발행 기록 | status enum |
 | `publish_attempt` | 멱등 발행 상태머신 | state enum, 이중발행 차단 |
 | `metric_observation` | 지표 관측 시점 | 발행 후 window_index |
@@ -55,6 +55,7 @@ pending → container_created → published
 ```
 
 - 발행 진입 전 `publication.status`를 확인(published면 재발행 스킵) → **크래시 재시작 시 이중 발행 0**.
+- **발행 진입 전 품질 게이트 확인**: 해당 `media_asset.quality_status = passed`(또는 승인된 `needs_review`)가 아니면 `pending`으로 진입하지 않음(SPEC FR-Q). 품질 검사 결과는 `media_asset.quality_status`/`quality_report`에 기록.
 - IG는 2단계(미디어 컨테이너 생성 → 게시)라 중간 상태 `container_created`가 필요.
 - 영구 오류(토큰 만료·한도 초과)는 `error_raw`에 원문 보존, 채널 격리(다른 채널 발행 계속).
 

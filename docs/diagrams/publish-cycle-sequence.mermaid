@@ -29,10 +29,14 @@ sequenceDiagram
     else format = reels / shorts
         MED->>MED: ffmpeg/moviepy 합성(자막+슬라이드+TTS)
     end
-    MED->>DB: media_asset 저장(checksum, storage_url)
+    MED->>MED: 품질 게이트 검사(규격·가독성 하한, FR-Q)
+    MED->>DB: media_asset 저장(checksum, storage_url, quality_status/report)
+    alt quality_status = failed
+        MED-->>ORCH: 발행 차단(품질 하한 미달) → 재생성/스킵
+    end
 
-    ORCH->>PUB: 발행 요청(content_item, channel)
-    PUB->>DB: publish_attempt(pending) — 멱등 게이트 확인
+    ORCH->>PUB: 발행 요청(content_item, channel) — quality_status=passed만
+    PUB->>DB: publish_attempt(pending) — 멱등 + 품질 게이트 확인
     alt 이미 published 존재
         DB-->>PUB: 중복 → 재발행 스킵
     else 신규
