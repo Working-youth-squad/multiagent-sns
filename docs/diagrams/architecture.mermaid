@@ -1,0 +1,49 @@
+%% multiagent-sns — 시스템 아키텍처
+%% 멀티에이전트(deepagents) 자율 SNS 성장 엔진. 개발자 주제 → IG 피드/IG 릴스/YouTube 쇼츠.
+flowchart TB
+    subgraph SCHED["상주 러너 (Docker Compose 서비스)"]
+        CRON["슬롯 스케줄러<br/>(발행 사이클 트리거)"]
+    end
+
+    subgraph CORE["에이전트 코어 — deepagents Orchestrator"]
+        ORCH["Orchestrator<br/>(main deep agent · 사이클 계획/위임)"]
+        A_TOPIC["Topic Agent<br/>(트렌드·주제 발굴)"]
+        A_CONTENT["Content Agent<br/>(대본·카피·카드 문안)"]
+        A_MEDIA["Media Agent<br/>(이미지 카드 / 영상 템플릿 합성)"]
+        A_PUB["Publisher Agent<br/>(채널별 발행 어댑터)"]
+        A_ANALYST["Analyst Agent<br/>(지표→reward→분석글)"]
+        A_GROWTH["Growth Agent<br/>(밴딧: 다음 사이클 변형 선택)"]
+        ORCH --> A_TOPIC --> A_CONTENT --> A_MEDIA --> A_PUB
+        A_PUB --> A_ANALYST --> A_GROWTH --> ORCH
+    end
+
+    subgraph LLM["판단 계층"]
+        CLAUDE["Claude (Anthropic)<br/>claude-sonnet-5"]
+    end
+
+    subgraph RENDER["미디어 렌더 (결정론)"]
+        IMG["Pillow 카드 렌더러"]
+        VID["ffmpeg/moviepy 영상 합성<br/>(자막+슬라이드+TTS)"]
+    end
+
+    subgraph PUBAPI["발행 어댑터 — 공식 API만"]
+        IGAPI["Instagram Graph API<br/>(피드 이미지 · 릴스 영상)"]
+        YTAPI["YouTube Data API v3<br/>(쇼츠 영상)"]
+    end
+
+    subgraph DATA["PostgreSQL (단일 DB)"]
+        DB[("channel·content_item·media_asset<br/>publication·publish_attempt<br/>metric_observation·metric_value<br/>reward·topic·topic_stats·playbook<br/>analysis_note·run_event·cycle")]
+    end
+
+    subgraph WEB["웹 대시보드 (선택)"]
+        UI["운영 콘솔<br/>(리포트·모니터링·설정·알림)"]
+    end
+
+    CRON --> ORCH
+    CORE -.판단 호출.-> CLAUDE
+    A_MEDIA --> RENDER
+    A_PUB --> PUBAPI
+    CORE <--> DB
+    RENDER --> DB
+    PUBAPI -.지표 폴링.-> A_ANALYST
+    UI <--> DB

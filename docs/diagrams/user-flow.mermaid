@@ -1,0 +1,25 @@
+%% multiagent-sns — 운영자 유저 플로우 (온보딩 → 운영 → 리포트)
+flowchart TD
+    START([운영자 진입]) --> AUTH{채널 연동됨?}
+    AUTH -- 아니오 --> ONBOARD[채널 온보딩<br/>IG 프로 계정·YouTube 채널 OAuth]
+    ONBOARD --> TOKEN[토큰 암호화 저장<br/>검증 핑]
+    TOKEN --> VERIFY{검증 성공?}
+    VERIFY -- 실패 --> ONBOARD
+    VERIFY -- 성공 --> CONFIG
+    AUTH -- 예 --> CONFIG[운영 설정<br/>goal 선택·발행 슬롯·주제 도메인·채널/포맷 on-off]
+
+    CONFIG --> RUN{자율 운영 시작}
+    RUN --> BASELINE[베이스라인 수집<br/>초기 발행·지표 축적]
+    BASELINE --> LOOP[자율 사이클 반복<br/>기획→제작→발행→학습]
+
+    LOOP --> MONITOR[대시보드 모니터링]
+    MONITOR --> REPORT[성장 리포트 열람<br/>추이·기울기·LLM 분석글]
+    MONITOR --> ALERT{알림 발생?}
+    ALERT -- 토큰만료/한도/발행실패 --> FIX[운영자 조치<br/>토큰 갱신·한도 대기]
+    FIX --> LOOP
+    ALERT -- 없음 --> LOOP
+
+    CONFIG -. goal/도메인 변경 .-> RESET[설정 변경 = 새 국면<br/>이력 보존·기저 재수집]
+    RESET --> BASELINE
+
+    REPORT --> END([운영 지속])

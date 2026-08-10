@@ -1,0 +1,50 @@
+%% multiagent-sns — 발행 사이클 시퀀스 (기획→제작→발행, 멱등 원장)
+sequenceDiagram
+    autonumber
+    participant SCH as 슬롯 스케줄러
+    participant ORCH as Orchestrator(deepagents)
+    participant GROW as Growth Agent(밴딧)
+    participant TOP as Topic/Content Agent
+    participant LLM as Claude
+    participant MED as Media Agent + 렌더러
+    participant PUB as Publisher Agent
+    participant API as 채널 API(IG/YouTube)
+    participant DB as PostgreSQL
+
+    SCH->>ORCH: 발행 슬롯 도래 → 사이클 시작
+    ORCH->>DB: cycle 행 생성(planned)
+    ORCH->>GROW: 다음 콘텐츠 변형 선택 요청
+    GROW->>DB: topic_stats·playbook 조회(파생 쿼리)
+    GROW-->>ORCH: 결정(topic, format=feed/reels/shorts, channel, slot)
+    Note over GROW: 밴딧 선택은 루프 밖 결정론(시드 고정)
+
+    ORCH->>TOP: 주제→콘텐츠 초안 생성
+    TOP->>LLM: 대본/카피/카드 문안 생성(프롬프트)
+    LLM-->>TOP: 콘텐츠 텍스트
+    TOP->>DB: content_item 저장(status=drafted, body=LLM 착지점)
+
+    ORCH->>MED: media_spec → 렌더
+    alt format = feed_image
+        MED->>MED: Pillow 카드 렌더(결정론 PNG)
+    else format = reels / shorts
+        MED->>MED: ffmpeg/moviepy 합성(자막+슬라이드+TTS)
+    end
+    MED->>DB: media_asset 저장(checksum, storage_url)
+
+    ORCH->>PUB: 발행 요청(content_item, channel)
+    PUB->>DB: publish_attempt(pending) — 멱등 게이트 확인
+    alt 이미 published 존재
+        DB-->>PUB: 중복 → 재발행 스킵
+    else 신규
+        PUB->>API: 미디어 컨테이너 생성 → 게시(2단계)
+        API-->>PUB: platform_post_id | 오류코드
+        alt 성공
+            PUB->>DB: publish_attempt=published + publication 행
+        else transient 오류
+            PUB->>PUB: RetryPolicy 재시도(지수 백오프)
+        else 영구 오류(토큰만료/한도)
+            PUB->>DB: publish_attempt=failed + run_event(오류원문)
+            PUB-->>ORCH: 실패 알림(채널 격리)
+        end
+    end
+    ORCH->>DB: cycle=published/aborted + run_event(비용·소요)

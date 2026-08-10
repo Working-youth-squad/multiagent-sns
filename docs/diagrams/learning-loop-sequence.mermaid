@@ -1,0 +1,44 @@
+%% multiagent-sns — 반응 학습 루프 (지표 폴링 → reward → 정책/분석글)
+sequenceDiagram
+    autonumber
+    participant SCH as 폴링 스케줄러
+    participant AN as Analyst Agent
+    participant API as 채널 API(IG/YouTube)
+    participant LLM as Claude
+    participant DB as PostgreSQL
+    participant GROW as Growth Agent(밴딧)
+
+    SCH->>AN: 폴링 슬롯(발행 후 T시간·복수 시점)
+    AN->>DB: 폴링 대상 publication 조회(관측 창 미완)
+    loop 각 publication
+        AN->>API: 인사이트 조회(조회수·좋아요·저장·댓글·시청유지 등)
+        alt 값 존재
+            API-->>AN: 지표 맵
+            AN->>DB: metric_observation + metric_value(실측)
+        else 값 없음/미노출
+            API-->>AN: 결측
+            AN->>DB: metric_value = NULL (0으로 채우지 않음)
+        end
+    end
+
+    AN->>DB: 관측 창 완료분 → RewardFn(관측)→reward
+    alt reward 산식 확정 & 데이터 충분
+        AN->>DB: reward 저장(reward_value, reward_version)
+    else 산식 미확정/데이터 부족
+        AN->>DB: reward = NULL (학습에서 제외)
+    end
+
+    AN->>DB: topic_stats 갱신(주제×포맷×채널별 성과 집계)
+    AN->>DB: playbook 갱신(성과 요약 — 다음 사이클 지침)
+
+    AN->>LLM: 성과 분석글 생성(입력=DB 시계열/게시물/이벤트)
+    LLM-->>AN: 분석글 초안
+    AN->>AN: 출력 검증기(인용 없는 인과단정·실재하지 않는 post_id → 거부)
+    alt 근거 인용 가능
+        AN->>DB: analysis_note 저장(evidence_json)
+    else 근거 불가
+        AN->>DB: analysis_note(insufficient_evidence=1, "근거 부족" 표기)
+    end
+
+    GROW->>DB: 갱신된 topic_stats·playbook 반영 → 다음 사이클 선택 개선
+    Note over GROW,DB: 자기 채널 베이스라인 대비 성장(기울기)만 측정 · 절대 순위/타 계정 비교 없음

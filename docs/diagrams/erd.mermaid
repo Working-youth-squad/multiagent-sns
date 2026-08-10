@@ -1,0 +1,126 @@
+%% multiagent-sns — 데이터 모델 ERD (초안)
+erDiagram
+    channel ||--o{ publication : "발행"
+    content_item ||--o{ media_asset : "렌더 산출"
+    content_item ||--o{ publication : "게시"
+    cycle ||--o{ content_item : "사이클 산출"
+    topic ||--o{ content_item : "주제"
+    topic ||--o{ topic_stats : "성과 집계"
+    publication ||--|| publish_attempt : "멱등 시도"
+    publication ||--o{ metric_observation : "관측"
+    metric_observation ||--o{ metric_value : "지표값"
+    publication ||--o| reward : "보상"
+    channel ||--o{ analysis_note : "분석 대상"
+    cycle ||--o{ run_event : "실행 이벤트"
+
+    channel {
+        uuid id PK
+        text platform "instagram|youtube (CHECK)"
+        text handle
+        text account_ref "ig_user_id | yt_channel_id"
+        bytea token_ciphertext "앱레벨 암호화"
+        int key_version
+        text status "active|warming|blocked|revoked (CHECK)"
+        timestamptz created_ts
+    }
+    cycle {
+        uuid id PK
+        text status "planned|published|aborted (CHECK)"
+        text goal_ref "goal 프리셋 키"
+        jsonb decision "선택된 topic/format/channel/slot"
+        timestamptz slot_ts
+        timestamptz created_ts
+    }
+    topic {
+        uuid id PK
+        text domain "개발자 주제 도메인"
+        text title
+        text status "active|retired (CHECK)"
+    }
+    topic_stats {
+        uuid topic_id FK
+        text format "feed_image|reels|shorts (CHECK)"
+        text platform "instagram|youtube (CHECK)"
+        int trials
+        double reward_sum "NULL 제외 집계"
+        timestamptz updated_ts
+    }
+    content_item {
+        uuid id PK
+        uuid cycle_id FK
+        uuid topic_id FK
+        text format "feed_image|reels|shorts (CHECK)"
+        text body "LLM 착지점: 대본/카피/문안"
+        jsonb media_spec "렌더 스펙(결정론 입력)"
+        text status "drafted|rendered|published|discarded (CHECK)"
+        timestamptz created_ts
+    }
+    media_asset {
+        uuid id PK
+        uuid content_item_id FK
+        text kind "image|video|thumbnail (CHECK)"
+        text storage_url
+        text checksum "결정론 렌더 검증"
+        timestamptz created_ts
+    }
+    publication {
+        uuid id PK
+        uuid content_item_id FK
+        uuid channel_id FK
+        text platform_post_id "발행 성공 시"
+        text status "pending|published|failed (CHECK)"
+        timestamptz published_ts
+    }
+    publish_attempt {
+        uuid id PK
+        uuid publication_id FK
+        text state "pending|container_created|published|failed (CHECK)"
+        int attempt_no
+        text error_code
+        text error_raw "미분류 원문 보존"
+        timestamptz updated_ts
+    }
+    metric_observation {
+        uuid id PK
+        uuid publication_id FK
+        timestamptz observed_ts
+        int window_index "발행 후 n번째 관측 시점"
+    }
+    metric_value {
+        uuid observation_id FK
+        text metric_key "views|likes|saves|comments|retention... (CHECK)"
+        double value "missing=NULL (CHECK: missing XOR value)"
+        boolean missing
+    }
+    reward {
+        uuid publication_id FK
+        double reward_value "NULL=학습 제외"
+        text reward_version
+        timestamptz computed_ts
+    }
+    playbook {
+        uuid id PK
+        text scope "domain|format|channel"
+        text scope_key
+        jsonb guidance "성과 요약·다음 사이클 지침"
+        int version
+        timestamptz updated_ts
+    }
+    analysis_note {
+        uuid id PK
+        uuid channel_id FK
+        daterange period
+        text body "LLM 착지점: 서술만"
+        jsonb evidence_json "인용 post_id/이벤트"
+        boolean insufficient_evidence
+        text llm_version
+        timestamptz created_ts
+    }
+    run_event {
+        uuid id PK
+        uuid cycle_id FK
+        text kind "publish|poll|render|error|cost (CHECK)"
+        jsonb payload
+        double cost_units "LLM/렌더/API 비용"
+        timestamptz ts "append-only"
+    }
