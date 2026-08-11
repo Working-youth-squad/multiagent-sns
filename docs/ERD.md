@@ -6,19 +6,19 @@
 > 설계 원칙: **정규화 + CHECK 물리 강제 + 지표 결측=NULL + append-only 이벤트**.
 > 모든 코드 자산은 이 레포에서 **처음부터 신규 구현**한다(외부 코드/과거 자산 재사용 없음).
 
-## 1. 테이블 목록 (13)
+## 1. 테이블 목록 (15)
 
 | 테이블 | 역할 | 핵심 불변식(CHECK) |
 |---|---|---|
-| `channel` | 발행 채널(IG/YouTube) + 암호화 토큰 | platform·status enum, 토큰 평문 저장 금지 |
+| `channel` | 발행 채널(IG/YouTube) + 암호화 토큰 + **운영 모드 [v2]** | platform·status enum, **mode enum(auto/hybrid/off) — 실험 변수(SPEC FR-E1)**, 토큰 평문 저장 금지 |
 | `cycle` | 발행 사이클(계획 단위, 단일 트랙) | status enum |
 | `topic` | 개발자 주제 풀 | status enum |
 | `topic_stats` | 주제×포맷×채널 성과 집계(밴딧 입력) | (topic_id, format, platform) 유일 |
-| `content_item` | 생성 콘텐츠(대본/카피/문안 + 렌더 스펙) | format·status enum |
+| `content_item` | 생성 콘텐츠(대본/카피/문안 + 렌더 스펙) + **훅 패턴·사람 개입 기록 [v2]** | format·status enum, **hook_pattern enum(bold_claim/curiosity/story/shock/question — SPEC FR-G5)**, **edited_by_human bool(SPEC FR-E3)** |
 | `media_asset` | 렌더된 미디어 파일 + checksum + 품질게이트 결과 | kind enum, `quality_status` enum(passed/failed/needs_review) |
 | `publication` | 채널 발행 기록 | status enum |
 | `publish_attempt` | 멱등 발행 상태머신 | state enum, 이중발행 차단 |
-| `metric_observation` | 지표 관측 시점 | 발행 후 window_index |
+| `metric_observation` | 지표 관측 시점 | 발행 후 window_index — **[확정 v2] 6h·24h·72h(+이후 일 1회). 초기 확산 곡선이 조기 판정 입력(SPEC FR-A3)** |
 | `metric_value` | 지표 값 | **missing XOR value** CHECK |
 | `reward` | 사이클/게시물 보상 | reward_value NULL 허용(학습 제외) |
 | `playbook` | 학습된 지침 요약 | scope enum |
@@ -65,6 +65,22 @@ pending → container_created → published
 - `trials`, `reward_sum`으로 평균 보상 파생(NULL 보상 제외).
 - Growth Agent가 이 통계를 읽어 다음 사이클 변형을 선택(선택은 루프 밖 결정론 — 시드 고정).
 
+## 5-1. 수집 메트릭 표준 (metric_value.metric_key) — [신설 v2, SPEC FR-A1 근거]
+
+플랫폼 공식 랭킹 신호와 1:1 대응하는 메트릭을 수집한다 (정확한 API 메트릭명 기준):
+
+| 플랫폼 | metric_key | 원본 API 메트릭 | 대응 신호 |
+|---|---|---|---|
+| IG | reach / likes / shares / saved / comments | media insights 동명 | likes·**sends**·saves per reach |
+| IG | avg_watch_time_ms | `ig_reels_avg_watch_time` (ms) | watch time — 완주 근사 = ÷영상 길이 |
+| IG | skip_rate | `reels_skip_rate` (도입 중, 가용 시) | 첫 3초 훅 통과 |
+| IG | views | `views` (v22 통일 — plays·impressions deprecated) | 도달·재생 |
+| YT | views / engaged_views | `views`, `engagedViews` | **viewed vs swiped away 근사 = engagedViews÷views** |
+| YT | avg_view_duration_s / avg_view_pct | `averageViewDuration`, `averageViewPercentage` | 시청 지속 |
+| YT | likes / comments / shares / subscribers_gained | Analytics API 동명 | 참여·구독 전환 |
+
+주의: YT Studio의 "Viewed vs swiped away" 정확 수치·시청 후 설문은 API 미제공(근사만 가능). 결측=NULL 원칙 동일 적용.
+
 ## 6. LLM 착지점 (제어 채널 분리)
 
 LLM이 기록할 수 있는 테이블은 **열거된 3곳뿐**이다. 그 외 제어 흐름/수치 컬럼은 코드만 기록한다.
@@ -88,4 +104,4 @@ LLM이 기록할 수 있는 테이블은 **열거된 3곳뿐**이다. 그 외 �
 | ORM(raw asyncpg vs SQLAlchemy) | ERD와 무관, 착수 시 결정 |
 | `goal` 프리셋을 테이블로 물질화할지 | 초안은 `cycle.goal_ref` 문자열. 프리셋 수 늘면 테이블화 |
 | 미디어 저장소(로컬 볼륨 vs 오브젝트 스토리지) | `media_asset.storage_url` 추상화로 흡수 |
-| 지표 관측 창(window_index) 시점 정의 | goal·플랫폼별 폴링 스케줄과 함께 확정 |
+| ~~지표 관측 창(window_index) 시점 정의~~ | **[확정 v2]** 6h·24h·72h + 이후 일 1회 (§1 metric_observation, SPEC FR-L1) |
