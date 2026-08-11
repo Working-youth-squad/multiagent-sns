@@ -1,4 +1,5 @@
-%% multiagent-sns — 데이터 모델 ERD (초안)
+%% multiagent-sns — 데이터 모델 ERD (v2 · 2026-08-11 개정 기획서 기준)
+%% v2 변경: channel.mode(실험 변수) · content_item.hook_pattern/edited_by_human · 관측 시점 확정(6/24/72h) · 메트릭 표준 확장
 erDiagram
     channel ||--o{ publication : "발행"
     content_item ||--o{ media_asset : "렌더 산출"
@@ -16,6 +17,7 @@ erDiagram
     channel {
         uuid id PK
         text platform "instagram|youtube (CHECK)"
+        text mode "v2: auto|hybrid|off (CHECK) - 실험 변수 FR-E1"
         text handle
         text account_ref "ig_user_id | yt_channel_id"
         bytea token_ciphertext "앱레벨 암호화"
@@ -50,6 +52,8 @@ erDiagram
         uuid cycle_id FK
         uuid topic_id FK
         text format "feed_image|reels|shorts (CHECK)"
+        text hook_pattern "v2: bold_claim|curiosity|story|shock|question (CHECK) FR-G5"
+        boolean edited_by_human "v2: hybrid 사람 개입 기록 FR-E3"
         text body "LLM 착지점: 대본/카피/문안"
         jsonb media_spec "렌더 스펙(결정론 입력)"
         text status "drafted|rendered|published|discarded (CHECK)"
@@ -61,6 +65,8 @@ erDiagram
         text kind "image|video|thumbnail (CHECK)"
         text storage_url
         text checksum "결정론 렌더 검증"
+        text quality_status "passed|failed|needs_review (CHECK) FR-Q2"
+        jsonb quality_report "규격·안전영역·유사도 검사 결과 FR-Q1+A2"
         timestamptz created_ts
     }
     publication {
@@ -76,7 +82,7 @@ erDiagram
         uuid publication_id FK
         text state "pending|container_created|published|failed (CHECK)"
         int attempt_no
-        text error_code
+        text error_code "v2 분류: auth|quota|spam_block|transient|render"
         text error_raw "미분류 원문 보존"
         timestamptz updated_ts
     }
@@ -84,17 +90,17 @@ erDiagram
         uuid id PK
         uuid publication_id FK
         timestamptz observed_ts
-        int window_index "발행 후 n번째 관측 시점"
+        int window_index "v2 확정: 0=6h 1=24h 2=72h 이후 일1회 FR-L1"
     }
     metric_value {
         uuid observation_id FK
-        text metric_key "views|likes|saves|comments|retention... (CHECK)"
+        text metric_key "v2 표준: IG reach|shares|saved|avg_watch_time_ms|skip_rate|views / YT views|engaged_views|avg_view_duration_s|avg_view_pct|subscribers_gained (plan/11 §4)"
         double value "missing=NULL (CHECK: missing XOR value)"
         boolean missing
     }
     reward {
         uuid publication_id FK
-        double reward_value "NULL=학습 제외"
+        double reward_value "NULL=학습 제외. v2 방향: 완주·공유율·engagedViews 가중합 FR-L2"
         text reward_version
         timestamptz computed_ts
     }
@@ -110,7 +116,7 @@ erDiagram
         uuid id PK
         uuid channel_id FK
         daterange period
-        text body "LLM 착지점: 서술만"
+        text body "LLM 착지점: 서술만. v2 소표본 규칙 FR-A4"
         jsonb evidence_json "인용 post_id/이벤트"
         boolean insufficient_evidence
         text llm_version
@@ -119,8 +125,8 @@ erDiagram
     run_event {
         uuid id PK
         uuid cycle_id FK
-        text kind "publish|poll|render|error|cost (CHECK)"
+        text kind "publish|poll|render|error|cost|notify (CHECK)"
         jsonb payload
-        double cost_units "LLM/렌더/API 비용"
+        double cost_units "LLM/렌더/API 비용 - FR-P6 상한 원장"
         timestamptz ts "append-only"
     }
