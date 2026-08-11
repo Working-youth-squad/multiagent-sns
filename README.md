@@ -5,12 +5,13 @@
 개발자 주제 콘텐츠를 **Instagram 피드 게시물 · Instagram 릴스 · YouTube 쇼츠**에
 딥에이전트가 자동으로 기획·제작·발행하고, 반응(지표)을 학습해 채널을 키운다.
 
-## 기획 문서
+## 기획 문서 (v2 — 기능별 세분화)
 
-- 📘 [docs/PLAN.md](docs/PLAN.md) — 기획서(개요·아키텍처·멀티에이전트 구성·task 분할·로드맵)
-- 📐 [docs/SPEC.md](docs/SPEC.md) — 상세 요구사항(FR/NFR)·예외/테스트 케이스·DoD·외부 제약
-- 🗂️ [docs/ERD.md](docs/ERD.md) — 데이터 모델(ERD 초안)
+- 📘 [docs/PLAN.md](docs/PLAN.md) — **총괄**: 개요·배경·개발 원칙·성공 기준(DoD/S1~S5/kill criteria)·문서 목차
+- 📂 [docs/plan/](docs/plan/) — 기능별 상세 13편: 실험설계 · 아키텍처-스택 · 멀티에이전트 · 트렌드조사 · 콘텐츠생성-품질게이트 · 미디어렌더 · 발행 · 지표-학습 · 알고리즘-신호-최적화 · 웹-알림 · 데이터모델 · 비기능-테스트 · 로드맵-리스크
 - 📊 [docs/diagrams/](docs/diagrams/) — 아키텍처·발행 사이클·학습 루프·유저 플로우·ERD (Mermaid)
+
+> 구 SPEC.md·ERD.md의 내용은 전부 docs/plan/ 하위 문서로 이관됨 (유실 없음).
 
 ## 핵심 원칙
 
