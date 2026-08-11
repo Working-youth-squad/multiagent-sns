@@ -7,8 +7,10 @@
 동작한다. 프레임워크·DB 무관: 부작용은 주입된 `publish`(발행)·`store`(영속)로만.
 
 불변식:
-- 이미 `published`면 툴을 호출하지 않는다 → 크래시 재시작 시 이중 발행 0 (FR-P3).
-- 품질 게이트 미통과면 진입하지 않는다 (05 FR-Q, 07 §2).
+- 종결 상태(`published`·`failed`)면 툴을 호출하지 않는다 → 이중 발행 0(FR-P3),
+  비재시도 오류(auth/quota/…) 재시도 0(FR-P4). 재구동은 그냥 저장분을 돌려준다.
+- 품질 게이트는 '진입'만 막는다 (05 FR-Q, 07 §2). 이미 진행 중인 시도는 재검사하지
+  않는다 — 첫 판정 이후 뒤집힘으로 생성된 컨테이너가 고아가 되는 것을 막는다.
 - IG 2단계 컨테이너 ID를 보존·재사용한다 (재시작 복구).
 - transient=재시도 여지 유지, 그 외=failed. 원문은 error_raw 보존 (FR-P4).
 """
@@ -23,6 +25,11 @@ AttemptStatus = Literal["pending", "container_created", "published", "failed"]
 
 # 재시도 여지가 있는 오류 (그 외 auth/quota/spam_block/permanent_unknown = 종결)
 RETRYABLE: frozenset[ErrorClass] = frozenset({"transient"})
+
+# 더 이상 전진하지 않는 종결 상태 — 재구동해도 툴을 호출하지 않는다.
+# published=이중 발행 방지(FR-P3), failed=비재시도 오류 재시도 방지(FR-P4).
+# (transient는 pending/container_created로만 남으므로 failed는 항상 비재시도다.)
+_TERMINAL: frozenset[AttemptStatus] = frozenset({"published", "failed"})
 
 
 class QualityGateError(RuntimeError):
@@ -63,12 +70,14 @@ def run_publish(
     """한 publication을 종결 상태까지 1회 전진시킨다. 여러 번 호출해도 안전(멱등)."""
     existing = store.load(publication_id)
 
-    # FR-P3: 이미 발행됨 → 툴 미호출, 이중 발행 0
-    if existing is not None and existing.state == "published":
+    # 종결 상태(published/failed)는 재구동해도 툴을 호출하지 않고 저장분을 반환한다.
+    # published→이중 발행 0(FR-P3), failed→비재시도 오류 재시도 0(FR-P4).
+    if existing is not None and existing.state in _TERMINAL:
         return existing
 
-    # 05 FR-Q: 품질 게이트 미통과면 진입 금지 (pending으로도 들어가지 않음)
-    if not quality_passed:
+    # 05 FR-Q: 품질 게이트는 '진입'만 막는다 (pending으로도 들어가지 않음).
+    # 이미 진행 중(attempt 존재)이면 첫 진입에서 통과한 것이므로 재검사하지 않는다.
+    if existing is None and not quality_passed:
         raise QualityGateError(f"품질 미통과 발행 차단: {publication_id}")
 
     attempt = existing or PublishAttempt(publication_id=publication_id)

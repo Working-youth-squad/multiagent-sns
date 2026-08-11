@@ -65,6 +65,29 @@ def test_terminal_error_marks_failed_and_preserves_raw() -> None:
     assert attempt.external_post_id is None
 
 
+def test_failed_is_terminal_not_redriven() -> None:
+    # FR-P4: 비재시도 오류로 failed면 재구동해도 발행 툴을 다시 부르지 않는다.
+    store = InMemoryPublishAttemptStore()
+    publish = FakePublish(error=ToolError(error_class="quota", error_raw="rate limit exceeded"))
+    first = _drive(store, publish)
+    assert first.state == "failed"
+    second = _drive(store, publish)
+    assert second == first
+    assert publish.calls == ["pub-1-ig"]  # 두 번째는 발행 툴을 부르지 않음
+
+
+def test_quality_recheck_skipped_after_entry() -> None:
+    # 05 FR-Q: 품질 게이트는 진입만 막는다. 이미 진행 중(pending)인 시도는
+    # quality_passed가 뒤집혀도 차단되지 않는다 → 생성된 컨테이너 고아화 방지.
+    store = InMemoryPublishAttemptStore()
+    transient = FakePublish(error=ToolError(error_class="transient", error_raw="502"))
+    first = _drive(store, transient)
+    assert first.state == "pending"
+
+    resumed = _drive(store, FakePublish(), quality_passed=False)  # 재시작 후 재검사 안 함
+    assert resumed.state == "published"
+
+
 def test_transient_error_stays_retryable_then_succeeds() -> None:
     # transient는 failed로 종결하지 않고 재시도 시 발행 성공
     store = InMemoryPublishAttemptStore()
