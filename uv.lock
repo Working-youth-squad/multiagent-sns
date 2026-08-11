@@ -883,6 +883,7 @@ name = "sns"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "deepagents" },
     { name = "psycopg", extra = ["binary"] },
 ]
@@ -896,6 +897,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=44" },
     { name = "deepagents", specifier = ">=0.7.5" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
 ]
