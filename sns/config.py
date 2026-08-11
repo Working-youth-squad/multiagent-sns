@@ -1,9 +1,10 @@
-"""앱 설정 — 환경변수에서 로드. 필수 시크릿 부재 시 기동 실패 (NFR-7, T0-5).
+"""앱 설정 — 환경변수에서 로드. 필수 시크릿 부재/무효 시 기동 실패 (NFR-7, T0-5).
 
-`Config.from_env()`은 앱 부팅 시 1회 호출한다. 암호화 키가 없으면 여기서
-`ConfigError`로 즉시 실패시켜, 평문 토큰이 DB에 들어가는 경로 자체를 막는다.
+`Config.from_env()`은 앱 부팅 시 1회 호출한다. 암호화 키가 없거나 형식이 무효면
+여기서 `ConfigError`로 즉시 실패시켜, 평문 토큰이 DB에 들어가는 경로 자체를 막는다.
 """
 
+import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 
@@ -26,12 +27,10 @@ class Config:
 
     @staticmethod
     def from_env(env: Mapping[str, str] | None = None) -> "Config":
-        import os
-
         source: Mapping[str, str] = os.environ if env is None else env
         return Config(
             database_url=_require(source, ENV_DATABASE_URL),
-            encryption_key=_require(source, ENV_ENCRYPTION_KEY),
+            encryption_key=_encryption_key(source),
             encryption_key_version=_key_version(source),
         )
 
@@ -40,6 +39,25 @@ def _require(env: Mapping[str, str], name: str) -> str:
     value = env.get(name)
     if not value:  # None 또는 빈 문자열 모두 거부
         raise ConfigError(f"필수 환경변수 없음: {name}")
+    return value
+
+
+def _encryption_key(env: Mapping[str, str]) -> str:
+    """존재만이 아니라 Fernet 키로 유효한지까지 검증한다.
+
+    부재/빈값뿐 아니라 형식 무효(길이·base64 오류)도 여기서 `ConfigError`로
+    막아, 무효 키가 부팅을 통과한 뒤 첫 발행 시점에 raw `ValueError`로 터지는
+    경로를 차단한다 (NFR-7의 '기동 실패' 보증을 무효 키까지 확장).
+    """
+    value = _require(env, ENV_ENCRYPTION_KEY)
+    from cryptography.fernet import Fernet
+
+    try:
+        Fernet(value.encode())
+    except (ValueError, TypeError) as exc:
+        raise ConfigError(
+            f"{ENV_ENCRYPTION_KEY}가 유효한 Fernet 키가 아님 (base64 32바이트 필요)"
+        ) from exc
     return value
 
 
