@@ -13,6 +13,14 @@
 
 > 구 SPEC.md·ERD.md의 내용은 전부 docs/plan/ 하위 문서로 이관됨 (유실 없음).
 
+## 로컬 개발
+
+```bash
+uv sync                        # 의존성 설치 (Python 3.12, https://docs.astral.sh/uv/)
+docker compose up -d postgres  # 로컬 PostgreSQL
+uv run pytest                  # 테스트
+```
+
 ## 핵심 원칙
 
 공식 API만 사용 · 결정론 재현 · 멱등 발행 · 지표 결측=NULL · 정직 귀인 · 자기 채널 성장만 측정.
