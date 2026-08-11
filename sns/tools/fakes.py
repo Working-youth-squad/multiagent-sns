@@ -14,11 +14,17 @@ from sns.tools.contracts import (
     Platform,
     PlaybookScope,
     PlaybookVersion,
+    PollMetrics,
+    Publish,
     PublishResult,
+    ReadStats,
+    RenderMedia,
+    ResearchTrends,
     SourceResult,
     ToolError,
     TopicStat,
     TrendDigest,
+    WritePlaybook,
 )
 
 DEFAULT_SOURCES = (
@@ -109,7 +115,11 @@ class FakePollMetrics:
         self, platform: Platform, post_id: str, window_index: int
     ) -> tuple[MetricValue, ...]:
         values = []
-        for key in PLATFORM_METRIC_KEYS[platform] + tuple(sorted(self.missing_keys)):
+        # 결측 키가 플랫폼 기본 키와 겹쳐도 metric_key가 중복되지 않게 dedup
+        # (중복 시 DB UNIQUE(observation_id, metric_key)와 어긋남)
+        base_keys = PLATFORM_METRIC_KEYS[platform]
+        extra_missing = tuple(k for k in sorted(self.missing_keys) if k not in base_keys)
+        for key in base_keys + extra_missing:
             if key in self.missing_keys:
                 values.append(MetricValue(metric_key=key, value=None, missing=True))
             else:
@@ -140,3 +150,13 @@ class FakeWritePlaybook:
         history = self.entries.setdefault((scope, scope_ref), [])
         history.append(guidance)
         return PlaybookVersion(scope=scope, scope_ref=scope_ref, version=len(history))
+
+
+# 계약 적합성 정적 보증 — 가짜의 시그니처가 Protocol에서 드리프트하면 `mypy sns`가
+# CI에서 실패한다. (테스트는 CI 타입체크 대상이 아니므로 여기서 sns 내부에 고정.)
+_check_research: ResearchTrends = FakeResearchTrends()
+_check_render: RenderMedia = FakeRenderMedia()
+_check_publish: Publish = FakePublish()
+_check_poll: PollMetrics = FakePollMetrics()
+_check_stats: ReadStats = FakeReadStats()
+_check_playbook: WritePlaybook = FakeWritePlaybook()

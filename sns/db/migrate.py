@@ -13,7 +13,11 @@ MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 
 
 def apply_migrations(conn: psycopg.Connection) -> list[int]:
-    """미적용 마이그레이션을 번호순으로 각각 한 트랜잭션 안에서 적용한다."""
+    """미적용 마이그레이션을 번호순으로 각각 독립 트랜잭션에서 적용·커밋한다.
+
+    각 마이그레이션은 자체 top-level 트랜잭션으로 커밋되므로 호출자의 추가
+    commit이 필요 없고, 도중 실패 시 그 마이그레이션만 롤백된다(앞선 것은 유지).
+    """
     conn.execute(
         "CREATE TABLE IF NOT EXISTS schema_version ("
         " version integer PRIMARY KEY,"
@@ -21,6 +25,9 @@ def apply_migrations(conn: psycopg.Connection) -> list[int]:
     )
     conn.commit()
     applied = {row[0] for row in conn.execute("SELECT version FROM schema_version")}
+    # 위 SELECT가 연 읽기 트랜잭션을 닫는다 — 그래야 아래 각 conn.transaction()이
+    # 세이브포인트가 아니라 독립 top-level 트랜잭션으로 커밋된다.
+    conn.rollback()
     done: list[int] = []
     for path in sorted(MIGRATIONS_DIR.glob("*.sql")):
         match = re.match(r"(\d+)", path.name)
