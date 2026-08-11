@@ -1,0 +1,27 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sns}
+      POSTGRES_USER: ${POSTGRES_USER:-sns}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sns}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sns"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  app:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://sns:sns@postgres:5432/sns
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:
