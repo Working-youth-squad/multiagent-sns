@@ -10,6 +10,7 @@ from sns.render.card import (
     parse_card_spec,
     render_card,
 )
+from sns.render.card.spec import MAX_CARD_SIDE
 from sns.render.storage import InMemoryMediaStore
 
 VALID_SPEC: dict[str, object] = {
@@ -47,11 +48,19 @@ def test_parse_normalizes_single_string_body() -> None:
         {**VALID_SPEC, "palette": {"foreground": "#zzz"}},  # 잘못된 hex
         {**VALID_SPEC, "width": 0},  # 비양수 치수
         {**VALID_SPEC, "width": True},  # bool은 int 아님
+        {**VALID_SPEC, "width": 100_000_000},  # 상한 초과 → 메모리 폭탄 방어
+        {**VALID_SPEC, "height": MAX_CARD_SIDE + 1},  # 상한 바로 위
     ],
 )
 def test_parse_rejects_malformed(bad: dict[str, object]) -> None:
     with pytest.raises(CardSpecError):
         parse_card_spec(bad)
+
+
+def test_parse_accepts_dimension_at_upper_bound() -> None:
+    # 상한 경계값은 허용 — 상한 초과만 차단.
+    spec = parse_card_spec({**VALID_SPEC, "width": MAX_CARD_SIDE, "height": MAX_CARD_SIDE})
+    assert spec.width == MAX_CARD_SIDE and spec.height == MAX_CARD_SIDE
 
 
 def test_render_is_deterministic() -> None:

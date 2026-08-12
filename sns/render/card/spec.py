@@ -12,6 +12,11 @@ from typing import cast
 # IG 피드 카드 기본 규격 4:5 (1080×1350). spec이 명시하면 덮어쓴다.
 DEFAULT_WIDTH = 1080
 DEFAULT_HEIGHT = 1350
+# 변당 최대 치수(px). `media_spec`은 Content Agent(LLM) 산출물이라 환각·오염이
+# 가능한데, 상한이 없으면 거대한 값 하나가 `Image.new`에서 메모리 폭탄이 되어 워커를
+# 죽인다(예: 10^8×10^8). 발행 진입 전 방어선인 파싱에서 끊는다. IG/스토리 최대
+# (1080×1920)의 넉넉한 상한.
+MAX_CARD_SIDE = 4096
 
 DEFAULT_PALETTE = {
     "background": "#0d1117",
@@ -93,6 +98,8 @@ def _parse_dimension(spec: Mapping[str, object], key: str, default: int) -> int:
     value = spec.get(key, default)
     if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
         raise CardSpecError(f"'{key}'는 양의 정수여야 함: {value!r}")
+    if value > MAX_CARD_SIDE:
+        raise CardSpecError(f"'{key}'는 {MAX_CARD_SIDE}px 이하여야 함(메모리 폭탄 방어): {value!r}")
     return value
 
 
