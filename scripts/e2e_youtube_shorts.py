@@ -26,9 +26,21 @@ SECRETS = Path(__file__).parent.parent / ".secrets"
 
 MEDIA_SPEC: dict[str, object] = {
     "slides": [
-        "멀티에이전트가 SNS를 키운다면?",
-        "영상 제작부터 업로드까지, 사람 손 없이.",
-        "이 영상이 그 첫 결과물입니다.",
+        {
+            "title": "멀티에이전트가 SNS를 키운다면?",
+            "body": "사람 손 없이 굴러가는 성장 엔진",
+            "narration": "멀티에이전트가 SNS 계정을 직접 키운다면 어떨까요?",
+        },
+        {
+            "title": "영상도 코드로 만든다",
+            "body": "자막 · 슬라이드 · TTS 합성",
+            "narration": "이 영상도 사람이 편집한 게 아니라 코드가 합성했습니다.",
+        },
+        {
+            "title": "업로드까지 전자동",
+            "body": "품질 게이트를 통과해야 발행",
+            "narration": "품질 검사를 통과한 영상만 자동으로 업로드됩니다.",
+        },
     ],
 }
 CAPTION = (
