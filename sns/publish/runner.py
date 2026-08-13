@@ -4,7 +4,8 @@ DB에서 발행 대기(`publication.status='pending'`) 건을 읽어, 렌더된 
 게이트 결과(`media_asset.quality_status`)를 상태머신의 `quality_passed`로 **배선**한다:
 
 - `passed`  → `run_publish`로 종결 상태까지 1회 전진 (멱등 — 재구동해도 이중 발행 0).
-- 그 외    → `publication`을 `skipped`로 종결 (05 FR-Q: 게이트는 진입만 막는다).
+- 그 외    → (진행 중 시도가 없을 때만) `publication`을 `skipped`로 종결. 게이트는
+  '진입'만 막는다(05 FR-Q) — 이미 진행 중인 시도는 재검사 없이 이어간다.
 - 자산 없음 → `pending` 유지(다음 렌더 사이클 대기) + notice 기록.
 
 부작용(외부 발행)은 주입된 `publish`(동결 `Publish` 계약)로만 — 프레임워크·벤더
@@ -12,6 +13,11 @@ DB에서 발행 대기(`publication.status='pending'`) 건을 읽어, 렌더된 
 MediaStore 바이트 조회) 배선은 호출자 몫이다.
 
 커넥션은 **autocommit**을 가정한다([sns.publish.stores] docstring 참조).
+
+**단일 워커 전제**: `_SELECT_PENDING`에 행 잠금이 없어, 러너를 동시에 둘 돌리면 같은
+건을 둘 다 선택할 수 있다. 그 경우 이중 발행 방지는 안정적 `idempotency_key`
+(=publication_id) 위의 어댑터 멱등성에 의존한다. 다중 워커가 필요하면
+`SELECT ... FOR UPDATE SKIP LOCKED`를 더한다.
 """
 
 from dataclasses import dataclass
@@ -20,24 +26,35 @@ from typing import Literal
 import psycopg
 from psycopg.types.json import Json
 
-from sns.publish.state_machine import PublishAttempt, run_publish
+from sns.publish.state_machine import AttemptStatus, PublishAttempt, run_publish
 from sns.publish.stores import PgPublishAttemptStore
 from sns.tools.contracts import MediaAsset, Publish
 
 Outcome = Literal["published", "failed", "retryable", "skipped", "no_media"]
 
+# 상태머신 종결/진행 상태 → 러너 outcome. 진행 중(pending·container_created)=retryable.
+_STATE_OUTCOME: dict[AttemptStatus, Outcome] = {
+    "published": "published",
+    "failed": "failed",
+    "pending": "retryable",
+    "container_created": "retryable",
+}
+
 # 대기 발행 건 + 매칭 자산 조인. 발행할 kind는 content_item.format에서 파생
-# (피드=이미지, 릴스/쇼츠=영상). 자산이 없으면 ma.*는 NULL.
+# (피드=이미지, 릴스/쇼츠=영상). 자산이 없으면 ma.*는 NULL. pa.state는 기존 시도
+# 진행 여부(게이트 재적용 금지 판단)로 쓴다 — publish_attempt는 publication과 1-1.
 _SELECT_PENDING = """
 SELECT DISTINCT ON (p.id)
        p.id, ci.cycle_id, ch.platform, COALESCE(ci.body, ''),
-       ma.kind, ma.storage_url, ma.checksum, ma.quality_status
+       ma.kind, ma.storage_url, ma.checksum, ma.quality_status,
+       pa.state
   FROM publication p
   JOIN channel ch      ON ch.id = p.channel_id
   JOIN content_item ci ON ci.id = p.content_item_id
   LEFT JOIN media_asset ma
     ON ma.content_item_id = ci.id
    AND ma.kind = CASE WHEN ci.format = 'feed_image' THEN 'image' ELSE 'video' END
+  LEFT JOIN publish_attempt pa ON pa.publication_id = p.id
  WHERE p.status = 'pending'
  ORDER BY p.id, ma.created_at DESC
 """
@@ -70,7 +87,18 @@ def run_pending_publications(conn: psycopg.Connection, publish: Publish) -> list
     store = PgPublishAttemptStore(conn)
     results: list[RunnerResult] = []
 
-    for pub_id, cycle_id, platform, caption, kind, storage_url, checksum, qstatus in rows:
+    for row in rows:
+        (
+            pub_id,
+            cycle_id,
+            platform,
+            caption,
+            kind,
+            storage_url,
+            checksum,
+            qstatus,
+            attempt_state,
+        ) = row
         publication_id = str(pub_id)
 
         if kind is None:
@@ -80,8 +108,12 @@ def run_pending_publications(conn: psycopg.Connection, publish: Publish) -> list
             results.append(RunnerResult(publication_id, "no_media", None))
             continue
 
-        # 게이트 배선: passed가 아니면 발행 진입 자체를 막고 skipped로 종결.
-        if qstatus != "passed":
+        # 게이트 배선: passed가 아니면 발행 '진입'을 막고 skipped로 종결. 단 이미 진행
+        # 중인 시도(attempt_state != NULL: pending/container_created)는 재검사하지
+        # 않고 run_publish에 위임한다 — state_machine 불변식과 일치. 이 조건이 없으면
+        # 첫 판정 뒤 새로 렌더된 저품질 자산이 최신으로 잡혀, 컨테이너를 남긴 채
+        # publication만 skipped로 뒤집혀 원장↔발행상태가 갈라진다.
+        if attempt_state is None and qstatus != "passed":
             with conn.transaction():
                 conn.execute("UPDATE publication SET status = 'skipped' WHERE id = %s", (pub_id,))
                 _log_event(
@@ -106,15 +138,10 @@ def run_pending_publications(conn: psycopg.Connection, publish: Publish) -> list
             media=media,
             caption=caption,
             idempotency_key=publication_id,  # publication당 안정 키 → 재구동 멱등
-            quality_passed=True,
+            # 진입 시(attempt_state=None)만 게이트가 유효 — 진행 중이면 run_publish가 무시.
+            quality_passed=qstatus == "passed",
         )
-        outcome: Outcome = (
-            "published"
-            if attempt.state == "published"
-            else "failed"
-            if attempt.state == "failed"
-            else "retryable"
-        )
+        outcome = _STATE_OUTCOME[attempt.state]
         _log_event(
             conn,
             cycle_id,

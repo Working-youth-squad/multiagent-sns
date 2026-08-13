@@ -96,6 +96,41 @@ def test_transient_error_stays_retryable(db: psycopg.Connection, seed: SeedFn) -
     assert publish.calls == [pub_id, pub_id]  # 두 번 다 재시도
 
 
+def test_in_progress_attempt_not_regated_by_newer_failed_asset(
+    db: psycopg.Connection, seed: SeedFn
+) -> None:
+    # 회귀(#1): container_created로 진행 중인데 그 사이 더 최신 저품질 자산이 렌더되면,
+    # 러너가 게이트로 publication을 skipped 뒤집으면 안 된다 — 컨테이너를 남긴 채
+    # 원장(container_created)↔발행상태(skipped)가 갈라진다. 상태머신 위임으로 이어가야 함.
+    pub_id = seed(quality_status="passed", kind="video", fmt="reels", checksum="a1")
+    ci_row = db.execute(
+        "SELECT content_item_id FROM publication WHERE id = %s", (pub_id,)
+    ).fetchone()
+    assert ci_row is not None
+    ci_id = ci_row[0]
+    # 진행 중 시도 주입(컨테이너 보존) — store 규칙상 publication은 pending 유지.
+    db.execute(
+        "INSERT INTO publish_attempt (publication_id, state, container_id)"
+        " VALUES (%s, 'container_created', 'ig-c1')",
+        (pub_id,),
+    )
+    # 더 최신의 저품질 자산 — SELECT의 DISTINCT ON이 이 행을 잡게 된다.
+    db.execute(
+        "INSERT INTO media_asset"
+        " (content_item_id, kind, storage_url, checksum, quality_status, created_at)"
+        " VALUES (%s, 'video', 'mem://a2', 'a2', 'failed', now() + interval '1 second')",
+        (ci_id,),
+    )
+
+    publish = FakePublish()
+    results = run_pending_publications(db, publish)
+
+    r = _only(results, pub_id)
+    assert r.outcome == "published"  # 게이트에 안 막히고 이어감
+    assert publish.calls == [pub_id]  # run_publish에 실제 진입(컨테이너 재사용)
+    assert _status(db, pub_id) == "published"  # skipped 아님 — 원장과 일관
+
+
 class _SelectiveFail:
     """지정한 idempotency_key만 영구 실패(auth), 나머지는 성공 — 채널 격리 검증용."""
 
