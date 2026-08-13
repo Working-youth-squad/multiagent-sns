@@ -10,3 +10,4 @@ dist/
 token.json
 spikes/**/out/
 spikes/**/node_modules/
+scripts/out/
