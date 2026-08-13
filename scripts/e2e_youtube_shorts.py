@@ -44,8 +44,8 @@ MEDIA_SPEC: dict[str, object] = {
     ],
 }
 CAPTION = (
-    "멀티에이전트 SNS 엔진 — 첫 자동 생성 쇼츠\n"
-    "영상 합성과 업로드 전 과정이 코드로 자동화된 파이프라인 E2E 테스트입니다."
+    "멀티에이전트 SNS 엔진 — 개선된 템플릿 쇼츠\n"
+    "그라데이션·타이포 계층·Ken Burns 모션·진행바가 적용된 자동 생성 파이프라인 테스트입니다."
 )
 
 
@@ -87,11 +87,11 @@ def main() -> None:
     attempt = run_publish(
         store=InMemoryPublishAttemptStore(),
         publish=YouTubePublish(youtube, media_bytes=lambda url: Path(url).read_bytes()),
-        publication_id="e2e-first-shorts",
+        publication_id="e2e-quality-shorts",
         platform="youtube",
         media=asset,
         caption=CAPTION,
-        idempotency_key="e2e-first-shorts",
+        idempotency_key="e2e-quality-shorts",
         quality_passed=report.passed,
     )
     if attempt.state != "published":
