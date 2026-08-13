@@ -12,8 +12,9 @@ from dataclasses import dataclass
 
 from sns.signals.scoreboard import VARIANCE_WARNING
 
-# 서술에 등장해도 스코어보드 출처가 필요 없는 상수: 폴링 창(6·24·72h)·소표본 규칙(30건)·배수(10배).
-ALLOWED_LITERALS = frozenset({6.0, 24.0, 72.0, 30.0, 10.0})
+# 서술에 등장해도 스코어보드 출처가 필요 없는 상수: 폴링 창(6·24·72h)·소표본 규칙(30건)·
+# 배수(10배) + 한 자리 정수(목차 번호·관측 창 번호 등 구조용 — 지표 조작은 소수·큰 수로 나타남).
+ALLOWED_LITERALS = frozenset({6.0, 24.0, 72.0, 30.0, 10.0} | {float(i) for i in range(10)})
 # 소표본일 때 글에 반드시 있어야 하는 표현.
 INSUFFICIENT_PHRASES = ("판정 불가", "근거 부족")
 # 분산 경고로 인정하는 최소 토큰 (VARIANCE_WARNING 전문 또는 핵심 표현).

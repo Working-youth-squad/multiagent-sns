@@ -60,9 +60,27 @@ class AnalysisRejected(RuntimeError):
     # ponytail: 재시도 루프는 실거부율 확인 후 추가.
     """
 
-    def __init__(self, reasons: tuple[str, ...]) -> None:
+    def __init__(self, reasons: tuple[str, ...], body: str) -> None:
         super().__init__("; ".join(reasons))
         self.reasons = reasons
+        self.body = body  # 거부된 본문 — 디버깅·거부율 분석용
+
+
+def _message_text(content: object) -> str:
+    """메시지 content → 텍스트. 일부 모델(Gemini 3.x)은 콘텐츠 블록 리스트를 반환 —
+    str() 변환 시 서명 토큰 등 메타데이터가 본문에 섞여 검증기가 오염되므로
+    text 블록만 추출한다."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+        return "".join(parts)
+    return str(content)
 
 
 def run_analysis(
@@ -152,7 +170,7 @@ def run_analysis(
             ]
         }
     )
-    body = str(state["messages"][-1].content)
+    body = _message_text(state["messages"][-1].content)
 
     result = validate_analysis(
         body,
@@ -161,7 +179,7 @@ def run_analysis(
         verdict_available=sb.verdict_available,
     )
     if not result.ok:
-        raise AnalysisRejected(result.reasons)
+        raise AnalysisRejected(result.reasons, body)
     return AnalysisResult(
         body=body,
         insufficient_evidence=not sb.verdict_available,

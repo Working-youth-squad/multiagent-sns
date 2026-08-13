@@ -11,6 +11,7 @@ Analytics는 일 단위 granularity + 24-48h 지연이라 6h 창을 표현할 �
 # ponytail: 누적 스냅샷 — 창별 증분이 필요해지면 startDate/endDate 계산 추가.
 """
 
+import threading
 from collections.abc import Callable
 from datetime import date
 from typing import Any
@@ -39,6 +40,9 @@ class YouTubeMetrics:
     def __init__(self, analytics: Any, *, today: Callable[[], date] = date.today) -> None:
         self._analytics = analytics
         self._today = today
+        # googleapiclient의 httplib2는 스레드 안전하지 않음 — 에이전트 툴 노드가
+        # 워커 스레드에서 호출하므로 직렬화 필수 (미직렬화 시 keep-alive 타임아웃).
+        self._lock = threading.Lock()
 
     def __call__(
         self, platform: Platform, post_id: str, window_index: int
@@ -46,17 +50,18 @@ class YouTubeMetrics:
         if platform != "youtube":
             raise ValueError(f"유튜브 폴러가 처리할 수 없는 platform: {platform}")
         keys = tuple(ANALYTICS_METRICS)
-        response = (
-            self._analytics.reports()
-            .query(
-                ids="channel==MINE",
-                startDate=_START_DATE,
-                endDate=self._today().isoformat(),
-                metrics=",".join(ANALYTICS_METRICS[k] for k in keys),
-                filters=f"video=={post_id}",
+        with self._lock:
+            response = (
+                self._analytics.reports()
+                .query(
+                    ids="channel==MINE",
+                    startDate=_START_DATE,
+                    endDate=self._today().isoformat(),
+                    metrics=",".join(ANALYTICS_METRICS[k] for k in keys),
+                    filters=f"video=={post_id}",
+                )
+                .execute(num_retries=2)  # 일시 타임아웃 방어 (지수 백오프)
             )
-            .execute()
-        )
         rows = response.get("rows") or []
         if not rows:
             # 데이터 지연·비공개 → 정직 결측 (정상 경로)

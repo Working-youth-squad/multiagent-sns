@@ -10,7 +10,7 @@ import os
 from langchain_core.language_models import BaseChatModel
 
 ENV_GOOGLE_API_KEY = "GOOGLE_API_KEY"
-GEMINI_MODEL = "gemini-2.5-flash"  # 무료 티어
+GEMINI_MODEL = "gemini-3.5-flash"  # 무료 티어 (2.5 세대는 2026년 신규 사용자에게 은퇴됨)
 
 
 def make_model() -> BaseChatModel:

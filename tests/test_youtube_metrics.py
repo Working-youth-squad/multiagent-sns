@@ -21,7 +21,7 @@ class _FakeAnalytics:
         self.queries.append(kwargs)
         return self
 
-    def execute(self) -> dict[str, Any]:
+    def execute(self, num_retries: int = 0) -> dict[str, Any]:
         return self._response
 
 

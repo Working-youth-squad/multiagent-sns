@@ -49,6 +49,8 @@ def main() -> None:
             write_playbook=FakeWritePlaybook(),
         )
     except AnalysisRejected as exc:
+        print("--- 거부된 본문 ---")
+        print(exc.body)
         raise SystemExit(f"검증기 거부: {exc.reasons}") from exc
     print(f"insufficient_evidence={result.insufficient_evidence}")
     print(f"playbook_written={result.playbook_written}")
