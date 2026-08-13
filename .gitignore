@@ -6,3 +6,7 @@ __pycache__/
 .ruff_cache/
 dist/
 .env
+.secrets/
+token.json
+spikes/**/out/
+spikes/**/node_modules/

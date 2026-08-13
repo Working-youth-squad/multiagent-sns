@@ -26,6 +26,7 @@ jobs:
       DATABASE_URL: postgresql://sns:sns@localhost:5432/sns
     steps:
       - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-noto-cjk
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true

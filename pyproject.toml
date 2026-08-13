@@ -6,6 +6,10 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "cryptography>=44",
     "deepagents>=0.7.5",
+    "google-api-python-client>=2.198.0",
+    "google-auth-oauthlib>=1.4.0",
+    "google-cloud-texttospeech>=2.37.0",
+    "pillow>=12.3.0",
     "psycopg[binary]>=3.2",
 ]
 
@@ -33,6 +37,17 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.mypy]
 python_version = "3.12"
 strict = true
+
+# 구글 클라이언트 3종은 타입 스텁 미제공 — 어댑터 경계에서만 Any 허용.
+[[tool.mypy.overrides]]
+module = [
+    "googleapiclient.*",
+    "google_auth_oauthlib.*",
+    "google.cloud.texttospeech",
+    "google.oauth2.*",
+    "google.auth.*",
+]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
