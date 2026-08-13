@@ -37,7 +37,16 @@ DEFAULT_SOURCES = (
 
 PLATFORM_METRIC_KEYS: dict[Platform, tuple[str, ...]] = {
     "instagram": ("reach", "likes", "shares", "saved", "comments", "avg_watch_time_ms", "views"),
-    "youtube": ("views", "engaged_views", "avg_view_duration_s", "likes", "subscribers_gained"),
+    "youtube": (
+        "views",
+        "engaged_views",
+        "avg_view_duration_s",
+        "avg_view_pct",
+        "likes",
+        "comments",
+        "shares",
+        "subscribers_gained",
+    ),
 }
 
 

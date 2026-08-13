@@ -9,6 +9,7 @@ dependencies = [
     "google-api-python-client>=2.198.0",
     "google-auth-oauthlib>=1.4.0",
     "google-cloud-texttospeech>=2.37.0",
+    "langchain-google-genai>=4.3.3",
     "pillow>=12.3.0",
     "psycopg[binary]>=3.2",
 ]

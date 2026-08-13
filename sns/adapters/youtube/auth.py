@@ -8,7 +8,10 @@
 from pathlib import Path
 from typing import Any
 
-SCOPES = ("https://www.googleapis.com/auth/youtube.upload",)
+SCOPES = (
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/yt-analytics.readonly",  # 지표 폴링 (YT-3)
+)
 
 
 def load_credentials(client_secret: Path, token: Path) -> Any:
@@ -40,3 +43,10 @@ def build_youtube(credentials: Any) -> Any:
     from googleapiclient.discovery import build
 
     return build("youtube", "v3", credentials=credentials)
+
+
+def build_youtube_analytics(credentials: Any) -> Any:
+    """YouTube Analytics API v2 클라이언트 (쿼터는 Data API와 별도)."""
+    from googleapiclient.discovery import build
+
+    return build("youtubeAnalytics", "v2", credentials=credentials)
