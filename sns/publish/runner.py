@@ -3,10 +3,13 @@
 DB에서 발행 대기(`publication.status='pending'`) 건을 읽어, 렌더된 자산의 품질
 게이트 결과(`media_asset.quality_status`)를 상태머신의 `quality_passed`로 **배선**한다:
 
-- `passed`  → `run_publish`로 종결 상태까지 1회 전진 (멱등 — 재구동해도 이중 발행 0).
-- 그 외    → (진행 중 시도가 없을 때만) `publication`을 `skipped`로 종결. 게이트는
-  '진입'만 막는다(05 FR-Q) — 이미 진행 중인 시도는 재검사 없이 이어간다.
-- 자산 없음 → `pending` 유지(다음 렌더 사이클 대기) + notice 기록.
+- `passed`        → `run_publish`로 종결까지 1회 전진 (멱등 — 재구동해도 이중 발행 0).
+- `failed`        → (진입 시에만) `publication`을 `skipped`로 종결 — 자동 게이트 하드
+  실패 = 콘텐츠 거부. 게이트는 '진입'만 막는다(05 FR-Q): 진행 중 시도는 재검사 안 함.
+- `needs_review`  → `pending` 유지 + notice. hybrid 사람 관문(FR-Q3) 대기 — 사람이
+  승인해 `passed`로 바뀌면 다음 구동에서 발행된다. 영구 skipped로 종결하지 않는다.
+  (자산 기본 quality_status가 `needs_review`라, 아직 게이트 미판정 자산도 여기 해당.)
+- 자산 없음        → `pending` 유지(다음 렌더 사이클 대기) + notice 기록.
 
 부작용(외부 발행)은 주입된 `publish`(동결 `Publish` 계약)로만 — 프레임워크·벤더
 무관이라 `FakePublish`로 결정론 테스트 가능. 실 `Publish` 디스패처(IG/YT 어댑터 +
@@ -30,7 +33,7 @@ from sns.publish.state_machine import AttemptStatus, PublishAttempt, run_publish
 from sns.publish.stores import PgPublishAttemptStore
 from sns.tools.contracts import MediaAsset, Publish
 
-Outcome = Literal["published", "failed", "retryable", "skipped", "no_media"]
+Outcome = Literal["published", "failed", "retryable", "skipped", "awaiting_review", "no_media"]
 
 # 상태머신 종결/진행 상태 → 러너 outcome. 진행 중(pending·container_created)=retryable.
 _STATE_OUTCOME: dict[AttemptStatus, Outcome] = {
@@ -108,25 +111,38 @@ def run_pending_publications(conn: psycopg.Connection, publish: Publish) -> list
             results.append(RunnerResult(publication_id, "no_media", None))
             continue
 
-        # 게이트 배선: passed가 아니면 발행 '진입'을 막고 skipped로 종결. 단 이미 진행
-        # 중인 시도(attempt_state != NULL: pending/container_created)는 재검사하지
-        # 않고 run_publish에 위임한다 — state_machine 불변식과 일치. 이 조건이 없으면
-        # 첫 판정 뒤 새로 렌더된 저품질 자산이 최신으로 잡혀, 컨테이너를 남긴 채
-        # publication만 skipped로 뒤집혀 원장↔발행상태가 갈라진다.
+        # 게이트 배선(진입 시에만 — 이미 진행 중인 시도는 위 attempt_state로 통과):
+        # state_machine 불변식과 일치시켜 재검사 금지. 이 조건이 없으면 첫 판정 뒤
+        # 새로 렌더된 저품질 자산이 최신으로 잡혀, 컨테이너를 남긴 채 publication만
+        # 뒤집혀 원장↔발행상태가 갈라진다.
         if attempt_state is None and qstatus != "passed":
-            with conn.transaction():
-                conn.execute("UPDATE publication SET status = 'skipped' WHERE id = %s", (pub_id,))
+            # failed=자동 게이트 하드 실패(콘텐츠 거부)만 skipped로 종결한다.
+            # needs_review는 사람 승인 대기라 pending 유지 — skipped로 종결하면
+            # 나중에 승인돼도 재선택 안 돼 영영 발행되지 않는다(FR-Q3).
+            if qstatus == "failed":
+                with conn.transaction():
+                    conn.execute(
+                        "UPDATE publication SET status = 'skipped' WHERE id = %s", (pub_id,)
+                    )
+                    _log_event(
+                        conn,
+                        cycle_id,
+                        "notice",
+                        {"publication_id": publication_id, "reason": "quality_failed"},
+                    )
+                results.append(RunnerResult(publication_id, "skipped", None))
+            else:
                 _log_event(
                     conn,
                     cycle_id,
                     "notice",
                     {
                         "publication_id": publication_id,
-                        "reason": "quality_gate",
+                        "reason": "awaiting_review",
                         "quality_status": qstatus,
                     },
                 )
-            results.append(RunnerResult(publication_id, "skipped", None))
+                results.append(RunnerResult(publication_id, "awaiting_review", None))
             continue
 
         media = MediaAsset(kind=kind, storage_url=storage_url, checksum=checksum)

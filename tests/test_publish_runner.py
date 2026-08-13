@@ -37,8 +37,8 @@ def test_passed_publishes_and_records(db: psycopg.Connection, seed: SeedFn) -> N
     assert _event_kinds(db) == ["publish_attempted"]
 
 
-def test_quality_gate_skips_without_publishing(db: psycopg.Connection, seed: SeedFn) -> None:
-    # 게이트 배선: quality_status가 passed가 아니면 발행 툴 미호출 + publication skipped.
+def test_quality_failed_skips_without_publishing(db: psycopg.Connection, seed: SeedFn) -> None:
+    # 자동 게이트 하드 실패(failed)만 skipped로 종결 — 발행 툴 미호출.
     pub_id = seed(quality_status="failed")
     publish = FakePublish()
     results = run_pending_publications(db, publish)
@@ -51,13 +51,35 @@ def test_quality_gate_skips_without_publishing(db: psycopg.Connection, seed: See
     assert _event_kinds(db) == ["notice"]
 
 
-def test_needs_review_also_skipped(db: psycopg.Connection, seed: SeedFn) -> None:
-    # 자동 게이트는 passed만 통과 — needs_review(사람 관문)도 자동 발행 진입 불가.
+def test_needs_review_stays_pending_for_human_approval(
+    db: psycopg.Connection, seed: SeedFn
+) -> None:
+    # needs_review는 hybrid 사람 관문(FR-Q3) 대기 — 자동 발행 진입은 막되 skipped로
+    # 종결하지 않는다(그러면 승인돼도 재선택 안 돼 영영 발행 안 됨).
     pub_id = seed(quality_status="needs_review")
     publish = FakePublish()
     results = run_pending_publications(db, publish)
-    assert _only(results, pub_id).outcome == "skipped"
+
+    assert _only(results, pub_id).outcome == "awaiting_review"
     assert publish.calls == []
+    assert _status(db, pub_id) == "pending"  # skipped 아님 — 승인 대기
+
+
+def test_needs_review_then_approved_publishes(db: psycopg.Connection, seed: SeedFn) -> None:
+    # 사람이 승인해 quality_status가 passed로 바뀌면 다음 구동에서 실제 발행된다.
+    pub_id = seed(quality_status="needs_review")
+    publish = FakePublish()
+    run_pending_publications(db, publish)
+    assert _status(db, pub_id) == "pending"
+
+    db.execute(
+        "UPDATE media_asset SET quality_status = 'passed' WHERE quality_status = 'needs_review'"
+    )
+    results = run_pending_publications(db, publish)
+
+    assert _only(results, pub_id).outcome == "published"
+    assert publish.calls == [pub_id]
+    assert _status(db, pub_id) == "published"
 
 
 def test_no_matching_media_stays_pending(db: psycopg.Connection, seed: SeedFn) -> None:
