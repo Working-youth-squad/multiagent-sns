@@ -1102,6 +1102,7 @@ dependencies = [
     { name = "google-api-python-client" },
     { name = "google-auth-oauthlib" },
     { name = "google-cloud-texttospeech" },
+    { name = "langchain-google-genai" },
     { name = "pillow" },
     { name = "psycopg", extra = ["binary"] },
 ]
@@ -1120,6 +1121,7 @@ requires-dist = [
     { name = "google-api-python-client", specifier = ">=2.198.0" },
     { name = "google-auth-oauthlib", specifier = ">=1.4.0" },
     { name = "google-cloud-texttospeech", specifier = ">=2.37.0" },
+    { name = "langchain-google-genai", specifier = ">=4.3.3" },
     { name = "pillow", specifier = ">=12.3.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
 ]
