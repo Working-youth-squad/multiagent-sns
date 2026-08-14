@@ -5,7 +5,7 @@ import urllib.request
 
 import pytest
 
-from sns.notify.alerts import publish_failure, publish_success, quota_exceeded
+from sns.notify.alerts import publish_failure, publish_success, quality_blocked, quota_exceeded
 from sns.notify.discord import (
     DiscordError,
     discord_payload,
@@ -34,6 +34,28 @@ def test_payload_includes_cause_line_when_present() -> None:
     alert = replace(base, cause_line="일일 API 쿼터를 소진한 것으로 보인다.")
     desc = discord_payload(alert)["embeds"][0]["description"]  # type: ignore[index]
     assert "원인: 일일 API 쿼터를 소진한 것으로 보인다." in desc
+
+
+def test_payload_bounds_description_and_context_length() -> None:
+    # 긴 context 값이 Discord 임베드 한도(4096)를 넘겨 통지가 유실되지 않게 상한.
+    # 우선순위 줄(분류·원문)은 살아남고, description 전체는 상한 이하.
+    from dataclasses import replace
+
+    alert = replace(
+        publish_failure("instagram", ToolError("quota", "boom"), publication_id="p"),
+        context={"reason": "Z" * 10_000},
+    )
+    desc = discord_payload(alert)["embeds"][0]["description"]  # type: ignore[index]
+    assert len(desc) <= 4000
+    assert "분류: quota" in desc  # 앞선 우선순위 줄 보존
+    assert "원문: boom" in desc
+
+
+def test_payload_truncates_long_quality_reason() -> None:
+    alert = quality_blocked(publication_id="p", reason="사유 " * 500)
+    desc = discord_payload(alert)["embeds"][0]["description"]  # type: ignore[index]
+    assert len(desc) <= 4000
+    assert desc.endswith("…")  # context 값 절단 표식
 
 
 def test_payload_success_has_no_error_lines() -> None:

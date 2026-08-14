@@ -24,8 +24,12 @@ ENV_DISCORD_WEBHOOK_URL = "DISCORD_WEBHOOK_URL"
 _COLOR_ERROR = 0xD83C3C
 _COLOR_INFO = 0x36A64F
 
-# error_raw가 길면 Discord 임베드 한도를 넘고 소음이 된다 — 원문은 상한 절단.
+# Discord 임베드 description 하드 한도는 4096자 — 넘기면 400을 받아 통지가 조용히
+# 유실된다(delivered=False로 삼킴). error_raw뿐 아니라 임의 길이인 context 값,
+# 그리고 최종 description 전체에 상한을 걸어 전송 실패를 원천 차단한다.
 _RAW_MAX_CHARS = 600
+_VALUE_MAX_CHARS = 600  # context 값 1개당 상한(한 필드가 나머지를 밀어내지 않게)
+_DESC_MAX_CHARS = 4000  # description 전체 상한(Discord 4096 한도에 여유)
 
 
 class DiscordError(RuntimeError):
@@ -63,14 +67,15 @@ def discord_payload(alert: Alert) -> dict[str, object]:
     if alert.error_raw:
         lines.append(f"원문: {_truncate(alert.error_raw, _RAW_MAX_CHARS)}")
     for key, value in sorted(alert.context.items()):
-        lines.append(f"{key}: {value}")
+        lines.append(f"{key}: {_truncate(value, _VALUE_MAX_CHARS)}")
 
     embed: dict[str, object] = {
         "title": alert.title,
         "color": _COLOR_ERROR if alert.severity == "error" else _COLOR_INFO,
     }
     if lines:
-        embed["description"] = "\n".join(lines)
+        # 우선순위 높은 줄(분류·원인·원문)이 앞이라 초과 시 뒤(context)부터 잘린다.
+        embed["description"] = _truncate("\n".join(lines), _DESC_MAX_CHARS)
     return {"embeds": [embed]}
 
 
