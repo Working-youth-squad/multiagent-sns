@@ -26,8 +26,7 @@ def parse_llm_grounding(data: bytes) -> tuple[str, ...]:
     if not candidates:
         return ()
     text = "".join(
-        part.get("text", "")
-        for part in candidates[0].get("content", {}).get("parts", [])
+        part.get("text", "") for part in candidates[0].get("content", {}).get("parts", [])
     )
     lines = (line.strip().lstrip("-*").strip() for line in text.splitlines())
     return tuple(line for line in lines if line)

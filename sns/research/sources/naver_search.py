@@ -37,9 +37,7 @@ def fetch_naver_search(
     timeout_s: float = 10.0,
     opener: Opener = DEFAULT_OPENER,
 ) -> tuple[str, ...]:
-    q = urllib.parse.urlencode(
-        {"query": query, "display": min(max(limit, 1), 100), "sort": "date"}
-    )
+    q = urllib.parse.urlencode({"query": query, "display": min(max(limit, 1), 100), "sort": "date"})
     request = urllib.request.Request(
         f"{url}?{q}",
         headers={"X-Naver-Client-Id": client_id, "X-Naver-Client-Secret": client_secret},

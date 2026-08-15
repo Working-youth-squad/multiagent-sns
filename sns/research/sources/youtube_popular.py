@@ -17,8 +17,7 @@ def parse_youtube_popular(data: bytes) -> tuple[str, ...]:
     """videos.list 응답에서 snippet.title을 순서대로 뽑는다. 빈 제목 제외."""
     payload = json.loads(data)
     titles = (
-        (item.get("snippet", {}).get("title") or "").strip()
-        for item in payload.get("items", [])
+        (item.get("snippet", {}).get("title") or "").strip() for item in payload.get("items", [])
     )
     return tuple(t for t in titles if t)
 
