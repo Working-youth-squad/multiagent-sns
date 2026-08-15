@@ -34,9 +34,13 @@ FPS = 30
 _ZOOM_MAX = 1.12
 _OVERSCAN = 1.3
 # (Pillow용 폰트 파일, ASS/fontconfig용 패밀리 이름) — 앞에서부터 존재하는 것 사용.
+# 배포 타깃은 Linux/Docker이므로 Noto CJK를 우선한다(Dockerfile이 fonts-noto-cjk 설치).
+# Windows 경로는 로컬 개발 편의용 폴백 — 프로덕션 렌더는 여기에 의존하지 않는다.
 _FONT_CANDIDATES = (
-    (r"C:\Windows\Fonts\malgunbd.ttf", "Malgun Gothic"),
     ("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", "Noto Sans CJK KR"),
+    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK KR"),
+    ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK KR"),
+    (r"C:\Windows\Fonts\malgunbd.ttf", "Malgun Gothic"),
 )
 # 타이포 계층: 제목 = 가로 ÷ 10, 본문 = 가로 ÷ 22. 안전영역 = 가로의 8.3% 여백.
 _TITLE_DIV = 10
@@ -58,24 +62,33 @@ class VideoRenderError(RuntimeError):
     """ffmpeg 합성 실패."""
 
 
-def _pick_font(font_path: str | None) -> tuple[str | None, str]:
-    """(Pillow 폰트 경로, ASS 패밀리 이름). 명시 경로가 오면 이름은 파일 stem."""
+class FontNotFoundError(VideoRenderError):
+    """한글 렌더 가능한 폰트를 못 찾음 — 두부(□) 렌더로 이어지지 않도록 명시적 실패."""
+
+
+def _pick_font(font_path: str | None) -> tuple[str, str]:
+    """(Pillow 폰트 경로, ASS 패밀리 이름). 명시 경로가 오면 이름은 파일 stem.
+
+    CJK 폰트가 하나도 없으면 조용히 내장 폰트로 폴백(=한글 두부)하지 않고 raise한다 —
+    깨진 자막이 발행 파이프라인을 통과하는 것을 원천 차단(FR-Q1).
+    """
     if font_path is not None:
         return font_path, Path(font_path).stem
     for path, family in _FONT_CANDIDATES:
         if Path(path).exists():
             return path, family
-    return None, "sans-serif"  # Pillow 내장 폰트 + 시스템 기본 — 한글 폰트 없는 환경 폴백
+    raise FontNotFoundError(
+        "한글(CJK) 폰트를 찾을 수 없습니다 — 컨테이너에 fonts-noto-cjk를 설치하거나 "
+        "font_path를 명시하세요. 탐색 경로: " + ", ".join(p for p, _ in _FONT_CANDIDATES)
+    )
 
 
-_Font = ImageFont.FreeTypeFont | ImageFont.ImageFont
+_Font = ImageFont.FreeTypeFont
 
 
 @lru_cache(maxsize=16)
-def _font(size: int, font_path: str | None) -> _Font:
-    if font_path is not None:
-        return ImageFont.truetype(font_path, size)
-    return ImageFont.load_default(size=size)
+def _font(size: int, font_path: str) -> _Font:
+    return ImageFont.truetype(font_path, size)
 
 
 def _hex_to_rgb(color: str) -> tuple[int, int, int]:
@@ -130,7 +143,7 @@ def _gradient(width: int, height: int, top: str, bottom: str) -> Image.Image:
     return column.resize((width, height))
 
 
-def _slide_png(slide: Slide, spec: VideoSpec, font_path: str | None) -> bytes:
+def _slide_png(slide: Slide, spec: VideoSpec, font_path: str) -> bytes:
     """슬라이드 1장 — 그라데이션 배경 + 액센트 바 + 제목(대)/본문(소) 계층.
 
     Ken Burns 줌을 위해 목표 해상도의 _OVERSCAN 배로 렌더한다(줌인해도 선명).
