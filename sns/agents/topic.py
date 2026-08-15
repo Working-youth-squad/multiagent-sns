@@ -12,6 +12,7 @@
 """
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, get_args
 
@@ -20,7 +21,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
-from sns.tools.contracts import Platform, ReadStats, ResearchTrends
+from sns.tools.contracts import Platform, ReadStats, ResearchTrends, SourceResult
 
 # 주제 카테고리 5종 (04 §4 · 11-데이터모델 content_item.topic_category).
 TopicCategory = Literal["신기술", "기초지식", "꿀팁", "현직자일상", "개발자유머"]
@@ -62,11 +63,11 @@ class TopicSelectionError(RuntimeError):
     """에이전트가 유효한 주제를 확정하지 못함 — 재시도 없이 즉시 실패."""
 
 
-def _candidates(digest_sources: object) -> tuple[TopicCandidate, ...]:
+def _candidates(digest_sources: Sequence[SourceResult]) -> tuple[TopicCandidate, ...]:
     """트렌드 다이제스트의 성공 소스 아이템을 중복 제거해 인덱스 부여."""
     seen: set[str] = set()
     out: list[TopicCandidate] = []
-    for sr in digest_sources:  # type: ignore[attr-defined]
+    for sr in digest_sources:
         if not sr.ok:
             continue
         for item in sr.items:

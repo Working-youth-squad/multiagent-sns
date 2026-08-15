@@ -84,8 +84,10 @@ def _validate_spec(spec: object, fmt: ContentFormat) -> dict[str, object]:
         raise ValueError("media_spec은 객체여야 함")
     if fmt == "feed_image":
         parse_card_spec(spec)  # 던지면 CardSpecError
-    else:  # reels · shorts
+    elif fmt in ("reels", "shorts"):
         parse_video_spec(spec)  # 던지면 VideoSpecError
+    else:
+        raise ValueError(f"미지원 포맷: {fmt}")
     return spec
 
 
