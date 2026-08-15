@@ -26,6 +26,8 @@ from langchain_core.language_models import BaseChatModel
 from sns.agents.content import ContentRejected, run_content
 from sns.agents.topic import TopicResult, TopicSelectionError, run_topic
 from sns.quality.gate import QualityReport
+from sns.render.card.spec import CardSpecError
+from sns.render.video.spec import VideoSpecError
 from sns.runner.store import CycleStore
 from sns.tools.contracts import (
     ContentFormat,
@@ -98,7 +100,17 @@ def run_cycle(
     assess_quality: AssessQuality | None = None,
     playbook_guidance: str | None = None,
 ) -> CycleResult:
-    """한 사이클 구동. 주제 확정 실패면 status=failed로 종결, 대상 실패는 격리."""
+    """한 사이클 구동.
+
+    실패 격리 정책(비대칭 — 의도적):
+    - **도메인 오류**(콘텐츠 생성 ContentRejected · 렌더 스펙 CardSpecError/VideoSpecError)는
+      **대상별로 격리** — 해당 대상만 failed, 나머지 대상은 계속.
+    - **주제 확정 실패**(TopicSelectionError)는 콘텐츠 경로가 아예 없으므로 사이클 failed 종결.
+    - **인프라/영속화 오류**(CycleStore save 실패 등 예상 밖 예외)는 격리하지 않는다 — 사이클을
+      `running`으로 방치하지 않게 failed로 표기(best-effort)한 뒤 **호출자에게 전파**한다
+      (무인 운영의 사이클 최상위 catch가 알림/재시도를 결정, FR-W4).
+    - 전 대상이 실패(prepared=0)하면 사이클 status=failed(무인 운영에서 completed 오독 방지).
+    """
     if not targets:
         raise ValueError("targets가 비어 있음 — 발행 대상 채널이 필요")
 
@@ -109,64 +121,85 @@ def run_cycle(
         payload={"goal_ref": goal_ref, "target_count": len(targets)},
     )
 
-    # ── 주제(사이클당 1건, 통제변수: 동일 주제 도메인) ──────────────────
     try:
-        topic = run_topic(
-            model,
-            platform=targets[0].platform,
-            research_trends=research_trends,
-            read_stats=read_stats,
-        )
-    except TopicSelectionError as exc:
-        store.log_event(
-            cycle_id=cycle_id, kind="error", payload={"stage": "topic", "reason": str(exc)}
-        )
-        store.complete_cycle(cycle_id, status="failed")
-        return CycleResult(cycle_id=cycle_id, status="failed", topic_id=None, targets=())
-
-    topic_id = store.save_topic(title=topic.title, summary=topic.summary, source=topic.source)
-    store.log_event(
-        cycle_id=cycle_id,
-        kind="agent_called",
-        payload={"agent": "topic", "topic_id": topic_id, "category": topic.category},
-    )
-
-    # ── 대상별 콘텐츠 제작·적재(격리) ─────────────────────────────────
-    results: list[TargetResult] = []
-    for target in targets:
+        # ── 주제(사이클당 1건, 통제변수: 동일 주제 도메인) ──────────────
         try:
-            results.append(
-                _prepare_target(
-                    store,
-                    cycle_id=cycle_id,
-                    topic_id=topic_id,
-                    topic=topic,
-                    target=target,
-                    model=model,
-                    render_media=render_media,
-                    assess_quality=assess_quality,
-                    playbook_guidance=playbook_guidance,
-                )
+            topic = run_topic(
+                model,
+                platform=targets[0].platform,
+                research_trends=research_trends,
+                read_stats=read_stats,
             )
-        except (ContentRejected, ValueError, RuntimeError) as exc:
+        except TopicSelectionError as exc:
             store.log_event(
-                cycle_id=cycle_id,
-                kind="error",
-                payload={"stage": "content", "channel_id": target.channel_id, "reason": str(exc)},
+                cycle_id=cycle_id, kind="error", payload={"stage": "topic", "reason": str(exc)}
             )
-            results.append(
-                TargetResult(channel_id=target.channel_id, outcome="failed", error=str(exc))
-            )
+            store.complete_cycle(cycle_id, status="failed")
+            return CycleResult(cycle_id=cycle_id, status="failed", topic_id=None, targets=())
 
-    store.complete_cycle(cycle_id, status="completed")
-    store.log_event(
-        cycle_id=cycle_id,
-        kind="cycle_completed",
-        payload={"prepared": sum(t.outcome == "prepared" for t in results), "total": len(results)},
-    )
-    return CycleResult(
-        cycle_id=cycle_id, status="completed", topic_id=topic_id, targets=tuple(results)
-    )
+        topic_id = store.save_topic(title=topic.title, summary=topic.summary, source=topic.source)
+        store.log_event(
+            cycle_id=cycle_id,
+            kind="agent_called",
+            payload={"agent": "topic", "topic_id": topic_id, "category": topic.category},
+        )
+
+        # ── 대상별 콘텐츠 제작·적재(도메인 오류만 격리) ─────────────────
+        results: list[TargetResult] = []
+        for target in targets:
+            try:
+                results.append(
+                    _prepare_target(
+                        store,
+                        cycle_id=cycle_id,
+                        topic_id=topic_id,
+                        topic=topic,
+                        target=target,
+                        model=model,
+                        render_media=render_media,
+                        assess_quality=assess_quality,
+                        playbook_guidance=playbook_guidance,
+                    )
+                )
+            except (ContentRejected, CardSpecError, VideoSpecError) as exc:
+                store.log_event(
+                    cycle_id=cycle_id,
+                    kind="error",
+                    payload={
+                        "stage": "content",
+                        "channel_id": target.channel_id,
+                        "reason": str(exc),
+                    },
+                )
+                results.append(
+                    TargetResult(channel_id=target.channel_id, outcome="failed", error=str(exc))
+                )
+
+        # 전 대상 실패면 failed(무인 운영에서 completed 오독 방지).
+        prepared = sum(t.outcome == "prepared" for t in results)
+        status: Literal["completed", "failed"] = "completed" if prepared else "failed"
+        store.complete_cycle(cycle_id, status=status)
+        store.log_event(
+            cycle_id=cycle_id,
+            kind="cycle_completed",
+            payload={"prepared": prepared, "total": len(results), "status": status},
+        )
+        return CycleResult(
+            cycle_id=cycle_id, status=status, topic_id=topic_id, targets=tuple(results)
+        )
+    except Exception:
+        # 인프라/영속화 등 예상 밖 실패 — running으로 방치하지 않고 failed 표기 후 전파.
+        _mark_failed_best_effort(store, cycle_id)
+        raise
+
+
+def _mark_failed_best_effort(store: CycleStore, cycle_id: str) -> None:
+    """원 예외를 삼키지 않도록, 종결 표기 중 2차 실패는 무시한다."""
+    try:
+        store.complete_cycle(cycle_id, status="failed")
+        store.log_event(cycle_id=cycle_id, kind="error", payload={"stage": "cycle_infra"})
+    except Exception:
+        pass
 
 
 def _prepare_target(

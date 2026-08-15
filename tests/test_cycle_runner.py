@@ -175,6 +175,49 @@ def test_target_failure_isolated() -> None:
     assert any(e["kind"] == "error" for e in store.events)
 
 
+def test_all_targets_failed_marks_cycle_failed() -> None:
+    # 전 대상 콘텐츠 실패(훅 미설정) → prepared=0 → 사이클 자체가 failed(오독 방지).
+    bad = [
+        _tool("set_media_spec", {"spec_json": json.dumps(_CARD_SPEC, ensure_ascii=False)}),
+        AIMessage(content="본문"),
+    ]
+    script = _topic_script() + bad + bad
+    store, result = _run(script, [_target(ch="ch-1"), _target(ch="ch-2")])
+    assert result.status == "failed"
+    assert result.prepared == ()
+    (cycle,) = store.cycles.values()
+    assert cycle["status"] == "failed"
+
+
+class _BoomError(Exception):
+    """인프라/영속화 실패 모사."""
+
+
+class _FailingStore(InMemoryCycleStore):
+    def save_media_asset(self, **kwargs: Any) -> str:
+        raise _BoomError("DB 저장 실패")
+
+
+def test_infra_failure_marks_failed_and_propagates() -> None:
+    # 도메인 아닌 예외(영속화 실패)는 격리하지 않는다 — 사이클을 failed로 표기 후 전파.
+    store = _FailingStore()
+    with pytest.raises(_BoomError):
+        run_cycle(
+            store,
+            goal_ref="engagement_depth",
+            targets=[_target()],
+            model=ScriptedChatModel(messages=iter(_topic_script() + _content_script())),
+            research_trends=FakeResearchTrends(),
+            read_stats=FakeReadStats(),
+            render_media=FakeRenderMedia(),
+            assess_quality=_passing_quality,
+        )
+    # running으로 방치되지 않고 failed로 종결됐는가.
+    (cycle,) = store.cycles.values()
+    assert cycle["status"] == "failed"
+    assert any(e["kind"] == "error" for e in store.events)
+
+
 def test_empty_targets_raises() -> None:
     with pytest.raises(ValueError):
         _run(_topic_script(), [])
