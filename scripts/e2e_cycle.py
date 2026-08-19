@@ -14,7 +14,7 @@
 
 전제:
   1. docker compose up -d postgres
-  2. env GOOGLE_API_KEY        — aistudio.google.com/apikey (무료 티어)
+  2. env GEMINI_API_KEY        — aistudio.google.com/apikey (무료 티어)
   3. env DISCORD_WEBHOOK_URL   — (선택) 채널 설정 → 연동 → 웹훅
   4. env DATABASE_URL          — (선택) 기본 postgresql://sns:sns@localhost:5432/sns
   5. env CARD_FONT             — (선택) 한글 TTF 경로. 미지정 시 자동 탐색
@@ -115,8 +115,8 @@ def main() -> int:
     loaded = load_dotenv(ENV_FILE, override=False)
     print(f".env : {'로드됨' if loaded else '없음 — cp .env.example .env'}")
 
-    if not os.environ.get("GOOGLE_API_KEY"):
-        print("중단: env GOOGLE_API_KEY 없음 — C2 에이전트는 실 LLM이 필요합니다.")
+    if not os.environ.get("GEMINI_API_KEY"):
+        print("중단: env GEMINI_API_KEY 없음 — C2 에이전트는 실 LLM이 필요합니다.")
         print("      무료 키 발급: https://aistudio.google.com/apikey")
         return 1
 

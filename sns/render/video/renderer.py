@@ -1,14 +1,18 @@
 """영상 템플릿 합성 (FR-M2): `VideoSpec` → 쇼츠/릴스 mp4 바이트.
 
-2-패스 구성 (품질 개선판):
-1. 장당 세그먼트 — 그라데이션+타이포 계층 슬라이드 PNG(1.3배 오버스캔)를
-   Ken Burns 줌(짝수 장 줌인/홀수 장 줌아웃 — 2~4s 화면 변화, FR-A2)으로 영상화.
-2. 최종 합성 — 세그먼트 concat + ASS 자막(나레이션) + 하단 진행바 + 오디오
+단위가 셋이다: **슬라이드**(화면 요소) → **컷**(나레이션 문장 1개 = TTS·자막 단위)
+→ **세그먼트**(컷을 MAX_SEGMENT_S 이하로 등분한 화면 전환 단위). 슬라이드 하나가 여러
+컷을, 컷 하나가 여러 세그먼트를 낳을 수 있다.
+
+2-패스 구성:
+1. 세그먼트당 Ken Burns 줌(짝수/홀수 교차) 영상화 — 그라데이션+타이포 슬라이드
+   PNG(1.3배 오버스캔)를 입력으로. 나레이션이 길어도 화면은 4초마다 바뀐다(FR-A2).
+2. 최종 합성 — 세그먼트 concat + ASS 자막(컷 단위) + 액센트 바 + 하단 진행바 + 오디오
    (나레이션 WAV, 선택적 BGM 저음량 루프 믹스).
 
-각 슬라이드의 표시 시간 = 그 슬라이드 나레이션 WAV 길이 — 오디오와 화면 전환이
-구조적으로 동기화된다. 모든 ffmpeg 호출은 `-bitexact`·단일 스레드 — 같은 입력
-(같은 TTS 바이트) → 같은 mp4 바이트 (c4-renderer 스파이크에서 검증한 조건).
+컷의 표시 시간 = 그 문장의 나레이션 WAV 길이 — 오디오와 자막이 구조적으로 동기화된다.
+모든 ffmpeg 호출은 `-bitexact`·단일 스레드 — 같은 입력(같은 TTS 바이트) → 같은 mp4
+바이트 (c4-renderer 스파이크에서 검증한 조건).
 
 렌더러 결정 근거: docs/spikes/c4-renderer-spike.md (ffmpeg+ASS 채택).
 """
@@ -24,6 +28,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from sns.render.fonts import FONT_CANDIDATES, pick_font
 from sns.render.text import wrap_balanced
 from sns.render.video.spec import Cut, Slide, VideoSpec, VideoSpecError
 from sns.render.video.subtitles import build_ass
@@ -40,15 +45,8 @@ FPS = 30
 # Ken Burns 최대 줌 배율과 오버스캔(줌해도 선명하도록 원본을 크게 렌더).
 _ZOOM_MAX = 1.12
 _OVERSCAN = 1.3
-# (Pillow용 폰트 파일, ASS/fontconfig용 패밀리 이름) — 앞에서부터 존재하는 것 사용.
-# 배포 타깃은 Linux/Docker이므로 Noto CJK를 우선한다(Dockerfile이 fonts-noto-cjk 설치).
-# Windows 경로는 로컬 개발 편의용 폴백 — 프로덕션 렌더는 여기에 의존하지 않는다.
-_FONT_CANDIDATES = (
-    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc", "Noto Sans CJK KR"),
-    ("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK KR"),
-    ("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc", "Noto Sans CJK KR"),
-    (r"C:\Windows\Fonts\malgunbd.ttf", "Malgun Gothic"),
-)
+# 폰트 후보는 카드와 공유한다([sns.render.fonts]) — 테스트가 monkeypatch로 비우는 지점.
+_FONT_CANDIDATES = FONT_CANDIDATES
 # 타이포 계층: 제목 = 가로 ÷ 10, 본문 = 가로 ÷ 22. 안전영역 = 가로의 8.3% 여백.
 _TITLE_DIV = 10
 _BODY_DIV = 22
@@ -79,25 +77,9 @@ class VideoRenderError(RuntimeError):
     """ffmpeg 합성 실패."""
 
 
-class FontNotFoundError(VideoRenderError):
-    """한글 렌더 가능한 폰트를 못 찾음 — 두부(□) 렌더로 이어지지 않도록 명시적 실패."""
-
-
 def _pick_font(font_path: str | None) -> tuple[str, str]:
-    """(Pillow 폰트 경로, ASS 패밀리 이름). 명시 경로가 오면 이름은 파일 stem.
-
-    CJK 폰트가 하나도 없으면 조용히 내장 폰트로 폴백(=한글 두부)하지 않고 raise한다 —
-    깨진 자막이 발행 파이프라인을 통과하는 것을 원천 차단(FR-Q1).
-    """
-    if font_path is not None:
-        return font_path, Path(font_path).stem
-    for path, family in _FONT_CANDIDATES:
-        if Path(path).exists():
-            return path, family
-    raise FontNotFoundError(
-        "한글(CJK) 폰트를 찾을 수 없습니다 — 컨테이너에 fonts-noto-cjk를 설치하거나 "
-        "font_path를 명시하세요. 탐색 경로: " + ", ".join(p for p, _ in _FONT_CANDIDATES)
-    )
+    """공용 폰트 해석에 위임 — 카드와 같은 규칙·같은 예외([sns.render.fonts])."""
+    return pick_font(font_path, _FONT_CANDIDATES)
 
 
 _Font = ImageFont.FreeTypeFont

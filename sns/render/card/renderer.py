@@ -4,8 +4,8 @@
 결정론적으로 계산하고, PNG는 메타데이터(타임스탬프 등) 없이 저장한다. 텍스트가
 안전영역을 넘치면 `overflow=True`로 표시해 품질 게이트(FR-Q1)가 발행을 막게 한다.
 
-폰트: Pillow 내장 기본 폰트(버전에 동봉되어 결정론적)를 기본 사용. 한글 전용 폰트
-경로 주입은 후속(config) — 계약은 `font_path`로 열어 둔다.
+폰트: 시스템 CJK 폰트를 찾아 쓴다([sns.render.fonts]). 못 찾으면 내장 폰트로 조용히
+폴백하지 않고 실패한다 — 한글이 두부(□)로 박힌 카드가 발행되는 것을 막는다.
 """
 
 import io
@@ -15,6 +15,7 @@ from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont
 
 from sns.render.card.spec import CardSpec
+from sns.render.fonts import FONT_CANDIDATES, pick_font
 from sns.render.text import wrap_balanced
 
 # 안전영역 여백 = 가로의 8.3% (1080 → 90px). 규격은 상수로 외부화(FR-Q4 정합).
@@ -41,15 +42,15 @@ class CardRender:
     safe_area: tuple[int, int, int, int]
 
 
-# truetype는 FreeTypeFont, load_default(size=)는 둘 중 하나를 낸다 — 둘 다 그리기·측정 가능.
-_Font = ImageFont.FreeTypeFont | ImageFont.ImageFont
+_Font = ImageFont.FreeTypeFont
+
+# 테스트가 monkeypatch로 비우는 지점 — 폰트 부재 경로를 검증한다.
+_FONT_CANDIDATES = FONT_CANDIDATES
 
 
 @lru_cache(maxsize=64)
-def _font(size: int, font_path: str | None) -> _Font:
-    if font_path is not None:
-        return ImageFont.truetype(font_path, size)
-    return ImageFont.load_default(size=size)
+def _font(size: int, font_path: str) -> _Font:
+    return ImageFont.truetype(font_path, size)
 
 
 def _hex_to_rgb(color: str) -> tuple[int, int, int]:
@@ -70,7 +71,13 @@ def _wrap(draw: ImageDraw.ImageDraw, text: str, font: _Font, max_width: int) -> 
 
 
 def render_card(spec: CardSpec, *, font_path: str | None = None) -> CardRender:
-    """`CardSpec`을 결정론 PNG로 렌더. 같은 입력 → 같은 바이트."""
+    """`CardSpec`을 결정론 PNG로 렌더. 같은 입력 → 같은 바이트.
+
+    `font_path` 미지정 시 시스템의 CJK 폰트를 찾는다 — 없으면 내장 폰트로 조용히
+    폴백하지 않고 `FontNotFoundError`([sns.render.fonts]). 한글이 두부(□)로 렌더된
+    카드가 품질 게이트를 통과해 발행되는 경로를 막는다(FR-Q1).
+    """
+    font_path, _ = pick_font(font_path, _FONT_CANDIDATES)
     bg = _hex_to_rgb(spec.palette.background)
     fg = _hex_to_rgb(spec.palette.foreground)
     accent = _hex_to_rgb(spec.palette.accent)

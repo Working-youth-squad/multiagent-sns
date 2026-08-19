@@ -11,6 +11,7 @@ from sns.render.card import (
     parse_card_spec,
     render_card,
 )
+from sns.render.card import renderer as card_renderer
 from sns.render.card.spec import (
     MAX_BODY_PARAGRAPHS,
     MAX_BODY_WIDTH,
@@ -19,6 +20,7 @@ from sns.render.card.spec import (
     MAX_HOOK_WIDTH,
     MAX_TITLE_WIDTH,
 )
+from sns.render.fonts import FontNotFoundError
 from sns.render.storage import InMemoryMediaStore
 from sns.render.text import display_width
 
@@ -168,3 +170,14 @@ def test_capacity_limits_prevent_render_overflow() -> None:
         }
     )
     assert not render_card(spec).overflow
+
+
+def test_missing_cjk_font_raises_instead_of_tofu(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CJK 폰트가 없으면 내장 폰트로 조용히 폴백(=한글 두부)하지 않고 실패한다.
+
+    영상 렌더러가 먼저 세운 규칙(FontNotFoundError)을 카드도 따른다 — 깨진 자산이
+    품질 게이트를 통과해 발행되는 경로를 카드 쪽에도 막는다(FR-Q1).
+    """
+    monkeypatch.setattr(card_renderer, "_FONT_CANDIDATES", ())
+    with pytest.raises(FontNotFoundError):
+        render_card(parse_card_spec(VALID_SPEC))

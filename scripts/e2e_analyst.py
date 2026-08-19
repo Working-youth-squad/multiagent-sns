@@ -2,7 +2,7 @@
 
 전제:
   1. .secrets/client_secret.json (기존)
-  2. env GOOGLE_API_KEY — Gemini (aistudio.google.com/apikey)
+  2. env GEMINI_API_KEY — Gemini (aistudio.google.com/apikey)
   3. **기존 .secrets/token.json 삭제 필요** — analytics scope가 추가되어 재동의해야 함.
      (기존 토큰은 새 scope 없이도 valid로 로드되므로 자동 감지 불가)
 

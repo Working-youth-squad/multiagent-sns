@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from sns.render.fonts import FontNotFoundError
 from sns.render.storage import InMemoryMediaStore
 from sns.render.video import renderer as renderer_mod
 from sns.render.video.media import VideoRenderMedia
@@ -23,7 +24,6 @@ from sns.render.video.renderer import (
     _ACCENT_Y_RATIO,
     _BAR_RATIO,
     MAX_SEGMENT_S,
-    FontNotFoundError,
     render_video,
 )
 from sns.render.video.spec import (
