@@ -24,7 +24,7 @@ def build_ass(
     *,
     width: int,
     height: int,
-    font: str = "Malgun Gothic",
+    font: str = "Noto Sans CJK KR",
 ) -> str:
     """텍스트·길이 쌍 → ASS 문서. 타임코드는 길이의 누적합."""
     if len(texts) != len(durations_s):

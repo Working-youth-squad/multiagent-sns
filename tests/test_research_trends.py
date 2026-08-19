@@ -2,7 +2,14 @@
 
 import time
 
-from sns.research.trends import ResearchTrendsService, default_service
+from sns.research.trends import (
+    ENV_GEMINI_API_KEY,
+    ENV_NAVER_CLIENT_ID,
+    ENV_NAVER_CLIENT_SECRET,
+    ENV_YOUTUBE_API_KEY,
+    ResearchTrendsService,
+    default_service,
+)
 from sns.tools.contracts import TrendDigest
 
 
@@ -79,7 +86,30 @@ def test_digest_sections_follow_selected_order() -> None:
 
 
 def test_default_service_isolates_unimplemented_sources() -> None:
-    # 네이버 등 미배선 소스는 네트워크 접촉 없이 ok=False로 격리된다.
-    digest = default_service()(sources=("naver_search",))
+    # 키 없는 env에선 인증 소스가 미배선 → 네트워크 접촉 없이 ok=False로 격리된다.
+    digest = default_service(env={})(sources=("naver_search",))
     assert digest.source_results[0].source == "naver_search"
     assert not digest.source_results[0].ok
+
+
+def test_default_service_only_unauthed_without_keys() -> None:
+    svc = default_service(env={})
+    assert set(svc._fetchers) == {"google_trends", "github_trending"}
+
+
+def test_default_service_registers_naver_pair_with_both_creds() -> None:
+    svc = default_service(env={ENV_NAVER_CLIENT_ID: "i", ENV_NAVER_CLIENT_SECRET: "s"})
+    assert {"naver_search", "naver_datalab"} <= set(svc._fetchers)
+
+
+def test_default_service_naver_needs_both_halves() -> None:
+    # id만 있고 secret이 없으면 등록하지 않는다(반쪽 자격증명 방어).
+    svc = default_service(env={ENV_NAVER_CLIENT_ID: "i"})
+    assert "naver_search" not in svc._fetchers
+    assert "naver_datalab" not in svc._fetchers
+
+
+def test_default_service_registers_youtube_and_llm_with_keys() -> None:
+    svc = default_service(env={ENV_YOUTUBE_API_KEY: "y", ENV_GEMINI_API_KEY: "g"})
+    assert "youtube_popular" in svc._fetchers
+    assert "llm_grounding" in svc._fetchers

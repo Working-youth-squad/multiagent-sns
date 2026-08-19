@@ -16,12 +16,14 @@ import pytest
 from PIL import Image
 
 from sns.render.storage import InMemoryMediaStore
+from sns.render.video import renderer as renderer_mod
 from sns.render.video.media import VideoRenderMedia
 from sns.render.video.quality import check_video
 from sns.render.video.renderer import (
     _ACCENT_Y_RATIO,
     _BAR_RATIO,
     MAX_SEGMENT_S,
+    FontNotFoundError,
     render_video,
 )
 from sns.render.video.spec import (
@@ -266,3 +268,13 @@ def test_accent_bar_position_is_stable_across_title_lengths() -> None:
     wa = _accent_bar_width(a.mp4, a.duration_s * 0.6, row_ratio=_ACCENT_Y_RATIO)
     wb = _accent_bar_width(b.mp4, b.duration_s * 0.6, row_ratio=_ACCENT_Y_RATIO)
     assert wa > 0 and wb > 0, f"바가 그 높이에 없음: {wa}px / {wb}px"
+
+
+def test_missing_cjk_font_raises_instead_of_tofu(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CJK 폰트가 하나도 없으면 내장 폰트로 조용히 폴백(=한글 두부)하지 않고 실패한다.
+
+    fonts-noto-cjk 미설치 컨테이너에서 깨진 자막 영상이 발행 파이프라인을 통과하던 회귀 방지.
+    """
+    monkeypatch.setattr(renderer_mod, "_FONT_CANDIDATES", ())
+    with pytest.raises(FontNotFoundError):
+        render_video(SPEC, synthesize=tone_wav)

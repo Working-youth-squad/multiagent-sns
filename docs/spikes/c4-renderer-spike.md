@@ -1,7 +1,7 @@
 # C4 스파이크 리포트 — 영상 렌더러 결정 (ffmpeg+ASS vs Remotion)
 
 > 상위: [14-태스크분할](../plan/14-태스크분할.md) §YT C4 · [06-미디어렌더](../plan/06-미디어렌더.md) §2 렌더러 미결정
-> 스파이크 코드: [`spikes/c4-renderer/`](../../spikes/c4-renderer/) (ffmpeg_sample.py · remotion/)
+> 스파이크 코드: [`spikes/c4-renderer/ffmpeg_sample.py`](../../spikes/c4-renderer/ffmpeg_sample.py) (채택안 재현). 기각된 Remotion 스파이크 코드는 결정 확정 후 삭제 — 비교 결과는 아래 표에 보존.
 > 대상 버전: **ffmpeg 9.0** (winget Gyan.FFmpeg) · **Remotion 4.x** (Node 24), 2026-08-13
 
 ## 1. 결론 요약
