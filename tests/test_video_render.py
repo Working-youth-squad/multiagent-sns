@@ -234,10 +234,11 @@ def _accent_bar_width(mp4: bytes, at_s: float, *, row_ratio: float) -> int:
         )
 
 
-def test_accent_bar_pulses_on_cut_change() -> None:
-    """컷이 바뀔 때 액센트 바가 짧아졌다 늘어나며 전환을 알린다.
+def test_accent_bar_width_is_constant() -> None:
+    """액센트 바는 크기가 변하지 않는다.
 
-    PNG에 그려 넣으면 시간에 따라 변할 수 없다 — 필터 체인에서 그려야 한다.
+    컷 전환마다 짧게 줄었다 늘어나게 해봤지만 130px짜리 요소의 미세한 변화라
+    전환 신호로 읽히지 않고 잔떨림으로만 보였다 — 고정 기준선으로 되돌린다.
     """
     spec = parse_video_spec(
         {"slides": [{"title": f"{i}장", "narration": "충분히 긴 한 문장입니다."} for i in range(3)]}
@@ -246,12 +247,12 @@ def test_accent_bar_pulses_on_cut_change() -> None:
     starts = [0.0]
     for d in render.cut_durations_s[:-1]:
         starts.append(starts[-1] + d)
-    # 컷 시작 직후(펄스 최소) vs 컷 중반(원래 길이)
-    at_start = _accent_bar_width(render.mp4, starts[1] + 0.05, row_ratio=_ACCENT_Y_RATIO)
-    at_middle = _accent_bar_width(
-        render.mp4, starts[1] + render.cut_durations_s[1] * 0.6, row_ratio=_ACCENT_Y_RATIO
-    )
-    assert at_start < at_middle, f"컷 시작 {at_start}px vs 중반 {at_middle}px — 펄스 없음"
+    widths = [
+        _accent_bar_width(render.mp4, at, row_ratio=_ACCENT_Y_RATIO)
+        for at in (starts[1] + 0.05, starts[1] + render.cut_durations_s[1] * 0.6, starts[2] + 0.05)
+    ]
+    assert widths[0] > 0, "액센트 바가 보이지 않음"
+    assert len(set(widths)) == 1, f"폭이 흔들림: {widths}"
 
 
 def test_accent_bar_position_is_stable_across_title_lengths() -> None:
