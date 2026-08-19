@@ -308,7 +308,10 @@ def render_video(
 
         # 2패스: concat + 자막(나레이션) + 진행바 + 오디오
         (workdir / "list.txt").write_text(
-            "".join(f"file 'seg{i}.mp4'\n" for i in range(len(spec.slides))), encoding="utf-8"
+            # 1패스가 만든 **세그먼트 수**와 반드시 같아야 한다. 적게 쓰면 영상만 조용히
+            # 잘리고(오디오는 그대로) 뒷부분이 정지 화면으로 재생된다.
+            "".join(f"file 'seg{i}.mp4'\n" for i in range(len(segments))),
+            encoding="utf-8",
         )
         (workdir / "audio.wav").write_bytes(_concat_wavs(wavs))
         (workdir / "subs.ass").write_text(

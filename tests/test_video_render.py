@@ -7,7 +7,10 @@ import hashlib
 import io
 import math
 import shutil
+import subprocess
+import tempfile
 import wave
+from pathlib import Path
 
 import pytest
 
@@ -137,3 +140,31 @@ def test_short_cut_stays_single_segment() -> None:
     spec = parse_video_spec({"slides": [{"title": "짧다"}]})
     render = render_video(spec, synthesize=tone_wav)
     assert len(render.segment_durations_s) == 1
+
+
+def _stream_duration(mp4: bytes, kind: str) -> float:
+    """산출 mp4에서 실제 스트림 길이(초). 계산값이 아니라 **파일**을 본다."""
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "probe.mp4"
+        path.write_bytes(mp4)
+        out = subprocess.run(
+            ["ffprobe", "-v", "error", "-select_streams", kind,
+             "-show_entries", "stream=duration", "-of", "csv=p=0", str(path)],
+            capture_output=True, text=True, check=True,
+        )  # fmt: skip
+    return float(out.stdout.strip())
+
+
+def test_rendered_video_stream_matches_audio() -> None:
+    """영상 트랙이 오디오보다 짧으면 뒷부분이 정지 화면으로 재생된다.
+
+    concat 목록이 세그먼트 수와 어긋나면 조용히 잘리는데, 계산값끼리 비교하는
+    단언으로는 못 잡는다 — 실제 파일의 스트림 길이를 본다.
+    """
+    sentence = "a" * (MAX_NARRATION_WIDTH - 1) + "."  # 4.1초 → 세그먼트 2개로 분할
+    spec = parse_video_spec({"slides": [{"title": "가", "narration": sentence}, {"title": "나"}]})
+    render = render_video(spec, synthesize=tone_wav)
+    video = _stream_duration(render.mp4, "v:0")
+    audio = _stream_duration(render.mp4, "a:0")
+    assert video == pytest.approx(audio, abs=0.15), f"영상 {video:.2f}s vs 오디오 {audio:.2f}s"
+    assert video == pytest.approx(render.duration_s, abs=0.15)
