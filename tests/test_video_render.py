@@ -12,9 +12,10 @@ import wave
 import pytest
 
 from sns.render.storage import InMemoryMediaStore
+from sns.render.video import renderer as renderer_mod
 from sns.render.video.media import VideoRenderMedia
 from sns.render.video.quality import check_video
-from sns.render.video.renderer import render_video
+from sns.render.video.renderer import FontNotFoundError, render_video
 from sns.render.video.spec import VideoSpecError, parse_video_spec
 from sns.render.video.tts import SAMPLE_RATE_HZ, wav_duration_s
 
@@ -79,3 +80,13 @@ def test_media_binding_stores_mp4() -> None:
 def test_fake_tts_duration_helper() -> None:
     wav = tone_wav("열두글자짜리텍스트입니다", voice="ignored")
     assert wav_duration_s(wav) == pytest.approx(1.0 + 0.05 * 12, abs=0.01)
+
+
+def test_missing_cjk_font_raises_instead_of_tofu(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CJK 폰트가 하나도 없으면 내장 폰트로 조용히 폴백(=한글 두부)하지 않고 실패한다.
+
+    fonts-noto-cjk 미설치 컨테이너에서 깨진 자막 영상이 발행 파이프라인을 통과하던 회귀 방지.
+    """
+    monkeypatch.setattr(renderer_mod, "_FONT_CANDIDATES", ())
+    with pytest.raises(FontNotFoundError):
+        render_video(SPEC, synthesize=tone_wav)
