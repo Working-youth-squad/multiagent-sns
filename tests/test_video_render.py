@@ -14,7 +14,7 @@ import pytest
 from sns.render.storage import InMemoryMediaStore
 from sns.render.video.media import VideoRenderMedia
 from sns.render.video.quality import check_video
-from sns.render.video.renderer import render_video
+from sns.render.video.renderer import MAX_SEGMENT_S, render_video
 from sns.render.video.spec import (
     MAX_NARRATION_WIDTH,
     MAX_SLIDES,
@@ -104,3 +104,36 @@ def test_media_binding_stores_mp4() -> None:
 def test_fake_tts_duration_helper() -> None:
     wav = tone_wav("열두글자짜리텍스트입니다", voice="ignored")
     assert wav_duration_s(wav) == pytest.approx(1.0 + 0.05 * 12, abs=0.01)
+
+
+# ── 화면 세그먼트 길이 강제 (FR-A2) ─────────────────────────────────
+# TTS 발화 길이는 텍스트로 예측·통제가 불가능하다(같은 문장이 호출마다 다르고,
+# 숫자·기호는 폭 대비 2배 넘게 걸린다). 그래서 화면 전환 주기는 스펙 상한이 아니라
+# **실측 WAV 길이 기준으로 렌더러가** 보장한다.
+
+
+def test_long_cut_split_into_multiple_visual_segments() -> None:
+    sentence = "a" * (MAX_NARRATION_WIDTH - 1) + "."  # tone_wav → 4.1초 (>4.0)
+    spec = parse_video_spec({"slides": [{"title": "제목", "narration": sentence}]})
+    render = render_video(spec, synthesize=tone_wav)
+    assert len(render.cut_durations_s) == 1  # 오디오는 한 컷 그대로
+    assert len(render.segment_durations_s) == 2  # 화면만 둘로 쪼갬
+
+
+def test_every_segment_within_max_duration() -> None:
+    sentence = "a" * (MAX_NARRATION_WIDTH - 1) + "."
+    spec = parse_video_spec({"slides": [{"title": "가", "narration": sentence}, {"title": "나"}]})
+    render = render_video(spec, synthesize=tone_wav)
+    assert all(d <= MAX_SEGMENT_S + 1e-6 for d in render.segment_durations_s)
+
+
+def test_segments_sum_to_total_duration() -> None:
+    spec = parse_video_spec({"slides": [{"title": "가", "narration": "짧은 문장. 또 하나."}]})
+    render = render_video(spec, synthesize=tone_wav)
+    assert render.duration_s == pytest.approx(sum(render.segment_durations_s))
+
+
+def test_short_cut_stays_single_segment() -> None:
+    spec = parse_video_spec({"slides": [{"title": "짧다"}]})
+    render = render_video(spec, synthesize=tone_wav)
+    assert len(render.segment_durations_s) == 1

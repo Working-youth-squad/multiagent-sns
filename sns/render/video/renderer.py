@@ -19,16 +19,22 @@ import tempfile
 import wave
 from dataclasses import dataclass
 from functools import lru_cache
+from math import ceil
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from sns.render.video.spec import Slide, VideoSpec, VideoSpecError
+from sns.render.video.spec import Cut, Slide, VideoSpec, VideoSpecError
 from sns.render.video.subtitles import build_ass
 from sns.render.video.tts import Synthesize, wav_duration_s
 
 # 쇼츠 최대 길이(초) — 13-로드맵 §5 외부 제약.
 MAX_DURATION_S = 180.0
+# 화면 세그먼트 1개의 최대 길이 — FR-A2가 요구하는 화면 전환 주기 2~4초의 상한.
+# 컷 오디오가 이보다 길면 **화면만** 등분해 세그먼트를 늘린다(오디오·자막 불변).
+# 스펙의 문장 폭 상한으로는 보장이 안 된다: TTS 발화 길이는 같은 문장도 호출마다
+# 다르고(비결정론), 숫자·기호는 폭 대비 2배 넘게 걸린다. 실측 WAV 길이만이 근거다.
+MAX_SEGMENT_S = 4.0
 FPS = 30
 # Ken Burns 최대 줌 배율과 오버스캔(줌해도 선명하도록 원본을 크게 렌더).
 _ZOOM_MAX = 1.12
@@ -53,6 +59,8 @@ class VideoRender:
     duration_s: float
     # 컷(=나레이션 문장) 단위 길이. 슬라이드 하나가 여러 컷을 낳을 수 있다.
     cut_durations_s: tuple[float, ...]
+    # 화면 세그먼트 길이 — 전부 MAX_SEGMENT_S 이하. 컷 하나가 여러 세그먼트를 낳을 수 있다.
+    segment_durations_s: tuple[float, ...] = ()
 
 
 class VideoRenderError(RuntimeError):
@@ -217,6 +225,19 @@ def _run_ffmpeg(cmd: list[str], workdir: Path) -> None:
         raise VideoRenderError(f"ffmpeg 실패(exit {result.returncode}): {result.stderr.strip()}")
 
 
+def _segments(cuts: "tuple[Cut, ...]", durations: "list[float]") -> list[tuple["Cut", float]]:
+    """컷을 MAX_SEGMENT_S 이하 세그먼트로 등분한다 — 오디오는 건드리지 않는다.
+
+    등분이라 세그먼트 길이 합 = 컷 길이 합 = 오디오 길이. 자막 타이밍(컷 기준)과
+    화면 전환(세그먼트 기준)이 어긋나지 않는다.
+    """
+    out: list[tuple[Cut, float]] = []
+    for cut, duration in zip(cuts, durations, strict=True):
+        count = max(ceil(duration / MAX_SEGMENT_S), 1)
+        out.extend([(cut, duration / count)] * count)
+    return out
+
+
 def _zoom_expr(index: int, frames: int) -> str:
     """짝수 컷 줌인, 홀수 컷 줌아웃 — 컷별 교차로 단조로움 방지 (결정론)."""
     span = _ZOOM_MAX - 1.0
@@ -252,10 +273,12 @@ def render_video(
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
 
-        # 1패스: 컷당 Ken Burns 세그먼트 (줌 방향이 컷마다 교차 → 문장마다 화면 변화)
-        for i, cut in enumerate(cuts):
+        # 1패스: 세그먼트당 Ken Burns. 세그먼트 = 컷을 MAX_SEGMENT_S 이하로 등분한 것 —
+        # 줌 방향이 세그먼트마다 교차하므로 긴 나레이션 중에도 화면이 4초마다 뒤집힌다.
+        segments = _segments(cuts, durations)
+        for i, (cut, seg_duration) in enumerate(segments):
             (workdir / f"slide{i}.png").write_bytes(_slide_png(cut.slide, spec, pillow_font))
-            frames = max(round(durations[i] * FPS), 1)
+            frames = max(round(seg_duration * FPS), 1)
             zoompan = (
                 f"zoompan=z='{_zoom_expr(i, frames)}'"
                 f":x='(iw-iw/zoom)/2':y='(ih-ih/zoom)/2'"
@@ -331,4 +354,9 @@ def render_video(
         ]  # fmt: skip
         _run_ffmpeg(cmd, workdir)
         mp4 = (workdir / "out.mp4").read_bytes()
-    return VideoRender(mp4=mp4, duration_s=total, cut_durations_s=tuple(durations))
+    return VideoRender(
+        mp4=mp4,
+        duration_s=total,
+        cut_durations_s=tuple(durations),
+        segment_durations_s=tuple(d for _, d in segments),
+    )
