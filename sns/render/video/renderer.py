@@ -24,6 +24,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
+from sns.render.text import wrap_balanced
 from sns.render.video.spec import Cut, Slide, VideoSpec, VideoSpecError
 from sns.render.video.subtitles import build_ass
 from sns.render.video.tts import Synthesize, wav_duration_s
@@ -51,6 +52,16 @@ _MARGIN_RATIO = 0.083
 _LINE_SPACING = 1.25
 # 진행바 높이(px, 1080 기준 비율로 환산).
 _BAR_RATIO = 12 / 1920
+# 액센트 바 — PNG가 아니라 **필터 체인**에서 그린다. PNG에 박으면 시간에 따라 변할 수
+# 없고 Ken Burns 줌에 휩쓸려 흘러다닌다. 화면 좌표에 고정해 컷이 바뀌어도 시선
+# 기준점이 유지되게 하고, 컷 시작에 짧게 줄었다 늘어나며(펄스) 전환을 알린다.
+_ACCENT_Y_RATIO = 0.30
+_ACCENT_W_RATIO = 0.12
+_ACCENT_H_RATIO = 10 / 1920
+_ACCENT_PULSE_S = 0.30  # 펄스 총 길이
+_ACCENT_PULSE_STEPS = 3  # drawbox는 시간 표현식을 못 써서 enable= 구간으로 계단 근사
+# 제목 블록 상단 위치(PNG 세로 비율) — 액센트 바 바로 아래.
+_TITLE_TOP_RATIO = 0.335
 
 
 @dataclass(frozen=True)
@@ -92,41 +103,16 @@ def _hex_to_rgb(color: str) -> tuple[int, int, int]:
 
 
 def _wrap(draw: ImageDraw.ImageDraw, text: str, font: _Font, max_width: int) -> list[str]:
-    """공백 기준 줄바꿈, 토큰이 폭을 넘으면 글자 단위 분할(한글 대응).
+    """균형 줄바꿈 — 줄 수는 그대로 두고 어절이 자연스러운 자리에서 갈리게 한다.
 
-    C3 카드 renderer의 _wrap과 동일 알고리즘 — 카드 머지 후 공용 유틸로 승격 예정.
+    알고리즘은 [sns.render.text.wrap_balanced], 여기선 Pillow 폰트 메트릭만 주입한다.
     """
 
-    def width_of(s: str) -> float:
+    def measure(s: str) -> float:
         left, _, right, _ = draw.textbbox((0, 0), s, font=font)
         return right - left
 
-    lines: list[str] = []
-    for paragraph in text.split("\n"):
-        current = ""
-        for token in paragraph.split(" "):
-            if not token:
-                continue
-            trial = token if not current else f"{current} {token}"
-            if width_of(trial) <= max_width:
-                current = trial
-                continue
-            if current:
-                lines.append(current)
-                current = ""
-            if width_of(token) <= max_width:
-                current = token
-            else:
-                buf = ""
-                for ch in token:
-                    if buf and width_of(buf + ch) > max_width:
-                        lines.append(buf)
-                        buf = ch
-                    else:
-                        buf += ch
-                current = buf
-        lines.append(current)
-    return lines
+    return wrap_balanced(text, measure, max_width)
 
 
 def _gradient(width: int, height: int, top: str, bottom: str) -> Image.Image:
@@ -140,7 +126,9 @@ def _gradient(width: int, height: int, top: str, bottom: str) -> Image.Image:
 
 
 def _slide_png(slide: Slide, spec: VideoSpec, font_path: str | None) -> bytes:
-    """슬라이드 1장 — 그라데이션 배경 + 액센트 바 + 제목(대)/본문(소) 계층.
+    """슬라이드 1장 — 그라데이션 배경 + 제목(대)/본문(소) 계층.
+
+    액센트 바는 여기 없다 — 필터 체인이 화면 좌표에 그린다(_accent_filters).
 
     Ken Burns 줌을 위해 목표 해상도의 _OVERSCAN 배로 렌더한다(줌인해도 선명).
     """
@@ -149,7 +137,6 @@ def _slide_png(slide: Slide, spec: VideoSpec, font_path: str | None) -> bytes:
     img = _gradient(width, height, spec.background, spec.background2)
     draw = ImageDraw.Draw(img)
     fg = _hex_to_rgb(spec.foreground)
-    accent = _hex_to_rgb(spec.accent)
     margin = round(width * _MARGIN_RATIO)
     max_text_width = width - margin * 2
 
@@ -162,18 +149,10 @@ def _slide_png(slide: Slide, spec: VideoSpec, font_path: str | None) -> bytes:
     title_h = round(title_size * _LINE_SPACING)
     body_h = round(body_size * _LINE_SPACING)
     gap = round(height * 0.03)
-    bar_h = round(height * 0.006)
 
-    block_h = bar_h + gap + title_h * len(title_lines)
-    if body_lines:
-        block_h += gap + body_h * len(body_lines)
-    # 블록을 화면 세로 중앙보다 살짝 위에 — 하단 자막(나레이션)과 분리.
-    y = (height - block_h) // 2 - round(height * 0.05)
-
-    # 액센트 바 (제목 위 장식)
-    bar_w = round(width * 0.12)
-    draw.rectangle(((width - bar_w) // 2, y, (width + bar_w) // 2, y + bar_h), fill=accent)
-    y += bar_h + gap
+    # 제목 블록은 **고정 상단**에서 시작한다(액센트 바 바로 아래). 예전처럼 블록 높이로
+    # 세로 중앙을 잡으면 제목 줄 수가 달라질 때마다 화면 전체가 위아래로 흔들렸다.
+    y = round(height * _TITLE_TOP_RATIO)
     for line in title_lines:
         left, _, right, _ = draw.textbbox((0, 0), line, font=title_font)
         draw.text(((width - (right - left)) // 2, y), line, font=title_font, fill=fg)
@@ -223,6 +202,37 @@ def _run_ffmpeg(cmd: list[str], workdir: Path) -> None:
     result = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
     if result.returncode != 0:
         raise VideoRenderError(f"ffmpeg 실패(exit {result.returncode}): {result.stderr.strip()}")
+
+
+def _accent_filters(spec: VideoSpec, durations: list[float]) -> str:
+    """컷마다 액센트 바가 짧게 시작해 원래 길이로 늘어나는 drawbox 체인.
+
+    drawbox는 `w` 표현식에서 시간을 못 쓴다(`t`는 선 두께, `n`은 미정의). 대신 타임라인
+    `enable=`이 시간을 받으므로, 폭이 다른 drawbox 여러 개를 구간별로 켜서 계단 근사한다.
+    """
+    color = f"0x{spec.accent[1:]}"
+    full_w = max(round(spec.width * _ACCENT_W_RATIO), 8)
+    height = max(round(spec.height * _ACCENT_H_RATIO), 4)
+    y = round(spec.height * _ACCENT_Y_RATIO)
+
+    def box(width: int, start: float, end: float) -> str:
+        x = (spec.width - width) // 2
+        return (
+            f"drawbox=x={x}:y={y}:w={width}:h={height}:color={color}:t=fill"
+            f":enable='between(t,{start:.3f},{end:.3f})'"
+        )
+
+    parts: list[str] = []
+    at = 0.0
+    for duration in durations:
+        end = at + duration
+        step = min(_ACCENT_PULSE_S, duration) / _ACCENT_PULSE_STEPS
+        for k in range(_ACCENT_PULSE_STEPS):
+            width = max(round(full_w * (k + 1) / _ACCENT_PULSE_STEPS), 2)
+            parts.append(box(width, at + step * k, at + step * (k + 1)))
+        parts.append(box(full_w, at + step * _ACCENT_PULSE_STEPS, end))
+        at = end
+    return ",".join(parts)
 
 
 def _segments(cuts: "tuple[Cut, ...]", durations: "list[float]") -> list[tuple["Cut", float]]:
@@ -326,29 +336,34 @@ def render_video(
         )
         bar_h = max(round(spec.height * _BAR_RATIO), 4)
         bar_color = f"0x{spec.accent[1:]}"
-        video_chain = (
-            f"subtitles=subs.ass,"
-            f"drawbox=x=0:y=ih-{bar_h}:w='iw*t/{total:.3f}':h={bar_h}"
-            f":color={bar_color}@0.85:t=fill,"
-            f"format=yuv420p"
-        )
+        # 진행바: 화면 폭짜리 색 소스를 왼쪽 밖(-W)에서 0까지 밀어넣어 "차오르게" 한다.
+        # drawbox로는 안 된다 — drawbox 표현식의 `t`는 타임스탬프가 아니라 **선 두께**라
+        # 매 프레임 같은 값이 나와 바가 처음부터 꽉 찬 채로 멈춘다. overlay의 `x`는 `t`가
+        # 타임스탬프라 시간에 따라 실제로 움직인다.
         cmd = [
             ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
             "-f", "concat", "-safe", "0", "-i", "list.txt",
             "-i", "audio.wav",
+            "-f", "lavfi", "-t", f"{total:.3f}",
+            "-i", f"color=c={bar_color}:s={spec.width}x{bar_h}:r={FPS}",
         ]  # fmt: skip
+        video_chain = (
+            f"[0:v]subtitles=subs.ass,{_accent_filters(spec, durations)}[base];"
+            f"[base][2:v]overlay=x='-W+W*t/{total:.3f}':y=H-{bar_h}:shortest=1,"
+            f"format=yuv420p[v]"
+        )
         if bgm is not None:
             (workdir / f"bgm.{bgm_ext}").write_bytes(bgm)
             cmd += ["-stream_loop", "-1", "-i", f"bgm.{bgm_ext}"]
             cmd += [
                 "-filter_complex",
-                f"[0:v]{video_chain}[v];"
-                "[1:a]volume=1.0[nar];[2:a]volume=0.12[bg];"
+                f"{video_chain};"
+                "[1:a]volume=1.0[nar];[3:a]volume=0.12[bg];"
                 "[nar][bg]amix=inputs=2:duration=first:normalize=0[a]",
                 "-map", "[v]", "-map", "[a]",
             ]  # fmt: skip
         else:
-            cmd += ["-vf", video_chain]
+            cmd += ["-filter_complex", video_chain, "-map", "[v]", "-map", "1:a"]
         cmd += [
             "-r", str(FPS), "-c:v", "libx264", "-preset", "veryfast",
             "-c:a", "aac", "-t", f"{total:.3f}",

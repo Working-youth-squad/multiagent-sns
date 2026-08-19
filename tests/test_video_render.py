@@ -13,11 +13,17 @@ import wave
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
 from sns.render.storage import InMemoryMediaStore
 from sns.render.video.media import VideoRenderMedia
 from sns.render.video.quality import check_video
-from sns.render.video.renderer import MAX_SEGMENT_S, render_video
+from sns.render.video.renderer import (
+    _ACCENT_Y_RATIO,
+    _BAR_RATIO,
+    MAX_SEGMENT_S,
+    render_video,
+)
 from sns.render.video.spec import (
     MAX_NARRATION_WIDTH,
     MAX_SLIDES,
@@ -168,3 +174,94 @@ def test_rendered_video_stream_matches_audio() -> None:
     audio = _stream_duration(render.mp4, "a:0")
     assert video == pytest.approx(audio, abs=0.15), f"영상 {video:.2f}s vs 오디오 {audio:.2f}s"
     assert video == pytest.approx(render.duration_s, abs=0.15)
+
+
+def _accent_fill_ratio(mp4: bytes, at_s: float, *, spec_height: int = 1920) -> float:
+    """재생 at_s 시점 프레임에서 하단 진행바가 채워진 가로 비율."""
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        (d / "v.mp4").write_bytes(mp4)
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{at_s:.2f}",
+             "-i", str(d / "v.mp4"), "-frames:v", "1", str(d / "f.png")],
+            check=True,
+        )  # fmt: skip
+        img = Image.open(d / "f.png").convert("RGB")
+        width, height = img.size
+        row = height - max(round(spec_height * _BAR_RATIO), 4) // 2 - 1
+        filled = sum(
+            1
+            for x in range(width)
+            if (px := img.getpixel((x, row)))[2] > 120 and px[2] > px[0] + 40
+        )
+    return filled / width
+
+
+def test_progress_bar_advances_over_time() -> None:
+    """하단 진행바는 재생이 진행될수록 차야 한다.
+
+    drawbox의 `t`는 타임스탬프가 아니라 선 두께라, w 표현식에 쓰면 매 프레임 같은
+    값이 나와 바가 처음부터 꽉 찬 채로 멈춘다(실제로 그랬다).
+    """
+    spec = parse_video_spec(
+        {"slides": [{"title": f"{i}장", "narration": "한 문장."} for i in range(4)]}
+    )
+    render = render_video(spec, synthesize=tone_wav)
+    early = _accent_fill_ratio(render.mp4, render.duration_s * 0.2)
+    late = _accent_fill_ratio(render.mp4, render.duration_s * 0.8)
+    assert early < 0.4, f"초반에 이미 {early:.0%} 차 있음"
+    assert late > 0.6, f"후반에도 {late:.0%}뿐"
+    assert early < late
+
+
+def _accent_bar_width(mp4: bytes, at_s: float, *, row_ratio: float) -> int:
+    """지정 시각·지정 높이 비율에서 액센트색 픽셀의 가로 길이(px)."""
+    with tempfile.TemporaryDirectory() as tmp:
+        d = Path(tmp)
+        (d / "v.mp4").write_bytes(mp4)
+        subprocess.run(
+            ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-ss", f"{at_s:.2f}",
+             "-i", str(d / "v.mp4"), "-frames:v", "1", str(d / "f.png")],
+            check=True,
+        )  # fmt: skip
+        img = Image.open(d / "f.png").convert("RGB")
+        width, height = img.size
+        row = round(height * row_ratio)
+        return sum(
+            1
+            for x in range(width)
+            if (px := img.getpixel((x, row)))[2] > 120 and px[2] > px[0] + 40
+        )
+
+
+def test_accent_bar_pulses_on_cut_change() -> None:
+    """컷이 바뀔 때 액센트 바가 짧아졌다 늘어나며 전환을 알린다.
+
+    PNG에 그려 넣으면 시간에 따라 변할 수 없다 — 필터 체인에서 그려야 한다.
+    """
+    spec = parse_video_spec(
+        {"slides": [{"title": f"{i}장", "narration": "충분히 긴 한 문장입니다."} for i in range(3)]}
+    )
+    render = render_video(spec, synthesize=tone_wav)
+    starts = [0.0]
+    for d in render.cut_durations_s[:-1]:
+        starts.append(starts[-1] + d)
+    # 컷 시작 직후(펄스 최소) vs 컷 중반(원래 길이)
+    at_start = _accent_bar_width(render.mp4, starts[1] + 0.05, row_ratio=_ACCENT_Y_RATIO)
+    at_middle = _accent_bar_width(
+        render.mp4, starts[1] + render.cut_durations_s[1] * 0.6, row_ratio=_ACCENT_Y_RATIO
+    )
+    assert at_start < at_middle, f"컷 시작 {at_start}px vs 중반 {at_middle}px — 펄스 없음"
+
+
+def test_accent_bar_position_is_stable_across_title_lengths() -> None:
+    """제목 줄 수가 달라도 액센트 바는 같은 높이에 있다 — 시선 기준점."""
+    one_line = parse_video_spec({"slides": [{"title": "짧다", "narration": "한 문장."}]})
+    two_line = parse_video_spec(
+        {"slides": [{"title": "제법 긴 제목이라 두 줄로 갈린다", "narration": "한 문장."}]}
+    )
+    a = render_video(one_line, synthesize=tone_wav)
+    b = render_video(two_line, synthesize=tone_wav)
+    wa = _accent_bar_width(a.mp4, a.duration_s * 0.6, row_ratio=_ACCENT_Y_RATIO)
+    wb = _accent_bar_width(b.mp4, b.duration_s * 0.6, row_ratio=_ACCENT_Y_RATIO)
+    assert wa > 0 and wb > 0, f"바가 그 높이에 없음: {wa}px / {wb}px"

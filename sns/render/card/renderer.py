@@ -15,6 +15,7 @@ from functools import lru_cache
 from PIL import Image, ImageDraw, ImageFont
 
 from sns.render.card.spec import CardSpec
+from sns.render.text import wrap_balanced
 
 # 안전영역 여백 = 가로의 8.3% (1080 → 90px). 규격은 상수로 외부화(FR-Q4 정합).
 _MARGIN_RATIO = 0.083
@@ -56,39 +57,16 @@ def _hex_to_rgb(color: str) -> tuple[int, int, int]:
 
 
 def _wrap(draw: ImageDraw.ImageDraw, text: str, font: _Font, max_width: int) -> list[str]:
-    """공백 기준 줄바꿈, 한 토큰이 폭을 넘으면 글자 단위로 쪼갠다(한글 대응)."""
+    """균형 줄바꿈 — 줄 수는 그대로 두고 어절이 자연스러운 자리에서 갈리게 한다.
 
-    def width_of(s: str) -> float:
+    알고리즘은 [sns.render.text.wrap_balanced], 여기선 Pillow 폰트 메트릭만 주입한다.
+    """
+
+    def measure(s: str) -> float:
         left, _, right, _ = draw.textbbox((0, 0), s, font=font)
         return right - left
 
-    lines: list[str] = []
-    for paragraph in text.split("\n"):
-        current = ""
-        for token in paragraph.split(" "):
-            if not token:
-                continue
-            trial = token if not current else f"{current} {token}"
-            if width_of(trial) <= max_width:
-                current = trial
-                continue
-            # 현재 줄에 이어 붙일 수 없다 → 줄을 넘긴다.
-            if current:
-                lines.append(current)
-                current = ""
-            if width_of(token) <= max_width:
-                current = token
-            else:  # 토큰 하나가 폭을 넘음 → 글자 단위 강제 분할.
-                buf = ""
-                for ch in token:
-                    if buf and width_of(buf + ch) > max_width:
-                        lines.append(buf)
-                        buf = ch
-                    else:
-                        buf += ch
-                current = buf
-        lines.append(current)
-    return lines
+    return wrap_balanced(text, measure, max_width)
 
 
 def render_card(spec: CardSpec, *, font_path: str | None = None) -> CardRender:
