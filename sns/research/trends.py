@@ -11,6 +11,7 @@
 실 fetcher(네트워크)는 [sns.research.sources]에, 그 배선은 `default_service()`에.
 """
 
+import os
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 
@@ -20,6 +21,12 @@ from sns.tools.contracts import ResearchTrends, SourceResult, TrendDigest
 SourceFetcher = Callable[[int], tuple[str, ...]]
 
 DEFAULT_TIMEOUT_S = 10.0
+
+# 인증 소스 자격증명 env 이름 (단일 출처).
+ENV_NAVER_CLIENT_ID = "NAVER_CLIENT_ID"
+ENV_NAVER_CLIENT_SECRET = "NAVER_CLIENT_SECRET"
+ENV_YOUTUBE_API_KEY = "YOUTUBE_API_KEY"
+ENV_GEMINI_API_KEY = "GEMINI_API_KEY"
 
 
 class ResearchTrendsService:
@@ -74,15 +81,56 @@ def _render_digest(results: tuple[SourceResult, ...]) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
-def default_service(timeout_s: float = DEFAULT_TIMEOUT_S) -> ResearchTrendsService:
+def _bind(fetch: Callable[..., tuple[str, ...]], **bound: object) -> SourceFetcher:
+    """키워드 인자(자격증명 등)를 미리 묶어 SourceFetcher(limit→items) 시그니처로 만든다."""
+
+    def fetcher(limit: int) -> tuple[str, ...]:
+        return fetch(limit, **bound)
+
+    return fetcher
+
+
+def default_service(
+    timeout_s: float = DEFAULT_TIMEOUT_S, *, env: Mapping[str, str] | None = None
+) -> ResearchTrendsService:
     """사용 가능한 실 fetcher를 배선한 서비스. 새 소스가 붙을 때마다 여기 등록한다.
 
-    현재: google_trends(무인증 RSS). 네이버/유튜브 등 인증 소스는 config 시크릿
-    배선과 함께 후속 — 그때까지 미등록이라 호출돼도 ok=False로 격리된다.
+    무인증 소스(google_trends·github_trending)는 항상 등록한다. 인증 소스(네이버 2종·
+    YouTube·LLM 그라운딩)는 env에 키가 있을 때만 등록 — 없으면 미등록이라 호출돼도
+    ok=False로 격리된다(§2, 부분 가용성 허용). LLM 그라운딩은 선택이라 키가 있을
+    때만 기본 소스에 합류한다.
     """
+    from sns.research.sources.github_trending import fetch_github_trending
     from sns.research.sources.google_trends import fetch_google_trends
+    from sns.research.sources.llm_grounding import fetch_llm_grounding
+    from sns.research.sources.naver_datalab import fetch_naver_datalab
+    from sns.research.sources.naver_search import fetch_naver_search
+    from sns.research.sources.youtube_popular import fetch_youtube_popular
 
-    fetchers: dict[str, SourceFetcher] = {"google_trends": fetch_google_trends}
+    env_map: Mapping[str, str] = os.environ if env is None else env
+    fetchers: dict[str, SourceFetcher] = {
+        "google_trends": fetch_google_trends,
+        "github_trending": fetch_github_trending,
+    }
+
+    naver_id = env_map.get(ENV_NAVER_CLIENT_ID)
+    naver_secret = env_map.get(ENV_NAVER_CLIENT_SECRET)
+    if naver_id and naver_secret:
+        fetchers["naver_search"] = _bind(
+            fetch_naver_search, client_id=naver_id, client_secret=naver_secret
+        )
+        fetchers["naver_datalab"] = _bind(
+            fetch_naver_datalab, client_id=naver_id, client_secret=naver_secret
+        )
+
+    youtube_key = env_map.get(ENV_YOUTUBE_API_KEY)
+    if youtube_key:
+        fetchers["youtube_popular"] = _bind(fetch_youtube_popular, api_key=youtube_key)
+
+    gemini_key = env_map.get(ENV_GEMINI_API_KEY)
+    if gemini_key:
+        fetchers["llm_grounding"] = _bind(fetch_llm_grounding, api_key=gemini_key)
+
     return ResearchTrendsService(fetchers, timeout_s=timeout_s)
 
 
