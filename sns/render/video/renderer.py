@@ -51,7 +51,8 @@ _BAR_RATIO = 12 / 1920
 class VideoRender:
     mp4: bytes
     duration_s: float
-    slide_durations_s: tuple[float, ...]
+    # 컷(=나레이션 문장) 단위 길이. 슬라이드 하나가 여러 컷을 낳을 수 있다.
+    cut_durations_s: tuple[float, ...]
 
 
 class VideoRenderError(RuntimeError):
@@ -217,7 +218,7 @@ def _run_ffmpeg(cmd: list[str], workdir: Path) -> None:
 
 
 def _zoom_expr(index: int, frames: int) -> str:
-    """짝수 장 줌인, 홀수 장 줌아웃 — 장별 교차로 단조로움 방지 (결정론)."""
+    """짝수 컷 줌인, 홀수 컷 줌아웃 — 컷별 교차로 단조로움 방지 (결정론)."""
     span = _ZOOM_MAX - 1.0
     if index % 2 == 0:
         return f"1+{span:.4f}*on/{max(frames - 1, 1)}"
@@ -238,7 +239,10 @@ def render_video(
     bgm: 선택적 배경음악 바이트(플랫폼 중립 소스 — 06 §4, 에셋 조달은 후속).
     나레이션 우선 믹스(BGM 12% 볼륨), 총 길이는 나레이션 기준.
     """
-    wavs = [synthesize(s.narration_text, voice=spec.voice) for s in spec.slides]
+    # 컷 = 나레이션 문장 1개. 슬라이드가 아니라 컷이 TTS·세그먼트·자막의 단위다 —
+    # 나레이션이 길어도 문장마다 화면이 바뀌어 정지 구간이 4초를 넘지 않는다(FR-A2).
+    cuts = spec.cuts
+    wavs = [synthesize(c.text, voice=spec.voice) for c in cuts]
     durations = [wav_duration_s(w) for w in wavs]
     total = sum(durations)
     if not 0.0 < total <= MAX_DURATION_S:
@@ -248,9 +252,9 @@ def render_video(
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
 
-        # 1패스: 장당 Ken Burns 세그먼트
-        for i, slide in enumerate(spec.slides):
-            (workdir / f"slide{i}.png").write_bytes(_slide_png(slide, spec, pillow_font))
+        # 1패스: 컷당 Ken Burns 세그먼트 (줌 방향이 컷마다 교차 → 문장마다 화면 변화)
+        for i, cut in enumerate(cuts):
+            (workdir / f"slide{i}.png").write_bytes(_slide_png(cut.slide, spec, pillow_font))
             frames = max(round(durations[i] * FPS), 1)
             zoompan = (
                 f"zoompan=z='{_zoom_expr(i, frames)}'"
@@ -286,7 +290,7 @@ def render_video(
         (workdir / "audio.wav").write_bytes(_concat_wavs(wavs))
         (workdir / "subs.ass").write_text(
             build_ass(
-                [s.narration_text for s in spec.slides],
+                [c.text for c in cuts],
                 durations,
                 width=spec.width,
                 height=spec.height,
@@ -327,4 +331,4 @@ def render_video(
         ]  # fmt: skip
         _run_ffmpeg(cmd, workdir)
         mp4 = (workdir / "out.mp4").read_bytes()
-    return VideoRender(mp4=mp4, duration_s=total, slide_durations_s=tuple(durations))
+    return VideoRender(mp4=mp4, duration_s=total, cut_durations_s=tuple(durations))

@@ -15,7 +15,12 @@ from sns.render.storage import InMemoryMediaStore
 from sns.render.video.media import VideoRenderMedia
 from sns.render.video.quality import check_video
 from sns.render.video.renderer import render_video
-from sns.render.video.spec import VideoSpecError, parse_video_spec
+from sns.render.video.spec import (
+    MAX_NARRATION_WIDTH,
+    MAX_SLIDES,
+    VideoSpecError,
+    parse_video_spec,
+)
 from sns.render.video.tts import SAMPLE_RATE_HZ, wav_duration_s
 
 pytestmark = pytest.mark.skipif(
@@ -50,7 +55,7 @@ def test_render_passes_quality_gate() -> None:
     render = render_video(SPEC, synthesize=tone_wav)
     report = check_video(render.mp4)
     assert report.passed, report.failures
-    assert render.duration_s == pytest.approx(sum(render.slide_durations_s))
+    assert render.duration_s == pytest.approx(sum(render.cut_durations_s))
 
 
 def test_render_deterministic() -> None:
@@ -60,9 +65,29 @@ def test_render_deterministic() -> None:
 
 
 def test_duration_limit_enforced() -> None:
-    long_spec = parse_video_spec({"slides": ["아주 긴 나레이션 " * 30] * 20})
-    with pytest.raises(VideoSpecError):
+    # 컷별 상한(문장 폭)은 지키되 컷 **수**로 총 길이를 넘긴다 — 총 길이 방어선은 렌더러 몫.
+    sentence = "a" * (MAX_NARRATION_WIDTH - 1) + "."
+    long_spec = parse_video_spec({"slides": [sentence] * MAX_SLIDES})
+    with pytest.raises(VideoSpecError, match="총 길이"):
         render_video(long_spec, synthesize=tone_wav)
+
+
+def test_one_segment_per_sentence() -> None:
+    """나레이션 문장마다 컷이 생겨 화면이 문장 단위로 바뀐다 (FR-A2)."""
+    spec = parse_video_spec(
+        {"slides": [{"title": "제목", "narration": "첫 문장입니다. 둘째 문장입니다."}]}
+    )
+    render = render_video(spec, synthesize=tone_wav)
+    assert len(render.cut_durations_s) == 2
+
+
+def test_cut_durations_sum_to_total() -> None:
+    spec = parse_video_spec(
+        {"slides": [{"title": "가", "narration": "한 문장. 두 문장."}, {"title": "나"}]}
+    )
+    render = render_video(spec, synthesize=tone_wav)
+    assert len(render.cut_durations_s) == 3
+    assert render.duration_s == pytest.approx(sum(render.cut_durations_s))
 
 
 def test_media_binding_stores_mp4() -> None:
