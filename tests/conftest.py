@@ -2,6 +2,10 @@
 
 `PgPublishAttemptStore`는 autocommit 커넥션을 가정하므로 `db`도 autocommit이다.
 스키마는 세션 1회 재생성, 데이터는 테스트마다 TRUNCATE로 격리한다.
+
+**개발 DB는 건드리지 않는다**: `DATABASE_URL`을 그대로 쓰지 않고 dbname에 `_test`를
+붙인 별도 DB를 쓴다([dbguard]). 없으면 만든다 — 팀원이 환경변수를 따로 외우거나
+compose에 서비스를 더할 필요가 없다. 파괴적 작업 직전에 가드를 한 번 더 확인한다.
 """
 
 import os
@@ -12,8 +16,9 @@ import psycopg
 import pytest
 
 from sns.db.migrate import apply_migrations
+from tests.dbguard import admin_dsn_for, database_name, derive_test_dsn, require_test_dsn
 
-DSN = os.environ.get("DATABASE_URL", "postgresql://sns:sns@localhost:5432/sns")
+DSN = derive_test_dsn(os.environ.get("DATABASE_URL", "postgresql://sns:sns@localhost:5432/sns"))
 
 _MUTABLE_TABLES = (
     "channel, cycle, topic, content_item, media_asset, publication, publish_attempt, run_event"
@@ -57,8 +62,26 @@ SELECT ci.id, ch.id FROM ci, ch RETURNING id
 """
 
 
+def _ensure_test_database() -> None:
+    """테스트 DB가 없으면 만든다. 서버 자체가 없으면 skip(기존 동작 유지)."""
+    try:
+        admin = psycopg.connect(admin_dsn_for(DSN), connect_timeout=5, autocommit=True)
+    except psycopg.OperationalError:
+        pytest.skip("PostgreSQL 미가동 — docker compose up -d postgres")
+    name = database_name(DSN)
+    with admin:
+        exists = admin.execute("SELECT 1 FROM pg_database WHERE datname = %s", (name,)).fetchone()
+        if exists is None:
+            # 식별자는 파라미터 바인딩이 안 되지만, name은 DATABASE_URL에서 우리가
+            # 파생시킨 값이고 require_test_dsn을 이미 통과했다.
+            admin.execute(f'CREATE DATABASE "{name}"')
+
+
 @pytest.fixture(scope="session")
 def _schema() -> Iterator[None]:
+    # 개발 DB를 지우는 사고 방어 — DROP/TRUNCATE 직전 마지막 확인.
+    require_test_dsn(DSN)
+    _ensure_test_database()
     try:
         c = psycopg.connect(DSN, connect_timeout=5, autocommit=True)
     except psycopg.OperationalError:

@@ -8,8 +8,10 @@ import pytest
 from psycopg import errors
 
 from sns.db.migrate import apply_migrations
+from tests.dbguard import derive_test_dsn, require_test_dsn
 
-DSN = os.environ.get("DATABASE_URL", "postgresql://sns:sns@localhost:5432/sns")
+# conftest와 같은 규칙 — 개발 DB가 아니라 `_test` DB를 쓴다(이 파일은 스키마를 DROP한다).
+DSN = derive_test_dsn(os.environ.get("DATABASE_URL", "postgresql://sns:sns@localhost:5432/sns"))
 
 EXPECTED_TABLES = {
     "schema_version",
@@ -50,6 +52,7 @@ SELECT ci.id, ch.id FROM ci, ch RETURNING id
 @pytest.fixture(scope="module")
 def conn() -> Iterator[psycopg.Connection]:
     try:
+        require_test_dsn(DSN)  # DROP SCHEMA 직전 방어
         c = psycopg.connect(DSN, connect_timeout=5)
     except psycopg.OperationalError:
         pytest.skip("PostgreSQL 미가동 — docker compose up -d postgres")
