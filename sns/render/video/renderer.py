@@ -6,7 +6,7 @@
 3단 레이아웃 (검은 바탕):
 
        0 ~  360   부제 알약(컷마다) + 주제(영상 내내 고정)
-     360 ~ 1300   정사각 940 — 코드 이미지 → 주제 사진 → 그라데이션 순
+     360 ~ 1300   정사각 940 — 코드 → 개념 그림 → 주제 사진 → 그라데이션 순
     1300 ~ 1920   자막 = 나레이션. 쇼츠 UI 가림 영역을 피해 위쪽부터
 
 2-패스: 컷당 정지 영상 → concat + 진행바 오버레이 + 오디오.
@@ -33,6 +33,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from sns.render.code_image import render_code_square
+from sns.render.concept_image import render_concept_square
 from sns.render.fonts import FONT_CANDIDATES, pick_font
 from sns.render.text import wrap_balanced
 from sns.render.video.quality import MAX_DURATION_S
@@ -124,12 +125,21 @@ def _gradient(width: int, height: int, top: str, bottom: str) -> Image.Image:
 
 def _square(slide: Slide, side: int, spec: VideoSpec, mono_path: str | None,
             font_path: str, fetch_image: FetchImage | None) -> Image.Image:  # fmt: skip
-    """가운데 칸 — 코드 → 주제 사진 → 그라데이션 순. 개발 콘텐츠에선 코드가 가장 맞는 그림이다."""
+    """가운데 칸 — 코드 → 개념 그림 → 주제 사진 → 그라데이션 순.
+
+    앞의 셋은 우리가 그리거나 못박은 것이라 저작권·네트워크 리스크가 없다. 실사 사진이
+    마지막인 건 추상 개념을 못 그리기 때문이다 — "list vs set"에 전선 사진이 왔다.
+    """
     if slide.code.strip():
         png = render_code_square(
             slide.code, lang=slide.lang or None, size=side,
             focus_lines=slide.focus_lines, mono_path=mono_path, font_path=font_path,
         )  # fmt: skip
+        return Image.open(io.BytesIO(png)).convert("RGB")
+    if slide.concept is not None:
+        png = render_concept_square(
+            slide.concept, size=side, font_path=font_path, mono_path=mono_path
+        )
         return Image.open(io.BytesIO(png)).convert("RGB")
     if slide.image_ref:
         if fetch_image is None:

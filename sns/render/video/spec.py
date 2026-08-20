@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from sns.render.code_image import MAX_CODE_LINES
+from sns.render.concept_image import Concept, ConceptError, parse_concept
 from sns.render.text import display_width
 
 # 쇼츠/릴스 세로 규격 9:16 (FR-M2). spec이 명시하면 덮어쓰되 비율은 강제.
@@ -65,6 +66,7 @@ class Slide:
     code: str = ""  # 정사각에 넣을 코드. 비면 사진, 그것도 없으면 그라데이션
     lang: str = ""  # pygments 렉서 이름 (비면 추측)
     focus_lines: tuple[int, ...] = ()  # 밝게 둘 코드 줄(1-기반). 나머지는 눌린다
+    concept: Concept | None = None  # 우리가 그리는 개념 그림(강조·도해·기억)
     image_query: str = ""  # 스톡 검색어(영문). 생성 시점에 image_ref로 해소된다
     image_ref: str = ""  # 해소된 사진의 저장소 URL. 렌더러가 읽는 건 이쪽뿐이다
 
@@ -141,6 +143,19 @@ def _parse_image_query(raw: Mapping[str, object], where: str, code: str) -> str:
     return query
 
 
+def _parse_concept(raw: Mapping[str, object], where: str) -> Concept | None:
+    """개념 그림 — 검증은 [sns.render.concept_image]에 위임하고 예외만 갈아 끼운다."""
+    value = raw.get("concept")
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise VideoSpecError(f"{where}'concept'는 매핑이어야 함: {value!r}")
+    try:
+        return parse_concept(value)
+    except ConceptError as exc:
+        raise VideoSpecError(f"{where}'concept'가 잘못됨 — {exc}") from exc
+
+
 def _parse_slide(raw: object, index: int) -> Slide:
     where = f"'slides[{index}]'의 "
     if not isinstance(raw, Mapping):
@@ -150,12 +165,18 @@ def _parse_slide(raw: object, index: int) -> Slide:
         raise VideoSpecError(
             f"{where}'code'는 {MAX_CODE_LINES}줄 이하여야 함: {len(code.rstrip().split(chr(10)))}줄"
         )
+    concept = _parse_concept(raw, where)
+    if concept is not None and (code.strip() or raw.get("image_query")):
+        raise VideoSpecError(
+            f"{where}'concept'는 'code'·'image_query'와 함께 쓸 수 없음 — 정사각은 하나뿐이다"
+        )
     return Slide(
         subtitle=_require_text(raw, "subtitle", where, MAX_SUBTITLE_WIDTH),
         narration=_require_text(raw, "narration", where, MAX_NARRATION_WIDTH),
         code=code,
         lang=_optional_str(raw, "lang", where),
         focus_lines=_parse_focus(raw, where, code),
+        concept=concept,
         image_query=_parse_image_query(raw, where, code),
         image_ref=_optional_str(raw, "image_ref", where),
     )

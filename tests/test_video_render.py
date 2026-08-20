@@ -252,3 +252,24 @@ def test_image_ref_without_fetch_seam_raises() -> None:
     )
     with pytest.raises(VideoSpecError, match="fetch_image"):
         render_video(spec, synthesize=tone_wav)
+
+
+def test_concept_fills_the_square() -> None:
+    """개념 그림도 정사각을 채운다 — 코드 다음, 사진보다 앞."""
+    spec = parse_video_spec(
+        {
+            **SPEC_DICT,
+            "slides": [
+                {
+                    "subtitle": "부제",
+                    "narration": "개념 그림이 들어가는 컷입니다.",
+                    "concept": {"kind": "emphasis", "headline": "100억", "tag": "최악의 경우"},
+                }
+            ],
+        }
+    )
+    render = render_video(spec, synthesize=tone_wav)
+    img = _frame_at(render.mp4, render.duration_s * 0.5)
+    # 그라데이션이었다면 정사각 가운데가 배경 그라데이션 색이다. 개념 그림은 액센트 글자를 낸다.
+    band = [img.getpixel((x, 360 + 470)) for x in range(200, 880, 3)]
+    assert any(p[2] > 150 and p[2] > p[0] + 40 for p in band), "액센트 글자가 안 보임"

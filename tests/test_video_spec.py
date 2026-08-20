@@ -268,3 +268,75 @@ def test_too_long_image_query_rejected() -> None:
                 ],
             }
         )
+
+
+# ── 개념 그림 ─────────────────────────────────────────────────────
+
+_CONCEPT: dict[str, object] = {"kind": "emphasis", "headline": "100억"}
+
+
+def test_concept_parsed() -> None:
+    spec = parse_video_spec(
+        {**MINIMAL, "slides": [{"subtitle": "부제", "narration": "한 문장.", "concept": _CONCEPT}]}
+    )
+    concept = spec.slides[0].concept
+    assert concept is not None and concept.kind == "emphasis"
+    assert concept.fields["headline"] == "100억"
+
+
+def test_slide_without_concept_is_none() -> None:
+    assert parse_video_spec(MINIMAL).slides[0].concept is None
+
+
+def test_bad_concept_rejected_at_spec_level() -> None:
+    """개념 그림의 검증 실패도 렌더 진입 전에 끊긴다 — 코드·이미지와 같은 방어선."""
+    with pytest.raises(VideoSpecError, match="concept"):
+        parse_video_spec(
+            {
+                **MINIMAL,
+                "slides": [
+                    {"subtitle": "부제", "narration": "한 문장.", "concept": {"kind": "pie_chart"}}
+                ],
+            }
+        )
+
+
+def test_concept_with_code_rejected() -> None:
+    with pytest.raises(VideoSpecError, match="concept"):
+        parse_video_spec(
+            {
+                **MINIMAL,
+                "slides": [
+                    {
+                        "subtitle": "부제",
+                        "narration": "한 문장.",
+                        "code": "x = 1",
+                        "concept": _CONCEPT,
+                    }
+                ],
+            }
+        )
+
+
+def test_concept_with_image_query_rejected() -> None:
+    with pytest.raises(VideoSpecError, match="concept"):
+        parse_video_spec(
+            {
+                **MINIMAL,
+                "slides": [
+                    {
+                        "subtitle": "부제",
+                        "narration": "한 문장.",
+                        "image_query": "server room",
+                        "concept": _CONCEPT,
+                    }
+                ],
+            }
+        )
+
+
+def test_concept_must_be_a_mapping() -> None:
+    with pytest.raises(VideoSpecError, match="concept"):
+        parse_video_spec(
+            {**MINIMAL, "slides": [{"subtitle": "부제", "narration": "한 문장.", "concept": "x"}]}
+        )
