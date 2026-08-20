@@ -340,3 +340,44 @@ def test_concept_must_be_a_mapping() -> None:
         parse_video_spec(
             {**MINIMAL, "slides": [{"subtitle": "부제", "narration": "한 문장.", "concept": "x"}]}
         )
+
+
+def test_image_prompt_parsed() -> None:
+    spec = parse_video_spec(
+        {
+            **MINIMAL,
+            "slides": [
+                {"subtitle": "부제", "narration": "한 문장.", "image_prompt": "a glowing cube"}
+            ],
+        }
+    )
+    assert spec.slides[0].image_prompt == "a glowing cube"
+
+
+def test_image_prompt_with_code_rejected() -> None:
+    with pytest.raises(VideoSpecError, match="image_prompt"):
+        parse_video_spec(
+            {
+                **MINIMAL,
+                "slides": [
+                    {
+                        "subtitle": "부제",
+                        "narration": "한 문장.",
+                        "code": "x = 1",
+                        "image_prompt": "a glowing cube",
+                    }
+                ],
+            }
+        )
+
+
+def test_non_ascii_image_prompt_rejected() -> None:
+    with pytest.raises(VideoSpecError, match="image_prompt"):
+        parse_video_spec(
+            {
+                **MINIMAL,
+                "slides": [
+                    {"subtitle": "부제", "narration": "한 문장.", "image_prompt": "빛나는 정육면체"}
+                ],
+            }
+        )

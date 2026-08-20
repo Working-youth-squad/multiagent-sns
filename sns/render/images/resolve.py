@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from sns.render.images.gate import StockImage, pick_image, screen_query
+from sns.render.images.generate import ImageGenerationError
 from sns.render.images.pexels import DEFAULT_LIMIT, PexelsError, download_image, search_pexels
 from sns.render.images.square import ImageSourceError, to_square
 from sns.render.storage import MediaStore
@@ -26,6 +27,10 @@ DEFAULT_DIM = 0.25
 
 SearchImages = Callable[..., list[StockImage]]
 DownloadImage = Callable[[str], bytes]
+# 생성은 **유료 전용**이라 기본 미배선이다. 켜려면 명시로 주입한다:
+#     resolve_images(spec, store=store, generate=generate_image)
+# 기본값을 `generate_image`로 두면 결제가 켜진 계정에서 사이클이 조용히 돈을 쓴다.
+GenerateImage = Callable[[str], bytes]
 
 
 @dataclass(frozen=True)
@@ -43,12 +48,34 @@ def _resolve_slide(
     store: MediaStore,
     search: SearchImages,
     download: DownloadImage,
+    generate: GenerateImage | None,
     dim: float,
 ) -> str | None:
     """사진을 붙였으면 None, 못 붙였으면 사유 문자열."""
+    if slide.get("image_ref"):
+        return None  # 이미 못박혀 있다(재실행 멱등)
+
+    # 생성이 스톡보다 앞이다 — 직접 말한 구도가 검색어보다 정확하다.
+    prompt = str(slide.get("image_prompt", "")).strip()
+    if prompt:
+        if generate is None:
+            return f"{where} 'image_prompt'가 있으나 generate가 미배선(유료) — 그림 생략"
+        verdict = screen_query(prompt)
+        if not verdict.allowed:
+            return f"{where} {verdict.reason}"
+        try:
+            square = to_square(generate(prompt), dim=dim)
+        except (ImageGenerationError, ImageSourceError, OSError) as exc:
+            return f"{where} 이미지 생성 실패 — {exc}"
+        # 우리가 만든 그림이라 출처 표기가 없다 — Pexels 크레딧을 달면 거짓 표기가 된다.
+        slide["image_ref"] = store.put(
+            square, checksum=hashlib.sha256(square).hexdigest(), kind="image", ext="png"
+        )
+        return None
+
     query = str(slide.get("image_query", "")).strip()
-    if not query or slide.get("image_ref"):
-        return None  # 붙일 게 없거나 이미 못박혀 있다(재실행 멱등)
+    if not query:
+        return None  # 붙일 게 없다
     # 게이트를 여기서도 건다. `search_pexels`도 검열하지만 그건 어댑터 사정이라,
     # 소스를 갈아끼우면 게이트가 통째로 빠진다 — 금지 소재 차단이 주입 대상이면 안 된다.
     verdict = screen_query(query)
@@ -78,6 +105,7 @@ def resolve_images(
     store: MediaStore,
     search: SearchImages = search_pexels,
     download: DownloadImage = download_image,
+    generate: GenerateImage | None = None,
     dim: float = DEFAULT_DIM,
 ) -> ImageResolution:
     """`media_spec`의 모든 `image_query`를 해소한 **새 spec**을 돌려준다(입력 불변)."""
@@ -97,6 +125,7 @@ def resolve_images(
             store=store,
             search=search,
             download=download,
+            generate=generate,
             dim=dim,
         )
         if note:

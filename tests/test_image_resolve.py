@@ -14,6 +14,7 @@ import pytest
 from PIL import Image
 
 from sns.render.images.gate import StockImage
+from sns.render.images.generate import ImageGenerationError
 from sns.render.images.pexels import PexelsError
 from sns.render.images.resolve import resolve_images
 from sns.render.storage import InMemoryMediaStore
@@ -176,3 +177,95 @@ def test_malformed_spec_raises() -> None:
         resolve_images(
             {"topic": "x"}, store=InMemoryMediaStore(), search=fake_search, download=fake_download
         )
+
+
+# ── 생성 이미지 (기본 미배선) ─────────────────────────────────────
+
+PROMPT_SPEC: dict[str, object] = {
+    "topic": "주제",
+    "slides": [
+        {
+            "subtitle": "생성 컷",
+            "narration": "그림이 붙을 컷.",
+            "image_prompt": "one glowing cube apart from a grey row",
+        }
+    ],
+}
+
+
+def test_image_prompt_without_generator_is_noted_not_silently_dropped() -> None:
+    """생성은 유료라 기본 미배선이다 — 그림이 왜 안 붙었는지는 남아야 한다."""
+    result = resolve_images(
+        PROMPT_SPEC, store=InMemoryMediaStore(), search=fake_search, download=fake_download
+    )
+    slides = result.media_spec["slides"]
+    assert isinstance(slides, list)
+    assert "image_ref" not in slides[0]
+    assert any("generate" in n for n in result.notes)
+
+
+def test_generated_bytes_land_in_the_store() -> None:
+    result = resolve_images(
+        PROMPT_SPEC,
+        store=(store := InMemoryMediaStore()),
+        search=fake_search,
+        download=fake_download,
+        generate=lambda subject: photo_bytes((10, 60, 180)),
+    )
+    slides = result.media_spec["slides"]
+    assert isinstance(slides, list)
+    ref = slides[0]["image_ref"]
+    assert Image.open(io.BytesIO(store.blobs[ref])).size == (940, 940)
+
+
+def test_generated_image_records_no_stock_credit() -> None:
+    """우리가 만든 그림에 Pexels 출처를 달면 거짓 표기가 된다."""
+    result = resolve_images(
+        PROMPT_SPEC,
+        store=InMemoryMediaStore(),
+        search=fake_search,
+        download=fake_download,
+        generate=lambda subject: photo_bytes(),
+    )
+    slides = result.media_spec["slides"]
+    assert isinstance(slides, list)
+    assert "image_source" not in slides[0] and "image_credit" not in slides[0]
+
+
+def test_generation_failure_falls_back_with_a_note() -> None:
+    def boom(subject: str) -> bytes:
+        raise ImageGenerationError("429 결제 필요")
+
+    result = resolve_images(
+        PROMPT_SPEC,
+        store=InMemoryMediaStore(),
+        search=fake_search,
+        download=fake_download,
+        generate=boom,
+    )
+    slides = result.media_spec["slides"]
+    assert isinstance(slides, list)
+    assert "image_ref" not in slides[0]
+    assert any("결제" in n for n in result.notes)
+
+
+def test_generation_wins_over_stock_when_both_given() -> None:
+    """직접 말한 구도가 검색어보다 정확하다 — 둘 다 오면 생성을 쓴다."""
+    both = {
+        **PROMPT_SPEC,
+        "slides": [{**PROMPT_SPEC["slides"][0], "image_query": "network cables"}],  # type: ignore[index]
+    }
+    searched: list[str] = []
+
+    def counting(query: str, *, limit: int = 15) -> list[StockImage]:
+        searched.append(query)
+        return [candidate()]
+
+    resolve_images(
+        both,
+        store=InMemoryMediaStore(),
+        search=counting,
+        download=fake_download,
+        generate=lambda subject: photo_bytes(),
+    )
+    assert searched == [], "생성이 있는데 스톡을 검색함"

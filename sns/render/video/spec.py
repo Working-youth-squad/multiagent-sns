@@ -42,7 +42,8 @@ MAX_SUBTITLE_WIDTH = 40
 # 컷 1개의 나레이션 폭 상한. Chirp 3 HD 한국어 실측 8.0자/초 → 한글 31자면 약 3.9초로
 # FR-A2의 화면 전환 주기(2~4초) 안에 들어온다. 한 컷 = 한 화면이라 이게 곧 정지 시간이다.
 MAX_NARRATION_WIDTH = 62
-# 스톡 검색어 길이 상한. 길어질수록 결과가 0건으로 수렴해 그라데이션 폴백만 늘어난다.
+# 스톡 검색어·생성 주제 길이 상한. 검색은 길수록 0건에 수렴하고, 생성 주제는 길수록
+# 고정 화풍과 싸운다([sns.render.images.generate.STYLE_RULES]).
 MAX_IMAGE_QUERY_LEN = 60
 
 DEFAULT_VOICE = "ko-KR-Chirp3-HD-Charon"
@@ -68,6 +69,7 @@ class Slide:
     focus_lines: tuple[int, ...] = ()  # 밝게 둘 코드 줄(1-기반). 나머지는 눌린다
     concept: Concept | None = None  # 우리가 그리는 개념 그림(강조·도해·기억)
     image_query: str = ""  # 스톡 검색어(영문). 생성 시점에 image_ref로 해소된다
+    image_prompt: str = ""  # 생성 이미지 주제(영문). 유료라 기본 미배선
     image_ref: str = ""  # 해소된 사진의 저장소 URL. 렌더러가 읽는 건 이쪽뿐이다
 
 
@@ -125,20 +127,18 @@ def _parse_focus(raw: Mapping[str, object], where: str, code: str) -> tuple[int,
     return cast(tuple[int, ...], numbers)
 
 
-def _parse_image_query(raw: Mapping[str, object], where: str, code: str) -> str:
-    """스톡 검색어. 영문·짧게만 받는다 — 게이트와 검색이 모두 영어 기준이다."""
-    query = _optional_str(raw, "image_query", where).strip()
+def _parse_image_text(raw: Mapping[str, object], key: str, where: str, code: str) -> str:
+    """스톡 검색어·생성 주제. 영문·짧게만 받는다 — 게이트와 모델이 모두 영어 기준이다."""
+    query = _optional_str(raw, key, where).strip()
     if not query:
         return ""
     if code.strip():
-        raise VideoSpecError(
-            f"{where}'image_query'와 'code'는 함께 쓸 수 없음 — 정사각은 하나뿐이다"
-        )
+        raise VideoSpecError(f"{where}'{key}'와 'code'는 함께 쓸 수 없음 — 정사각은 하나뿐이다")
     if not query.isascii():
-        raise VideoSpecError(f"{where}'image_query'는 영문이어야 함(금지어 판정 기준): {query!r}")
+        raise VideoSpecError(f"{where}'{key}'는 영문이어야 함(금지어 판정 기준): {query!r}")
     if len(query) > MAX_IMAGE_QUERY_LEN:
         raise VideoSpecError(
-            f"{where}'image_query'는 {MAX_IMAGE_QUERY_LEN}자 이하여야 함: {len(query)}자"
+            f"{where}'{key}'는 {MAX_IMAGE_QUERY_LEN}자 이하여야 함: {len(query)}자"
         )
     return query
 
@@ -166,9 +166,9 @@ def _parse_slide(raw: object, index: int) -> Slide:
             f"{where}'code'는 {MAX_CODE_LINES}줄 이하여야 함: {len(code.rstrip().split(chr(10)))}줄"
         )
     concept = _parse_concept(raw, where)
-    if concept is not None and (code.strip() or raw.get("image_query")):
+    if concept is not None and (code.strip() or raw.get("image_query") or raw.get("image_prompt")):
         raise VideoSpecError(
-            f"{where}'concept'는 'code'·'image_query'와 함께 쓸 수 없음 — 정사각은 하나뿐이다"
+            f"{where}'concept'는 'code'·'image_query'·'image_prompt'와 함께 쓸 수 없음"
         )
     return Slide(
         subtitle=_require_text(raw, "subtitle", where, MAX_SUBTITLE_WIDTH),
@@ -177,7 +177,8 @@ def _parse_slide(raw: object, index: int) -> Slide:
         lang=_optional_str(raw, "lang", where),
         focus_lines=_parse_focus(raw, where, code),
         concept=concept,
-        image_query=_parse_image_query(raw, where, code),
+        image_query=_parse_image_text(raw, "image_query", where, code),
+        image_prompt=_parse_image_text(raw, "image_prompt", where, code),
         image_ref=_optional_str(raw, "image_ref", where),
     )
 
