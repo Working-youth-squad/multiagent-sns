@@ -11,9 +11,15 @@ from sns.tools.contracts import MediaKind
 
 
 class MediaStore(Protocol):
-    """렌더 바이트 → 안정 URL. 반환 URL은 MediaAsset.storage_url에 실린다."""
+    """렌더 바이트 → 안정 URL. 반환 URL은 MediaAsset.storage_url에 실린다.
+
+    `get`은 주제 사진 때문에 생겼다 — 사진은 생성 시점에 저장되고 렌더 시점에 다시
+    읽히므로, 쓰기만 있는 저장소로는 그 왕복이 성립하지 않는다.
+    """
 
     def put(self, data: bytes, *, checksum: str, kind: MediaKind, ext: str) -> str: ...
+
+    def get(self, url: str) -> bytes: ...
 
 
 class InMemoryMediaStore:
@@ -29,3 +35,6 @@ class InMemoryMediaStore:
         url = f"mem://{kind}/{checksum}.{ext}"
         self.blobs[url] = data
         return url
+
+    def get(self, url: str) -> bytes:
+        return self.blobs[url]

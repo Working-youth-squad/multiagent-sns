@@ -26,6 +26,7 @@ import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
+from urllib.parse import urlparse
 
 import psycopg
 from dotenv import load_dotenv
@@ -68,6 +69,9 @@ class DirMediaStore:
         path.write_bytes(data)
         self.saved.append(path)
         return path.resolve().as_uri()
+
+    def get(self, url: str) -> bytes:
+        return Path(urlparse(url).path.lstrip("/")).read_bytes()
 
 
 def find_font() -> str | None:

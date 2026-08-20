@@ -65,6 +65,9 @@ class DirMediaStore:
         path.write_bytes(data)
         return str(path)
 
+    def get(self, url: str) -> bytes:
+        return Path(url).read_bytes()
+
 
 def main() -> None:
     ffmpeg = sys.argv[1] if len(sys.argv) > 1 else "ffmpeg"

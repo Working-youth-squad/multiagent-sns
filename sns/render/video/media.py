@@ -37,6 +37,7 @@ class VideoRenderMedia:
             parse_video_spec(media_spec),
             synthesize=self._synthesize,
             font_path=self._font_path,
+            fetch_image=self._store.get,
             ffmpeg=self._ffmpeg,
         )
 

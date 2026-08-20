@@ -8,7 +8,7 @@ import json
 import urllib.parse
 import urllib.request
 
-from sns.research.sources._http import DEFAULT_OPENER, MAX_RESPONSE_BYTES, Opener
+from sns.net.http import DEFAULT_OPENER, MAX_RESPONSE_BYTES, Opener
 
 YOUTUBE_VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 

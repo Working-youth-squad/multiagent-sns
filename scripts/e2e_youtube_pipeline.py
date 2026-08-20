@@ -68,6 +68,9 @@ class DirMediaStore:
         path.write_bytes(data)
         return str(path)
 
+    def get(self, url: str) -> bytes:
+        return Path(url).read_bytes()
+
 
 def make_gate(ffprobe: str, ffmpeg: str) -> AssessQuality:
     """영상 품질 게이트를 AssessQuality 형태로 조립."""

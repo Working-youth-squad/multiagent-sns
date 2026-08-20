@@ -11,7 +11,7 @@ import re
 import urllib.parse
 import urllib.request
 
-from sns.research.sources._http import DEFAULT_OPENER, MAX_RESPONSE_BYTES, Opener
+from sns.net.http import DEFAULT_OPENER, MAX_RESPONSE_BYTES, Opener
 
 NAVER_NEWS_URL = "https://openapi.naver.com/v1/search/news.json"
 _TAG_RE = re.compile(r"<[^>]+>")

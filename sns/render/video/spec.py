@@ -7,7 +7,7 @@
 3단 레이아웃 기준 구조 (1080×1920, 검은 바탕):
 
        0 ~  360   부제 알약(컷마다 변화) + **주제**(영상 내내 고정)
-     360 ~ 1300   정사각 940 — 코드 이미지(없으면 그라데이션)
+     360 ~ 1300   정사각 940 — 코드 이미지 → 주제 사진 → 그라데이션 순으로 채운다
     1300 ~ 1920   자막 = 나레이션. 쇼츠 UI 가림 영역을 피해 위쪽부터 채운다
 
 `topic`이 영상 내내 고정되는 앵커다. 예전에는 슬라이드마다 제목이 바뀌어 "무슨 영상인지"를
@@ -41,6 +41,8 @@ MAX_SUBTITLE_WIDTH = 40
 # 컷 1개의 나레이션 폭 상한. Chirp 3 HD 한국어 실측 8.0자/초 → 한글 31자면 약 3.9초로
 # FR-A2의 화면 전환 주기(2~4초) 안에 들어온다. 한 컷 = 한 화면이라 이게 곧 정지 시간이다.
 MAX_NARRATION_WIDTH = 62
+# 스톡 검색어 길이 상한. 길어질수록 결과가 0건으로 수렴해 그라데이션 폴백만 늘어난다.
+MAX_IMAGE_QUERY_LEN = 60
 
 DEFAULT_VOICE = "ko-KR-Chirp3-HD-Charon"
 # 코드가 없는 컷의 정사각을 채우는 그라데이션 + 텍스트/액센트 (다크 브랜드 팔레트).
@@ -60,9 +62,11 @@ class Slide:
 
     subtitle: str  # 상단 알약 — 이 컷이 무엇을 다루는지
     narration: str  # TTS 발화이자 하단 자막
-    code: str = ""  # 정사각에 넣을 코드. 비면 그라데이션으로 채운다
+    code: str = ""  # 정사각에 넣을 코드. 비면 사진, 그것도 없으면 그라데이션
     lang: str = ""  # pygments 렉서 이름 (비면 추측)
     focus_lines: tuple[int, ...] = ()  # 밝게 둘 코드 줄(1-기반). 나머지는 눌린다
+    image_query: str = ""  # 스톡 검색어(영문). 생성 시점에 image_ref로 해소된다
+    image_ref: str = ""  # 해소된 사진의 저장소 URL. 렌더러가 읽는 건 이쪽뿐이다
 
 
 @dataclass(frozen=True)
@@ -119,6 +123,24 @@ def _parse_focus(raw: Mapping[str, object], where: str, code: str) -> tuple[int,
     return cast(tuple[int, ...], numbers)
 
 
+def _parse_image_query(raw: Mapping[str, object], where: str, code: str) -> str:
+    """스톡 검색어. 영문·짧게만 받는다 — 게이트와 검색이 모두 영어 기준이다."""
+    query = _optional_str(raw, "image_query", where).strip()
+    if not query:
+        return ""
+    if code.strip():
+        raise VideoSpecError(
+            f"{where}'image_query'와 'code'는 함께 쓸 수 없음 — 정사각은 하나뿐이다"
+        )
+    if not query.isascii():
+        raise VideoSpecError(f"{where}'image_query'는 영문이어야 함(금지어 판정 기준): {query!r}")
+    if len(query) > MAX_IMAGE_QUERY_LEN:
+        raise VideoSpecError(
+            f"{where}'image_query'는 {MAX_IMAGE_QUERY_LEN}자 이하여야 함: {len(query)}자"
+        )
+    return query
+
+
 def _parse_slide(raw: object, index: int) -> Slide:
     where = f"'slides[{index}]'의 "
     if not isinstance(raw, Mapping):
@@ -134,6 +156,8 @@ def _parse_slide(raw: object, index: int) -> Slide:
         code=code,
         lang=_optional_str(raw, "lang", where),
         focus_lines=_parse_focus(raw, where, code),
+        image_query=_parse_image_query(raw, where, code),
+        image_ref=_optional_str(raw, "image_ref", where),
     )
 
 

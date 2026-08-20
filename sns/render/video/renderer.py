@@ -6,7 +6,7 @@
 3단 레이아웃 (검은 바탕):
 
        0 ~  360   부제 알약(컷마다) + 주제(영상 내내 고정)
-     360 ~ 1300   정사각 940 — 코드 이미지, 없으면 그라데이션
+     360 ~ 1300   정사각 940 — 코드 이미지 → 주제 사진 → 그라데이션 순
     1300 ~ 1920   자막 = 나레이션. 쇼츠 UI 가림 영역을 피해 위쪽부터
 
 2-패스: 컷당 정지 영상 → concat + 진행바 오버레이 + 오디오.
@@ -25,6 +25,7 @@ import io
 import subprocess
 import tempfile
 import wave
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -43,6 +44,9 @@ from sns.render.video.tts import Synthesize, wav_duration_s
 # 조합이 만들어질 수 있었다.
 __all__ = ["MAX_DURATION_S", "VideoRender", "render_video"]
 FPS = 30
+
+# 저장된 사진 바이트를 읽는 seam(FR-M3). 렌더러는 저장소 구현을 모른다 — `synthesize`와 같은 규율.
+FetchImage = Callable[[str], bytes]
 
 # 3단 비율 (1080×1920 실측 기준). 다른 해상도에서도 같은 구성이 되도록 비율로 둔다.
 _TOP_RATIO = 360 / 1920  # 상단 밴드 높이
@@ -119,17 +123,30 @@ def _gradient(width: int, height: int, top: str, bottom: str) -> Image.Image:
 
 
 def _square(slide: Slide, side: int, spec: VideoSpec, mono_path: str | None,
-            font_path: str) -> Image.Image:  # fmt: skip
+            font_path: str, fetch_image: FetchImage | None) -> Image.Image:  # fmt: skip
+    """가운데 칸 — 코드 → 주제 사진 → 그라데이션 순. 개발 콘텐츠에선 코드가 가장 맞는 그림이다."""
     if slide.code.strip():
         png = render_code_square(
             slide.code, lang=slide.lang or None, size=side,
             focus_lines=slide.focus_lines, mono_path=mono_path, font_path=font_path,
         )  # fmt: skip
         return Image.open(io.BytesIO(png)).convert("RGB")
+    if slide.image_ref:
+        if fetch_image is None:
+            raise VideoSpecError(
+                f"'image_ref'({slide.image_ref})가 있는데 fetch_image seam이 없음 — "
+                "조용히 그라데이션으로 떨어지지 않는다"
+            )
+        photo = Image.open(io.BytesIO(fetch_image(slide.image_ref))).convert("RGB")
+        # 저장된 건 이미 정사각이지만, 해상도가 다른 spec에서도 슬롯을 정확히 채우게 맞춘다.
+        if photo.size != (side, side):
+            photo = photo.resize((side, side), Image.Resampling.LANCZOS)
+        return photo
     return _gradient(side, side, spec.background, spec.background2)
 
 
-def _frame_png(slide: Slide, spec: VideoSpec, font_path: str, mono_path: str | None) -> bytes:
+def _frame_png(slide: Slide, spec: VideoSpec, font_path: str, mono_path: str | None,
+               fetch_image: FetchImage | None) -> bytes:  # fmt: skip
     """컷 1장 — 알약·주제·정사각·자막을 검은 바탕에 그린다."""
     width, height = spec.width, spec.height
     top_h = round(height * _TOP_RATIO)
@@ -138,7 +155,10 @@ def _frame_png(slide: Slide, spec: VideoSpec, font_path: str, mono_path: str | N
     fg, accent = _hex_to_rgb(spec.foreground), _hex_to_rgb(spec.accent)
 
     canvas = Image.new("RGB", (width, height), _GROUND)
-    canvas.paste(_square(slide, side, spec, mono_path, font_path), ((width - side) // 2, top_h))
+    canvas.paste(
+        _square(slide, side, spec, mono_path, font_path, fetch_image),
+        ((width - side) // 2, top_h),
+    )
     draw = ImageDraw.Draw(canvas)
 
     topic_font = _font(round(width / _TOPIC_DIV), font_path)
@@ -213,6 +233,7 @@ def render_video(
     synthesize: Synthesize,
     font_path: str | None = None,
     mono_path: str | None = None,
+    fetch_image: FetchImage | None = None,
     ffmpeg: str = "ffmpeg",
     bgm: bytes | None = None,
     bgm_ext: str = "mp3",
@@ -232,7 +253,9 @@ def render_video(
 
         # 1패스: 컷당 정지 영상. 줌이 없으므로 오버스캔도 세그먼트 등분도 없다.
         for i, (slide, duration) in enumerate(zip(spec.slides, durations, strict=True)):
-            (workdir / f"f{i}.png").write_bytes(_frame_png(slide, spec, resolved_font, mono_path))
+            (workdir / f"f{i}.png").write_bytes(
+                _frame_png(slide, spec, resolved_font, mono_path, fetch_image)
+            )
             _run_ffmpeg(
                 [
                     ffmpeg,

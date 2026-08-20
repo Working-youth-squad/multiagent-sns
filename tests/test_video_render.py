@@ -211,3 +211,44 @@ def test_missing_cjk_font_raises_instead_of_tofu(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(renderer_mod, "_FONT_CANDIDATES", ())
     with pytest.raises(FontNotFoundError):
         render_video(SPEC, synthesize=tone_wav)
+
+
+def _solid_png(rgb: tuple[int, int, int], side: int = 940) -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (side, side), rgb).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_image_ref_fills_the_square() -> None:
+    """코드가 없는 컷은 해소된 사진으로 가운데를 채운다 — 그라데이션은 마지막 폴백."""
+    magenta = (200, 30, 160)
+    spec = parse_video_spec(
+        {
+            **SPEC_DICT,
+            "slides": [
+                {
+                    "subtitle": "부제",
+                    "narration": "사진이 들어가는 컷입니다.",
+                    "image_ref": "mem://image/deadbeef.png",
+                }
+            ],
+        }
+    )
+    render = render_video(spec, synthesize=tone_wav, fetch_image=lambda ref: _solid_png(magenta))
+    img = _frame_at(render.mp4, render.duration_s * 0.5)
+    center = img.getpixel((spec.width // 2, 360 + 470))
+    assert abs(center[0] - magenta[0]) < 25 and abs(center[2] - magenta[2]) < 25, center
+
+
+def test_image_ref_without_fetch_seam_raises() -> None:
+    """조용히 그라데이션으로 떨어지면 배선 실수가 영상까지 흘러간다."""
+    spec = parse_video_spec(
+        {
+            **SPEC_DICT,
+            "slides": [
+                {"subtitle": "부제", "narration": "한 문장.", "image_ref": "mem://image/x.png"}
+            ],
+        }
+    )
+    with pytest.raises(VideoSpecError, match="fetch_image"):
+        render_video(spec, synthesize=tone_wav)

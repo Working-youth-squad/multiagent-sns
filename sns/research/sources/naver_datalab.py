@@ -9,7 +9,7 @@ import json
 import urllib.request
 from datetime import date, timedelta
 
-from sns.research.sources._http import DEFAULT_OPENER, MAX_RESPONSE_BYTES, Opener
+from sns.net.http import DEFAULT_OPENER, MAX_RESPONSE_BYTES, Opener
 
 NAVER_DATALAB_URL = "https://openapi.naver.com/v1/datalab/search"
 

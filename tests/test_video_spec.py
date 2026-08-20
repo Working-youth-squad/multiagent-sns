@@ -197,3 +197,74 @@ def test_custom_palette_parsed() -> None:
 def test_bad_color_rejected() -> None:
     with pytest.raises(VideoSpecError, match="accent"):
         parse_video_spec({**MINIMAL, "accent": "orange"})
+
+
+# ── 주제 이미지 ───────────────────────────────────────────────────
+
+
+def test_image_query_parsed() -> None:
+    spec = parse_video_spec(
+        {
+            **MINIMAL,
+            "slides": [
+                {"subtitle": "부제", "narration": "한 문장.", "image_query": "network cables"}
+            ],
+        }
+    )
+    assert spec.slides[0].image_query == "network cables"
+    assert spec.slides[0].image_ref == ""
+
+
+def test_image_ref_parsed() -> None:
+    spec = parse_video_spec(
+        {
+            **MINIMAL,
+            "slides": [
+                {"subtitle": "부제", "narration": "한 문장.", "image_ref": "mem://image/ab.png"}
+            ],
+        }
+    )
+    assert spec.slides[0].image_ref == "mem://image/ab.png"
+
+
+def test_image_query_with_code_rejected() -> None:
+    """정사각은 하나뿐이다 — 코드와 사진을 같이 주면 무엇을 버릴지 코드가 정하게 된다."""
+    with pytest.raises(VideoSpecError, match="image_query"):
+        parse_video_spec(
+            {
+                **MINIMAL,
+                "slides": [
+                    {
+                        "subtitle": "부제",
+                        "narration": "한 문장.",
+                        "code": "x = 1",
+                        "image_query": "network cables",
+                    }
+                ],
+            }
+        )
+
+
+def test_non_ascii_image_query_rejected() -> None:
+    """스톡 검색과 금지어 판정이 영어 기준이라, 한글 질의는 게이트를 그냥 지나간다."""
+    with pytest.raises(VideoSpecError, match="image_query"):
+        parse_video_spec(
+            {
+                **MINIMAL,
+                "slides": [
+                    {"subtitle": "부제", "narration": "한 문장.", "image_query": "네트워크"}
+                ],
+            }
+        )
+
+
+def test_too_long_image_query_rejected() -> None:
+    with pytest.raises(VideoSpecError, match="image_query"):
+        parse_video_spec(
+            {
+                **MINIMAL,
+                "slides": [
+                    {"subtitle": "부제", "narration": "한 문장.", "image_query": "word " * 40}
+                ],
+            }
+        )

@@ -7,7 +7,7 @@
 
 import re
 
-from sns.research.sources._http import DEFAULT_OPENER, MAX_RESPONSE_BYTES, Opener
+from sns.net.http import DEFAULT_OPENER, MAX_RESPONSE_BYTES, Opener
 
 GITHUB_TRENDING_URL = "https://github.com/trending?since=daily"
 
