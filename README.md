@@ -17,9 +17,20 @@
 
 ```bash
 uv sync                        # 의존성 설치 (Python 3.12, https://docs.astral.sh/uv/)
+cp .env.example .env           # 환경변수 — 키 발급처는 파일 주석 참조
 docker compose up -d postgres  # 로컬 PostgreSQL
 uv run pytest                  # 테스트
 ```
+
+**시크릿**: 환경변수는 `.env`(gitignore), OAuth 클라이언트·토큰 같은 파일은 `.secrets/`(gitignore).
+`.env`는 `scripts/` 진입점에서만 읽는다 — 라이브러리(`sns/`)는 환경변수 주입만 받는다.
+
+**테스트 DB는 분리돼 있다**: `pytest`는 스키마를 DROP하고 테이블을 TRUNCATE하므로
+`DATABASE_URL`의 DB를 그대로 쓰지 않고 이름에 `_test`를 붙인 별도 DB(`sns_test`)를 쓴다.
+없으면 자동으로 만든다 — 환경변수를 따로 설정할 필요 없다. 개발 DB를 가리킨 채로 파괴적
+작업을 하려 하면 `tests/dbguard.py`가 막는다(작업 중이던 사이클 원장이 날아가는 사고 방지).
+
+**영상 렌더**에는 ffmpeg/ffprobe가 PATH에 있어야 한다(없으면 해당 테스트는 skip).
 
 ## 핵심 원칙
 

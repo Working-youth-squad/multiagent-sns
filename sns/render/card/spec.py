@@ -9,6 +9,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import cast
 
+from sns.render.text import display_width
+
 # IG 피드 카드 기본 규격 4:5 (1080×1350). spec이 명시하면 덮어쓴다.
 DEFAULT_WIDTH = 1080
 DEFAULT_HEIGHT = 1350
@@ -17,6 +19,19 @@ DEFAULT_HEIGHT = 1350
 # 죽인다(예: 10^8×10^8). 발행 진입 전 방어선인 파싱에서 끊는다. IG/스토리 최대
 # (1080×1920)의 넉넉한 상한.
 MAX_CARD_SIDE = 4096
+
+# 필드별 용량 상한 (FR-Q1) — 1080×1350 안전영역에 실제로 들어가는 경계를 실측해 고정.
+# 렌더 후 overflow로 걸러내면 LLM 재시도가 렌더 비용을 물므로 **파싱 단계에서** 끊는다.
+#
+# 단위는 글자수가 아니라 **표시 폭**이다(한글 1자 = 2, 라틴 1자 = 1). 한글 글리프의
+# 자간이 라틴의 약 2배라, 글자수로 재면 같은 32자여도 한글은 넘치고 영문은 여유가 남는다.
+# 아래 값은 한글 기준 실측치(훅 32 · 제목 24 · 본문 60×3단락 · 푸터 24자)의 폭 환산.
+# 훅이 가장 큰 폰트라 지배 변수 — 훅이 상한을 넘으면 본문과 무관하게 카드가 넘쳤다.
+MAX_HOOK_WIDTH = 64
+MAX_TITLE_WIDTH = 48
+MAX_BODY_PARAGRAPHS = 3
+MAX_BODY_WIDTH = 120
+MAX_FOOTER_WIDTH = 48
 
 DEFAULT_PALETTE = {
     "background": "#0d1117",
@@ -47,12 +62,23 @@ class CardSpec:
     palette: Palette
 
 
-def _require_str(spec: Mapping[str, object], key: str, *, allow_empty: bool = False) -> str:
+def _require_str(
+    spec: Mapping[str, object],
+    key: str,
+    *,
+    allow_empty: bool = False,
+    max_width: int | None = None,
+) -> str:
     value = spec.get(key)
     if not isinstance(value, str):
         raise CardSpecError(f"'{key}'는 문자열이어야 함: {value!r}")
     if not allow_empty and not value.strip():
         raise CardSpecError(f"'{key}'는 비어 있을 수 없음")
+    if max_width is not None and display_width(value) > max_width:
+        raise CardSpecError(
+            f"'{key}'가 카드 폭을 넘음 — 표시 폭 {max_width} 이하 "
+            f"(한글 {max_width // 2}자): 현재 {display_width(value)}"
+        )
     return value
 
 
@@ -62,10 +88,17 @@ def _require_body(spec: Mapping[str, object]) -> tuple[str, ...]:
         value = [value]
     if not isinstance(value, list) or not value:
         raise CardSpecError(f"'body'는 비지 않은 리스트여야 함: {value!r}")
+    if len(value) > MAX_BODY_PARAGRAPHS:
+        raise CardSpecError(f"'body'는 {MAX_BODY_PARAGRAPHS}단락 이하여야 함: {len(value)}단락")
     lines: list[str] = []
     for i, line in enumerate(value):
         if not isinstance(line, str):
             raise CardSpecError(f"'body[{i}]'는 문자열이어야 함: {line!r}")
+        if display_width(line) > MAX_BODY_WIDTH:
+            raise CardSpecError(
+                f"'body[{i}]'가 카드 폭을 넘음 — 표시 폭 {MAX_BODY_WIDTH} 이하 "
+                f"(한글 {MAX_BODY_WIDTH // 2}자): 현재 {display_width(line)}"
+            )
         lines.append(line)
     return tuple(lines)
 
@@ -108,9 +141,9 @@ def parse_card_spec(media_spec: Mapping[str, object]) -> CardSpec:
     return CardSpec(
         width=_parse_dimension(media_spec, "width", DEFAULT_WIDTH),
         height=_parse_dimension(media_spec, "height", DEFAULT_HEIGHT),
-        hook=_require_str(media_spec, "hook"),
-        title=_require_str(media_spec, "title"),
+        hook=_require_str(media_spec, "hook", max_width=MAX_HOOK_WIDTH),
+        title=_require_str(media_spec, "title", max_width=MAX_TITLE_WIDTH),
         body=_require_body(media_spec),
-        footer=_require_str(media_spec, "footer"),
+        footer=_require_str(media_spec, "footer", max_width=MAX_FOOTER_WIDTH),
         palette=_parse_palette(media_spec),
     )

@@ -25,14 +25,27 @@ class Synthesize(Protocol):
 
 
 def synthesize_google(text: str, *, voice: str) -> bytes:
-    """Google Cloud TTS 합성. API 키는 env `GOOGLE_TTS_API_KEY`."""
+    """Google Cloud TTS 합성.
+
+    인증 경로 2종 — env `GOOGLE_TTS_API_KEY`가 있으면 API 키, 없으면 **ADC**
+    (`gcloud auth application-default login`). 조직 정책(`API 키를 허용하지 않습니다`)이
+    키 발급을 막는 계정에서는 ADC가 유일한 경로라 폴백이 아니라 1급 경로로 둔다.
+    """
     api_key = os.environ.get(ENV_TTS_API_KEY)
-    if not api_key:
-        raise TtsError(f"env {ENV_TTS_API_KEY} 누락 — GCP 콘솔에서 TTS 제한 API 키 발급 필요")
     # 지연 임포트: 오프라인 테스트가 google.cloud 임포트 비용/의존을 지지 않게.
     from google.cloud import texttospeech
 
-    client = texttospeech.TextToSpeechClient(client_options={"api_key": api_key})
+    try:
+        client = (
+            texttospeech.TextToSpeechClient(client_options={"api_key": api_key})
+            if api_key
+            else texttospeech.TextToSpeechClient()
+        )
+    except Exception as exc:  # DefaultCredentialsError 등 — 설정 누락을 TtsError로 통일
+        raise TtsError(
+            f"TTS 인증 실패 — env {ENV_TTS_API_KEY}를 설정하거나 "
+            "`gcloud auth application-default login`으로 ADC를 준비하세요"
+        ) from exc
     language_code = "-".join(voice.split("-")[:2])  # "ko-KR-Chirp3-HD-Charon" → "ko-KR"
     response = client.synthesize_speech(
         input=texttospeech.SynthesisInput(text=text),
