@@ -110,6 +110,12 @@ def dump(conn: psycopg.Connection, title: str, sql: str) -> None:
 
 
 def main() -> int:
+    # Windows 콘솔 기본 코드페이지(cp949)는 em대시·한글 일부를 못 찍어 UnicodeEncodeError로
+    # 죽는다. 업로드가 끝난 뒤 성공 메시지 출력에서 터져 video_id를 잃은 적이 있다.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
     # .env 로딩은 로컬 편의용이라 진입점에서만 한다 — 라이브러리(sns/)는 절대 .env를
     # 읽지 않는다(운영은 플랫폼 시크릿 주입). 셸에 이미 있는 값이 .env보다 우선(override=False).
     loaded = load_dotenv(ENV_FILE, override=False)
