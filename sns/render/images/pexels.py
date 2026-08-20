@@ -25,6 +25,9 @@ ALLOWED_IMAGE_HOST = "images.pexels.com"
 MAX_IMAGE_BYTES = 12_000_000
 DEFAULT_LIMIT = 15
 TIMEOUT_S = 15.0
+# Cloudflare가 urllib 기본 UA("Python-urllib/3.x")를 error 1010으로 막는다. 키가 맞아도
+# 403이 떨어져 "키가 잘못됐나"로 오해하기 딱 좋은 실패라, UA를 명시해 못박는다.
+USER_AGENT = "multiagent-sns/0.1 (+https://github.com/Working-youth-squad/multiagent-sns)"
 # 940 정사각에 쓸 거라 original(10MB+)까지 갈 이유가 없다. 앞에서부터 있는 것을 쓴다.
 _SRC_PREFERENCE = ("large2x", "large", "original", "medium")
 
@@ -87,11 +90,14 @@ def search_pexels(
             f"env {ENV_PEXELS_API_KEY}가 없습니다 — https://www.pexels.com/api/ 에서 "
             "무료 키를 발급받아 .env에 넣으세요"
         )
-    params = urllib.parse.urlencode(
-        # 정사각으로 자를 거라 square를 주문한다. 크롭 손실이 가장 적다.
-        {"query": query, "per_page": limit, "orientation": "square"}
+    # orientation은 걸지 않는다. square로 좁혔더니 결과가 8,000건에서 616건으로 줄고
+    # 상위가 전부 무관한 사진이 됐다("server room racks" → 케이크 상자). 비율은 검색으로
+    # 좁히는 게 아니라 크롭으로 해결한다.
+    params = urllib.parse.urlencode({"query": query, "per_page": limit})
+    request = urllib.request.Request(
+        f"{SEARCH_URL}?{params}",
+        headers={"Authorization": api_key, "User-Agent": USER_AGENT},
     )
-    request = urllib.request.Request(f"{SEARCH_URL}?{params}", headers={"Authorization": api_key})
     try:
         payload = fetch_bytes(request, timeout_s=TIMEOUT_S, opener=opener)
     except OSError as exc:
@@ -108,7 +114,10 @@ def download_image(url: str, *, opener: Opener = DEFAULT_OPENER) -> bytes:
         raise PexelsError(f"허용되지 않은 호스트({ALLOWED_IMAGE_HOST}만 가능): {parsed.hostname!r}")
     try:
         # 상한 +1까지 읽어, 상한에 딱 걸린 것과 잘린 것을 구분한다.
-        data = fetch_bytes(url, timeout_s=TIMEOUT_S, opener=opener, max_bytes=MAX_IMAGE_BYTES + 1)
+        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+        data = fetch_bytes(
+            request, timeout_s=TIMEOUT_S, opener=opener, max_bytes=MAX_IMAGE_BYTES + 1
+        )
     except OSError as exc:
         raise PexelsError(f"이미지 다운로드 실패: {exc}") from exc
     if len(data) > MAX_IMAGE_BYTES:

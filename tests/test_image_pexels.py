@@ -15,6 +15,7 @@ from sns.render.images.gate import StockImage
 from sns.render.images.pexels import (
     ENV_PEXELS_API_KEY,
     MAX_IMAGE_BYTES,
+    USER_AGENT,
     PexelsError,
     download_image,
     parse_search_response,
@@ -109,6 +110,8 @@ def test_search_sends_api_key_and_query(monkeypatch: pytest.MonkeyPatch) -> None
     result = search_pexels("network cables", limit=5, opener=opener_for(body([PHOTO]), seen=seen))
     [request] = seen
     assert request.headers["Authorization"] == "secret-key"
+    # urllib 기본 UA는 Cloudflare가 error 1010으로 막는다. 키가 맞아도 403이 된다.
+    assert request.headers["User-agent"] == USER_AGENT
     assert "query=network+cables" in request.full_url
     assert "per_page=5" in request.full_url
     assert len(result) == 1
@@ -136,6 +139,14 @@ def test_download_returns_bytes() -> None:
     assert download_image("https://images.pexels.com/x.jpeg", opener=opener_for(b"JPEGBYTES")) == (
         b"JPEGBYTES"
     )
+
+
+def test_download_sends_user_agent() -> None:
+    """UA를 안 보내면 Cloudflare가 error 1010으로 403을 준다 — 실제로 그랬다."""
+    seen: list[Any] = []
+    download_image("https://images.pexels.com/x.jpeg", opener=opener_for(b"x", seen=seen))
+    [request] = seen
+    assert request.headers["User-agent"] == USER_AGENT
 
 
 def test_download_rejects_non_pexels_host() -> None:

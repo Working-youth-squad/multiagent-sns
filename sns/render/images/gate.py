@@ -27,6 +27,9 @@ ALLOWED_LICENSES: frozenset[str] = frozenset({"pexels"})
 # 940 정사각으로 늘렸을 때 버티는 최소 변. square.MIN_SOURCE_SIDE와 같은 근거지만,
 # 이쪽은 **다운로드 전에** 메타데이터만 보고 거르는 자리라 따로 둔다.
 MIN_ACCEPTABLE_SIDE = 640
+# 센터 크롭이 감당할 가로세로비 상한. 3:2(1.5)는 흔하고 멀쩡하지만, 파노라마는
+# 가운데만 남기면 무엇을 찍은 사진인지 알 수 없게 된다.
+MAX_ASPECT_RATIO = 2.0
 
 BLOCKED_TERMS: dict[str, tuple[str, ...]] = {
     "nsfw": ("nude", "nudity", "naked", "erotic", "sexy", "lingerie", "bikini", "porn"),
@@ -97,16 +100,21 @@ def screen_image(candidate: StockImage) -> Verdict:
     return Verdict(True)
 
 
-def _rank(candidate: StockImage) -> tuple[float, int, str]:
-    """정사각에 가까울수록, 그 다음 클수록 앞. 동점은 id로 갈라 순서 의존을 없앤다."""
-    long_side = max(candidate.width, candidate.height)
-    short_side = max(min(candidate.width, candidate.height), 1)
-    return (long_side / short_side, -long_side, candidate.source_id)
+def _aspect(candidate: StockImage) -> float:
+    """긴 변 / 짧은 변. 1.0이 정사각."""
+    return max(candidate.width, candidate.height) / max(min(candidate.width, candidate.height), 1)
 
 
 def pick_image(candidates: list[StockImage]) -> StockImage | None:
-    """게이트를 통과한 후보 중 하나 — 결정론. 통과가 없으면 None(그라데이션 폴백)."""
+    """게이트를 통과한 **가장 앞선** 후보 — 결정론. 없으면 None(그라데이션 폴백).
+
+    **검색 소스가 준 순서를 존중한다.** 처음엔 정사각에 가까운 순으로 다시 정렬했는데,
+    그러면 관련성이 통째로 날아간다 — "server room racks"가 케이크 상자를 물어왔다.
+    Pexels는 관련성 순으로 주므로 앞선 것이 곧 주제에 맞는 것이고, 가로세로비는
+    **정렬 기준이 아니라 탈락 기준**으로만 쓴다(센터 크롭이 감당할 범위인가).
+    """
     allowed = [c for c in candidates if screen_image(c).allowed]
     if not allowed:
         return None
-    return min(allowed, key=_rank)
+    # 파노라마는 센터 크롭에서 피사체가 통째로 날아간다. 그 범위 안에서 가장 앞선 것.
+    return next((c for c in allowed if _aspect(c) <= MAX_ASPECT_RATIO), allowed[0])

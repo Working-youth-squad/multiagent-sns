@@ -121,21 +121,34 @@ def test_pick_skips_blocked_and_takes_next() -> None:
     assert picked is not None and picked.source_id == "b"
 
 
-def test_pick_prefers_squarer_source() -> None:
-    """센터 크롭이라 극단적 가로세로비는 피사체가 통째로 잘려나간다."""
-    wide = image(source_id="wide", width=4000, height=1000)
-    squarish = image(source_id="sq", width=1600, height=1500)
-    picked = pick_image([wide, squarish])
-    assert picked is not None and picked.source_id == "sq"
+def test_pick_respects_source_relevance_order() -> None:
+    """검색 소스는 관련성 순으로 준다 — 재정렬하면 주제와 무관한 사진을 고르게 된다.
+
+    정사각에 가까운 순으로 정렬했더니 'server room racks'가 케이크 상자를 물어왔다.
+    """
+    first = image(source_id="first", width=3872, height=2592)  # 3:2, 관련성 1위
+    squarer = image(source_id="squarer", width=2930, height=2930)  # 더 정사각이지만 뒤
+    picked = pick_image([first, squarer])
+    assert picked is not None and picked.source_id == "first"
 
 
-def test_pick_is_deterministic_regardless_of_input_order() -> None:
-    a, b = (
-        image(source_id="a", width=1600, height=1500),
-        image(source_id="b", width=1600, height=1500),
-    )
-    first = pick_image([a, b])
-    second = pick_image([b, a])
+def test_pick_skips_panorama() -> None:
+    """가로세로비는 정렬 기준이 아니라 탈락 기준 — 센터 크롭이 감당할 범위인가만 본다."""
+    panorama = image(source_id="pano", width=6000, height=1200)
+    normal = image(source_id="normal", width=3872, height=2592)
+    picked = pick_image([panorama, normal])
+    assert picked is not None and picked.source_id == "normal"
+
+
+def test_pick_takes_panorama_when_nothing_else_passes() -> None:
+    """비율이 아쉬운 사진이라도 그라데이션보다는 낫다."""
+    picked = pick_image([image(source_id="pano", width=6000, height=1200)])
+    assert picked is not None and picked.source_id == "pano"
+
+
+def test_pick_is_deterministic() -> None:
+    candidates = [image(source_id="a", width=1600, height=1500), image(source_id="b")]
+    first, second = pick_image(candidates), pick_image(candidates)
     assert first is not None and second is not None
     assert first.source_id == second.source_id
 
