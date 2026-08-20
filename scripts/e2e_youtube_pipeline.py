@@ -238,10 +238,12 @@ def main() -> int:
     if isinstance(spec, Mapping):
         slides = spec.get("slides")
         if isinstance(slides, list):
+            print(f"      주제      : {spec.get('topic', '')}")
             print(f"      슬라이드  : {len(slides)}장")
             for i, s in enumerate(slides, 1):
                 if isinstance(s, Mapping):
-                    print(f"        {i}. {s.get('title', '')}")
+                    mark = " [코드]" if str(s.get("code", "")).strip() else ""
+                    print(f"        {i}. {s.get('subtitle', '')}{mark}")
     # 캡션을 mp4 옆에 남긴다 — 프로세스가 끝나도 "무엇을 올릴지"를 잃지 않게.
     # (InMemoryCycleStore는 프로세스와 함께 사라진다. 실제로 한 번 잃어봤다.)
     sidecar(mp4).write_text(
