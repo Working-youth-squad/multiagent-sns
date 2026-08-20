@@ -26,7 +26,8 @@ jobs:
       DATABASE_URL: postgresql://sns:sns@localhost:5432/sns
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-noto-cjk
+      # fonts-dejavu-core = 코드 이미지용 고정폭. fonts-noto-cjk에는 모노가 없다.
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg fonts-noto-cjk fonts-dejavu-core
       - uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
