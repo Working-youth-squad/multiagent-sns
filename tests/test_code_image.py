@@ -73,3 +73,47 @@ def test_korean_comment_renders_without_tofu() -> None:
     with_kr = render_code_square("# 10만 건에서 검색\nx = 1", size=480)
     ascii_only = render_code_square("# search 100k rows\nx = 1", size=480)
     assert with_kr != ascii_only
+
+
+# ── 초점 줄 (focus_lines) ─────────────────────────────────────────
+# 컷이 바뀌어도 코드가 같으면 화면이 정지한다. 설명이 향하는 줄만 밝게 두고 나머지를
+# 어둡게 하면, 같은 코드로도 컷마다 화면이 바뀌고 시선이 유도된다.
+
+_SNIPPET = "items = load_ids()\n\nif target in items:\n    handle(target)"
+
+
+def test_focus_changes_output() -> None:
+    plain = render_code_square(_SNIPPET, size=480)
+    focused = render_code_square(_SNIPPET, size=480, focus_lines=(3,))
+    assert plain != focused
+
+
+def test_different_focus_different_output() -> None:
+    """같은 코드라도 초점이 다르면 다른 그림 — 컷 전환의 시각 변화가 여기서 나온다."""
+    a = render_code_square(_SNIPPET, size=480, focus_lines=(1,))
+    b = render_code_square(_SNIPPET, size=480, focus_lines=(3,))
+    assert a != b
+
+
+def test_focus_is_deterministic() -> None:
+    a = render_code_square(_SNIPPET, size=480, focus_lines=(3, 4))
+    b = render_code_square(_SNIPPET, size=480, focus_lines=(3, 4))
+    assert hashlib.sha256(a).digest() == hashlib.sha256(b).digest()
+
+
+def test_focus_order_does_not_matter() -> None:
+    a = render_code_square(_SNIPPET, size=480, focus_lines=(4, 3))
+    b = render_code_square(_SNIPPET, size=480, focus_lines=(3, 4))
+    assert a == b
+
+
+def test_empty_focus_same_as_none() -> None:
+    """빈 초점은 '전부 밝게'와 같아야 한다 — 초점 없음을 특수 케이스로 두지 않는다."""
+    assert render_code_square(_SNIPPET, size=480, focus_lines=()) == render_code_square(
+        _SNIPPET, size=480
+    )
+
+
+def test_focus_line_out_of_range_rejected() -> None:
+    with pytest.raises(CodeImageError, match="초점"):
+        render_code_square(_SNIPPET, size=480, focus_lines=(99,))

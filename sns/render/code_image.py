@@ -29,6 +29,7 @@ MAX_FONT_SIZE = 40
 MIN_FONT_SIZE = 16
 _PAD_RATIO = 0.058  # 정사각 대비 안쪽 여백
 _LINE_SPACING = 1.55
+_DIM_STRENGTH = 0.62  # 초점 밖 줄을 배경 쪽으로 섞는 비율
 
 BACKGROUND = (13, 17, 23)
 EDGE = (48, 58, 72)
@@ -80,6 +81,13 @@ def _color(token: _TokenType) -> tuple[int, int, int]:
     return TOKEN_COLORS.get(token, PLAIN)
 
 
+def _dim(color: tuple[int, int, int]) -> tuple[int, int, int]:
+    """초점 밖 줄 — 배경 쪽으로 섞어 눌러 둔다. 지우지 않고 맥락은 남긴다."""
+    return tuple(  # type: ignore[return-value]
+        round(c + (b - c) * _DIM_STRENGTH) for c, b in zip(color, BACKGROUND, strict=True)
+    )
+
+
 def _lexer(code: str, lang: str | None) -> Lexer:
     if lang:
         try:
@@ -127,15 +135,25 @@ def render_code_square(
     *,
     lang: str | None = None,
     size: int = DEFAULT_SIZE,
+    focus_lines: tuple[int, ...] = (),
     mono_path: str | None = None,
     font_path: str | None = None,
 ) -> bytes:
-    """코드 → 정사각 PNG 바이트. 같은 입력 → 같은 바이트."""
+    """코드 → 정사각 PNG 바이트. 같은 입력 → 같은 바이트.
+
+    `focus_lines`(1-기반 줄 번호)를 주면 그 줄만 밝게 두고 나머지를 눌러 시선을 유도한다.
+    같은 코드라도 초점이 다르면 다른 그림이 나오므로, **컷이 바뀔 때 화면이 바뀐다**
+    — 줌을 뺀 뒤 정지 화면이 이어지던 문제의 해법이다. 비우면 전부 밝게.
+    """
     lines = code.rstrip().split("\n")
     if not any(line.strip() for line in lines):
         raise CodeImageError("코드가 비어 있음")
     if len(lines) > MAX_CODE_LINES:
         raise CodeImageError(f"코드는 {MAX_CODE_LINES}줄 이하여야 함: {len(lines)}줄")
+    out_of_range = sorted(n for n in focus_lines if not 1 <= n <= len(lines))
+    if out_of_range:
+        raise CodeImageError(f"초점 줄 번호가 범위(1~{len(lines)}) 밖: {out_of_range}")
+    focus = frozenset(focus_lines)
 
     mono_resolved, _ = pick_font(mono_path, MONO_CANDIDATES)
     kor_resolved, _ = pick_font(font_path, FONT_CANDIDATES)
@@ -152,13 +170,23 @@ def render_code_square(
 
     y = (size - line_h * len(lines)) // 2
     x = float(pad)
+    row = 1  # 현재 그리는 줄 번호(1-기반) — focus 판정에 쓴다
     for token, text in lex(code.rstrip(), _lexer(code, lang)):
         parts = text.split("\n")
         for i, piece in enumerate(parts):
             if piece:
-                x = _draw_run(draw, x, y, piece, mono, kor, _color(token))
+                color = _color(token)
+                x = _draw_run(
+                    draw,
+                    x,
+                    y,
+                    piece,
+                    mono,
+                    kor,
+                    _dim(color) if focus and row not in focus else color,
+                )
             if i < len(parts) - 1:  # 토큰 하나가 개행을 여럿 품을 수 있다
-                y, x = y + line_h, float(pad)
+                y, x, row = y + line_h, float(pad), row + 1
 
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=False, compress_level=6)
