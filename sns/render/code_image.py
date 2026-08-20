@@ -25,7 +25,10 @@ from sns.render.fonts import FONT_CANDIDATES, MONO_CANDIDATES, pick_font
 
 DEFAULT_SIZE = 940  # 3단 레이아웃의 정사각 변 (1080 - 좌우 여백 70×2)
 MAX_CODE_LINES = 18  # 이 이상은 정사각에서 읽을 수 없는 크기가 된다
-MAX_FONT_SIZE = 40
+# 상한이 40일 때 짧은 스니펫(4줄)이 940 정사각의 세로 25%만 쓰고 나머지를 비웠다.
+# 폭이 실제 제약이라(가장 긴 줄) 상한을 올려도 긴 코드는 그대로 작아진다 — 짧은 코드만
+# 커진다. 쇼츠는 손바닥에서 보므로 채울 수 있으면 채우는 쪽이 맞다.
+MAX_FONT_SIZE = 64
 MIN_FONT_SIZE = 16
 _PAD_RATIO = 0.058  # 정사각 대비 안쪽 여백
 _LINE_SPACING = 1.55
