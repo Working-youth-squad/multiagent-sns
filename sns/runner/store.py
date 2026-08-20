@@ -18,8 +18,10 @@ from psycopg.types.json import Json
 from sns.tools.contracts import ContentFormat, MediaKind
 
 # run_event.kind CHECK 부분집합 — 러너가 쓰는 값만.
+# 001_initial.sql의 run_event.kind CHECK 부분집합. "notice"는 시스템 오류가 아닌 관측
+# 사항이다 — 사진이 안 붙은 이유처럼, 사이클은 성공했지만 남겨야 할 사실.
 EventKind = Literal[
-    "cycle_started", "agent_called", "tool_called", "error", "cycle_completed", "notice"
+    "cycle_started", "agent_called", "tool_called", "notice", "error", "cycle_completed"
 ]
 CycleStatus = Literal["completed", "failed"]
 

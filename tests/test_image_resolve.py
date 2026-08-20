@@ -91,6 +91,7 @@ def test_provenance_recorded_for_audit() -> None:
     slides = result.media_spec["slides"]
     assert isinstance(slides, list)
     assert slides[1]["image_source"] == "https://www.pexels.com/photo/42/"
+    assert slides[1]["image_credit"] == "Someone"  # 캡션 크레딧 줄의 재료
 
 
 def test_deterministic_for_same_photo_bytes() -> None:

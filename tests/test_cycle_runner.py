@@ -253,3 +253,75 @@ def test_deterministic_replay() -> None:
     a = _run(_topic_script() + _content_script(), [_target()])[1]
     b = _run(_topic_script() + _content_script(), [_target()])[1]
     assert a == b
+
+
+# ── 주제 이미지 해소 seam ─────────────────────────────────────────
+
+
+_VIDEO_SPEC: dict[str, object] = {
+    "topic": "주제 한 줄",
+    "slides": [{"subtitle": "부제", "narration": "한 문장.", "image_query": "server room"}],
+}
+
+
+def _resolving(spec: Mapping[str, object]) -> Any:
+    """image_query를 해소한 척하는 가짜 — 출처·촬영자를 spec에 남긴다."""
+    from sns.render.images.resolve import ImageResolution
+
+    slides = [
+        {
+            **s,
+            "image_ref": "mem://image/abc.png",
+            "image_source": "https://www.pexels.com/photo/42/",
+            "image_credit": "Christina Morillo",
+        }
+        for s in spec["slides"]  # type: ignore[union-attr]
+    ]
+    return ImageResolution({**spec, "slides": slides}, ("slides[9]: 후보 없음",))
+
+
+def _run_video(resolve: Any) -> Any:
+    store = InMemoryCycleStore()
+    run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target(fmt="shorts")],
+        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(_VIDEO_SPEC))),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+        resolve_media_spec=resolve,
+    )
+    return store
+
+
+def test_resolved_spec_is_what_gets_saved() -> None:
+    """해소 전 spec을 저장하면 렌더가 사진 없이 돌고 원장도 사실과 어긋난다."""
+    store = _run_video(_resolving)
+    (item,) = store.content_items.values()
+    slides = item["media_spec"]["slides"]
+    assert slides[0]["image_ref"] == "mem://image/abc.png"
+
+
+def test_credit_line_lands_in_the_body() -> None:
+    """Pexels API 가이드라인이 요구하는 출처 표기 — 캡션에 붙어 원장에 남아야 한다."""
+    store = _run_video(_resolving)
+    (item,) = store.content_items.values()
+    assert "Christina Morillo" in item["body"]
+    assert "https://www.pexels.com/photo/42/" in item["body"]
+
+
+def test_resolution_notes_are_logged() -> None:
+    """사진이 안 붙은 이유를 조용히 삼키면 나중에 물어볼 수 없다."""
+    store = _run_video(_resolving)
+    notices = [e for e in store.events if e["kind"] == "notice"]
+    assert any("후보 없음" in json.dumps(e["payload"], ensure_ascii=False) for e in notices)
+
+
+def test_without_resolver_spec_and_body_pass_through() -> None:
+    """seam 미배선이 기본값 — 이미지 트랙 없이도 사이클은 그대로 돈다."""
+    store = _run_video(None)
+    (item,) = store.content_items.values()
+    assert "image_ref" not in item["media_spec"]["slides"][0]
+    assert "Pexels" not in item["body"]

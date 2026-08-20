@@ -64,9 +64,11 @@ def _resolve_slide(
 
     checksum = hashlib.sha256(square).hexdigest()
     slide["image_ref"] = store.put(square, checksum=checksum, kind="image", ext="png")
-    # 출처는 spec(jsonb)에 남긴다 — 저작권 근거를 사후에 확인할 수 있어야 한다(FR-Q7).
-    # 렌더 입력이 아니라 감사 메타라 `parse_video_spec`은 이 키를 읽지 않는다.
+    # 출처는 spec(jsonb)에 남긴다 — 저작권 근거를 사후에 확인할 수 있어야 하고(FR-Q7),
+    # 캡션의 크레딧 줄도 여기서 나온다([sns.render.images.credit]). 렌더 입력이 아니라
+    # 감사·표기 메타라 `parse_video_spec`은 이 키들을 읽지 않는다.
     slide["image_source"] = picked.page_url
+    slide["image_credit"] = picked.photographer
     return None
 
 

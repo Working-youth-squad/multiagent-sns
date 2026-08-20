@@ -17,7 +17,7 @@ CycleStore seam 위에서 엮어, **한 주제로 여러 채널 대상의 콘텐
 - LLM 착지점(FR-C4)은 content_item.body 하나뿐 — topic/media_spec/hook은 코드가 검증.
 """
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Literal, Protocol
 
@@ -28,6 +28,8 @@ from sns.agents.topic import TopicResult, TopicSelectionError, run_topic
 from sns.publish.modes import DRAFT_STATUS, PublishMode
 from sns.quality.gate import QualityReport
 from sns.render.card.spec import CardSpecError
+from sns.render.images.credit import with_image_credits
+from sns.render.images.resolve import ImageResolution
 from sns.render.video.spec import VideoSpecError
 from sns.runner.store import CycleStore
 from sns.tools.contracts import (
@@ -90,6 +92,12 @@ class CycleResult:
         return tuple(t for t in self.targets if t.outcome == "prepared")
 
 
+# 주제 이미지 해소 seam — `image_query`를 렌더 전에 `image_ref`로 못박는다
+# ([sns.render.images.resolve]). 주입인 이유는 둘이다: 외부 호출·저장소를 러너가 몰라야
+# 하고, 테스트가 네트워크 없이 돌아야 한다. 미배선(None)이면 사이클은 그대로 굴러간다.
+ResolveMediaSpec = Callable[[Mapping[str, object]], ImageResolution]
+
+
 def run_cycle(
     store: CycleStore,
     *,
@@ -100,6 +108,7 @@ def run_cycle(
     read_stats: ReadStats,
     render_media: RenderMedia,
     assess_quality: AssessQuality | None = None,
+    resolve_media_spec: ResolveMediaSpec | None = None,
     playbook_guidance: str | None = None,
 ) -> CycleResult:
     """한 사이클 구동.
@@ -177,6 +186,7 @@ def run_cycle(
                         model=model,
                         render_media=render_media,
                         assess_quality=assess_quality,
+                        resolve_media_spec=resolve_media_spec,
                         playbook_guidance=playbook_guidance,
                     )
                 )
@@ -238,6 +248,7 @@ def _prepare_target(
     model: BaseChatModel,
     render_media: RenderMedia,
     assess_quality: AssessQuality | None,
+    resolve_media_spec: ResolveMediaSpec | None,
     playbook_guidance: str | None,
 ) -> TargetResult:
     fmt = target.content_format
@@ -251,8 +262,22 @@ def _prepare_target(
         payload={"agent": "content", "channel_id": target.channel_id, "hook": content.hook_pattern},
     )
 
+    # 사진 해소는 **렌더 전에** 끝난다 — 렌더는 못박힌 바이트만 읽어야 결정론이 선다.
+    # 크레딧 줄은 Pexels API 가이드라인 요구사항이라 캡션에 붙여 원장에 남긴다.
+    media_spec: Mapping[str, object] = content.media_spec
+    body = content.body
+    if resolve_media_spec is not None:
+        resolution = resolve_media_spec(media_spec)
+        media_spec, body = resolution.media_spec, with_image_credits(body, resolution.media_spec)
+        if resolution.notes:
+            store.log_event(
+                cycle_id=cycle_id,
+                kind="notice",
+                payload={"tool": "resolve_images", "notes": list(resolution.notes)},
+            )
+
     kind = _FORMAT_KIND[fmt]
-    media = render_media(content.media_spec, kind)
+    media = render_media(media_spec, kind)
     store.log_event(
         cycle_id=cycle_id,
         kind="tool_called",
@@ -260,7 +285,7 @@ def _prepare_target(
     )
 
     if assess_quality is not None:
-        report = assess_quality(media_spec=content.media_spec, media=media, content_format=fmt)
+        report = assess_quality(media_spec=media_spec, media=media, content_format=fmt)
         quality_status = report.status
         quality_report: Mapping[str, object] | None = report.to_json()
     else:
@@ -272,8 +297,8 @@ def _prepare_target(
         cycle_id=cycle_id,
         topic_id=topic_id,
         content_format=fmt,
-        body=content.body,
-        media_spec=content.media_spec,
+        body=body,
+        media_spec=media_spec,
         hook_pattern=content.hook_pattern,
         status=DRAFT_STATUS[target.mode],
     )
