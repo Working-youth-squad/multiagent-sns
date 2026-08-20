@@ -122,6 +122,16 @@ def _centered(draw: ImageDraw.ImageDraw, size: int, y: int, text: str,
     return y + round(y1 - y0)
 
 
+def _font_for(text: str, mono_path: str, kor_path: str, size: int) -> ImageFont.FreeTypeFont:
+    """고정폭이 어울리는 자리라도 **한글이 섞이면 본문 폰트**로 간다.
+
+    고정폭 후보(Cascadia·Consolas·DejaVu)에는 한글 글리프가 없어 그대로 그리면
+    두부(□)가 박힌다. 실제로 에이전트가 라벨에 "리스트"·"세트"를 써서 그렇게 나왔다.
+    CJK 폰트는 라틴 글리프도 있으므로 섞인 문자열도 이쪽이면 전부 그려진다.
+    """
+    return ImageFont.truetype(mono_path if text.isascii() else kor_path, size)
+
+
 def _fit_font(
     draw: ImageDraw.ImageDraw, text: str, path: str, start: int, max_w: int
 ) -> ImageFont.FreeTypeFont:
@@ -188,7 +198,7 @@ def _draw_emphasis(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, str],
     inner = size - round(size * 0.15)
     tag_font = ImageFont.truetype(kor, round(size / 23.5))
     sub_font = ImageFont.truetype(kor, round(size / 20.4))
-    # 숫자는 고정폭이 더 단단해 보인다. 한글이 섞이면 본문 폰트로.
+    # 숫자는 고정폭이 더 단단해 보인다. 한글이 섞이면 본문 폰트로([_font_for]).
     head_path = mono if f["headline"].isascii() else kor
     head_font = _fit_font(draw, f["headline"], head_path, round(size / 6.3), inner)
 
@@ -222,13 +232,14 @@ def _draw_emphasis(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, str],
 def _draw_compare(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, str],
                   kor: str, mono: str) -> None:  # fmt: skip
     """위=느린 방법(칸마다 훑음), 아래=빠른 방법(곧바로 꽂힘)."""
-    label_font = ImageFont.truetype(mono, round(size / 21.4))
+    label_size, foot_size = round(size / 21.4), round(size / 16.8)
     note_font = ImageFont.truetype(kor, round(size / 26.1))
-    foot_font = ImageFont.truetype(mono, round(size / 16.8))
+    foot_font = _font_for(f["footer"], mono, kor, foot_size)
     cell, gap = round(size * 0.102), round(size * 0.019)
     target = _CELLS - 1
 
     def row(y: int, label: str, note: str, color: tuple[int, int, int], *, scan: bool) -> int:
+        label_font = _font_for(label, mono, kor, label_size)
         y = _centered(draw, size, y, label, label_font, color) + round(size * 0.028)
         arrow_h = round(size * 0.052)
         if scan:
@@ -257,7 +268,7 @@ def _draw_remember(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, str],
     """마무리 — 배지 + 한 줄 + 코드 알약. 블록 전체를 세로 중앙에."""
     badge_font = ImageFont.truetype(kor, round(size / 24.7))
     body_font = ImageFont.truetype(kor, round(size / 15.2))
-    code_font = ImageFont.truetype(mono, round(size / 18.1))
+    code_font = _font_for(f["code"], mono, kor, round(size / 18.1))
     inner = size - round(size * 0.16)
 
     lines = wrap_balanced(f["line"], lambda s: _text_size(draw, s, body_font)[0], inner)

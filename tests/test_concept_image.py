@@ -19,6 +19,7 @@ from sns.render.concept_image import (
     CONCEPT_FIELDS,
     MAX_FIELD_WIDTH,
     ConceptError,
+    _font_for,
     parse_concept,
     render_concept_square,
 )
@@ -150,6 +151,36 @@ def test_every_kind_has_field_metadata() -> None:
     for kind, fields in CONCEPT_FIELDS.items():
         for field in fields:
             assert field in MAX_FIELD_WIDTH, f"{kind}/{field}의 폭 상한 없음"
+
+
+def test_hangul_text_never_uses_the_mono_font() -> None:
+    """고정폭 후보에는 한글 글리프가 없다 — 그대로 그리면 두부(□)가 박힌다.
+
+    실제로 에이전트가 compare 라벨에 "리스트"·"세트"를 써서 영상에 두부가 나갔다.
+    ASCII 고정 픽스처(list/set)만 두면 이 경로가 테스트에 안 걸린다.
+    """
+    from sns.render.fonts import FONT_CANDIDATES, MONO_CANDIDATES, pick_font
+
+    mono, _ = pick_font(None, MONO_CANDIDATES)
+    kor, _ = pick_font(None, FONT_CANDIDATES)
+    assert _font_for("set", mono, kor, 40).path == mono
+    assert _font_for("리스트", mono, kor, 40).path == kor
+    assert _font_for("set 리스트", mono, kor, 40).path == kor, "섞인 문자열도 CJK 폰트로"
+
+
+def test_korean_labels_render_without_crashing() -> None:
+    """에이전트는 라벨을 한글로 쓴다 — 픽스처를 영어로만 두면 그 경로가 안 돈다."""
+    korean = parse_concept(
+        {
+            "kind": "compare",
+            "before_label": "리스트",
+            "before_note": "순차 탐색",
+            "after_label": "세트",
+            "after_note": "해시 탐색",
+            "footer": "느림 → 빠름",
+        }
+    )
+    assert opened(render_concept_square(korean)).size == (940, 940)
 
 
 def test_missing_font_raises_instead_of_tofu(monkeypatch: pytest.MonkeyPatch) -> None:
