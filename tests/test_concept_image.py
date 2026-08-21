@@ -291,3 +291,33 @@ def test_terminal_note_is_optional() -> None:
     assert opened(render_concept_square(parse_concept({
         "kind": "terminal", "commands": ["pip install sns"]
     }))).size == (940, 940)  # fmt: skip
+
+
+def test_long_command_fits_inside_the_terminal_window() -> None:
+    """실 에이전트가 'pip install -r requirements.txt'를 써서 창 밖으로 넘쳤다.
+
+    글자 수 상한만으로는 부족하다 — 같은 글자 수라도 고정폭 폰트에서 실제 폭이 다르다.
+    창 폭에 맞춰 크기를 줄여야 한다(코드 이미지의 _fit_font_size와 같은 규율).
+    """
+    concept = parse_concept(
+        {"kind": "terminal", "commands": ["pip install -r requirements.txt"], "note": "설치"}
+    )
+    img = opened(render_concept_square(concept, size=940))
+    margin = round(940 * 0.064)
+    # 창 오른쪽 테두리 바로 안쪽. 글자는 밝고(INK) 창·바탕은 어둡다 — 밝은 픽셀이 있으면
+    # 명령이 테두리까지 닿았다는 뜻이다(세로 위치는 내용에 따라 달라지므로 밝기로 본다).
+    brightest = max(
+        max(img.getpixel((x, y)))
+        for x in range(940 - margin - 14, 940 - margin - 2)
+        for y in range(200, 740, 2)
+    )
+    assert brightest < 100, f"명령이 창 밖으로 넘침 — 가장 밝은 픽셀 {brightest}"
+
+
+def test_short_command_keeps_the_full_size() -> None:
+    """짧은 명령까지 줄이면 읽기만 나빠진다 — 넘칠 때만 줄인다."""
+    from sns.render.concept_image import terminal_font_size
+
+    assert terminal_font_size(["pip install sns"], 940) > terminal_font_size(
+        ["pip install -r requirements.txt"], 940
+    )
