@@ -38,6 +38,11 @@ class ResearchTrendsService:
         self._fetchers = dict(fetchers)
         self._timeout_s = timeout_s
 
+    @property
+    def sources(self) -> tuple[str, ...]:
+        """등록된 소스 이름 — 어떤 소스가 살아 있는지 호출부·진단이 확인하는 지점."""
+        return tuple(self._fetchers)
+
     def __call__(self, sources: tuple[str, ...] | None = None, limit: int = 10) -> TrendDigest:
         selected = sources if sources is not None else tuple(self._fetchers)
         if not selected:
@@ -95,11 +100,13 @@ def default_service(
 ) -> ResearchTrendsService:
     """사용 가능한 실 fetcher를 배선한 서비스. 새 소스가 붙을 때마다 여기 등록한다.
 
-    무인증 소스(google_trends·github_trending)는 항상 등록한다. 인증 소스(네이버 2종·
+    무인증 소스(google_trends·github_trending·hacker_news·lobsters)는 항상 등록한다.
+    인증 소스(네이버 2종·
     YouTube·LLM 그라운딩)는 env에 키가 있을 때만 등록 — 없으면 미등록이라 호출돼도
     ok=False로 격리된다(§2, 부분 가용성 허용). LLM 그라운딩은 선택이라 키가 있을
     때만 기본 소스에 합류한다.
     """
+    from sns.research.sources.devnews import fetch_hacker_news, fetch_lobsters
     from sns.research.sources.github_trending import fetch_github_trending
     from sns.research.sources.google_trends import fetch_google_trends
     from sns.research.sources.llm_grounding import fetch_llm_grounding
@@ -111,6 +118,9 @@ def default_service(
     fetchers: dict[str, SourceFetcher] = {
         "google_trends": fetch_google_trends,
         "github_trending": fetch_github_trending,
+        # 개발자 뉴스 2종 — 키 불필요, 회전이 빠르다([sns.research.sources.devnews]).
+        "hacker_news": fetch_hacker_news,
+        "lobsters": fetch_lobsters,
     }
 
     naver_id = env_map.get(ENV_NAVER_CLIENT_ID)
