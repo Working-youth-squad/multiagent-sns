@@ -154,6 +154,10 @@ def check_card(
     )
 
     # 직전 N건 콘텐츠 유사도 (FR-A2: near-duplicate 방어, NFR-11).
+    # 이 검사는 **카드 게이트에만** 있어서 영상 경로가 뚫려 있었고, 유일한 호출부가
+    # recent_signatures를 안 넘겨 실제로 한 번도 동작하지 않았다. 지금은 포맷 무관하게
+    # 사이클 관문([sns.runner.cycle])이 media_spec 기준으로 판정한다. 여기 남은 건
+    # 카드 자산 단독 검사용이고, 배선 책임은 사이클 쪽에 있다.
     similarity = max_similarity(content_signature(spec), recent_signatures)
     checks.append(
         QualityCheck(

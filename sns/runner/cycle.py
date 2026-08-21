@@ -28,6 +28,7 @@ from sns.agents.topic import TopicResult, TopicSelectionError, run_topic
 from sns.publish.modes import DRAFT_STATUS, PublishMode
 from sns.quality.gate import QualityReport
 from sns.quality.safety import screen_content
+from sns.quality.signature import MAX_CONTENT_SIMILARITY, max_similarity, spec_signature
 from sns.render.card.spec import CardSpecError
 from sns.render.images.credit import with_image_credits
 from sns.render.images.resolve import ImageResolution
@@ -45,7 +46,10 @@ from sns.tools.contracts import (
 
 # 발행 모드 3분류([sns.publish.modes] 정본): auto·hybrid·manual
 ChannelMode = PublishMode
-TargetOutcome = Literal["prepared", "manual_assigned", "failed"]
+# blocked = 관문(안전·근접중복)에 걸려 **렌더도 하지 않고** 사람 검토로 넘긴 것.
+# failed(도메인 오류)와 구분한다 — 원고는 멀쩡히 있고 판단만 남았다.
+# manual_assigned = 수동 채널에 주제만 배정한 것(FR-E5) — 렌더도 초안도 없다.
+TargetOutcome = Literal["prepared", "blocked", "manual_assigned", "failed"]
 
 # 포맷 → 렌더 자산 종류. 피드=이미지, 릴스/쇼츠=영상.
 _FORMAT_KIND: dict[ContentFormat, MediaKind] = {
@@ -99,6 +103,8 @@ class CycleResult:
 # 주제 중복 차단 창(일). 트렌드 소스가 같은 항목을 노출하는 기간보다 길게 잡되, 진짜로
 # 다시 뜨는 주제는 언젠가 돌아올 수 있게 무한정 막지는 않는다.
 RECENT_TOPIC_DAYS = 14
+# 근접중복 비교 대상 건수 상한 — 전부 읽으면 사이클마다 비용이 선형으로 는다.
+RECENT_SPEC_LIMIT = 50
 
 ResolveMediaSpec = Callable[[Mapping[str, object]], ImageResolution]
 
@@ -138,6 +144,12 @@ def run_cycle(
     )
 
     try:
+        # 근접중복 판정의 재료 — 사이클당 1회만 읽는다(대상마다 다시 읽을 이유가 없다).
+        recent_signatures = tuple(
+            spec_signature(spec)
+            for spec in store.recent_media_specs(days=RECENT_TOPIC_DAYS, limit=RECENT_SPEC_LIMIT)
+        )
+
         # ── 주제(사이클당 1건, 통제변수: 동일 주제 도메인) ──────────────
         try:
             # 최근 발행 주제는 후보에서 뺀다. 트렌드 소스는 같은 항목을 며칠씩 노출해서,
@@ -195,6 +207,7 @@ def run_cycle(
                         render_media=render_media,
                         assess_quality=assess_quality,
                         resolve_media_spec=resolve_media_spec,
+                        recent_signatures=recent_signatures,
                         playbook_guidance=playbook_guidance,
                     )
                 )
@@ -257,6 +270,7 @@ def _prepare_target(
     render_media: RenderMedia,
     assess_quality: AssessQuality | None,
     resolve_media_spec: ResolveMediaSpec | None,
+    recent_signatures: tuple[frozenset[str], ...],
     playbook_guidance: str | None,
 ) -> TargetResult:
     fmt = target.content_format
@@ -269,6 +283,39 @@ def _prepare_target(
         kind="agent_called",
         payload={"agent": "content", "channel_id": target.channel_id, "hook": content.hook_pattern},
     )
+
+    # ── 발행 관문 (FR-Q7 안전 + FR-A2 근접중복) ────────────────────
+    # **렌더 앞에 둔다.** 막힐 콘텐츠에 TTS·이미지 생성 비용을 쓸 이유가 없다.
+    # 검사 대상은 캡션과 spec의 모든 텍스트다 — 자막·나레이션도 그대로 나가므로
+    # 캡션만 보면 뚫린다. 이미지 해소는 텍스트를 바꾸지 않으므로 그 전에 봐도 같다.
+    findings = screen_content(body=content.body, media_spec=content.media_spec)
+    similarity = max_similarity(spec_signature(content.media_spec), recent_signatures)
+    reasons = [f.describe() for f in findings]
+    if similarity > MAX_CONTENT_SIMILARITY:
+        reasons.append(
+            f"직전 콘텐츠와 유사도 {similarity:.2f} (상한 {MAX_CONTENT_SIMILARITY}) — 근접중복"
+        )
+    if reasons:
+        store.log_event(
+            cycle_id=cycle_id,
+            kind="notice",
+            payload={"gate": "publish", "channel_id": target.channel_id, "reasons": reasons},
+        )
+        # 렌더하지 않는다. 사람이 볼 근거는 원고(body·media_spec)로 충분하다.
+        return TargetResult(
+            channel_id=target.channel_id,
+            outcome="blocked",
+            content_item_id=store.save_content_item(
+                cycle_id=cycle_id,
+                topic_id=topic_id,
+                content_format=fmt,
+                body=content.body,
+                media_spec=content.media_spec,
+                hook_pattern=content.hook_pattern,
+                status="needs_review",
+            ),
+            error=" / ".join(reasons),
+        )
 
     # 사진 해소는 **렌더 전에** 끝난다 — 렌더는 못박힌 바이트만 읽어야 결정론이 선다.
     # 크레딧 줄은 Pexels API 가이드라인 요구사항이라 캡션에 붙여 원장에 남긴다.
@@ -300,16 +347,6 @@ def _prepare_target(
         # 게이트 미배선 → 자동 발행 보류. 사람 관문/후속 게이트가 passed로 승격(FR-Q3).
         quality_status, quality_report = "needs_review", None
 
-    # FR-Q7 안전 검열 — 금지 소재가 있으면 auto 채널이어도 자동 승인하지 않는다.
-    # 검사 시점이 렌더 뒤인 건 자막·나레이션이 spec 안에 있어서다(캡션만 보면 뚫린다).
-    findings = screen_content(body=body, media_spec=media_spec)
-    if findings:
-        store.log_event(
-            cycle_id=cycle_id,
-            kind="notice",
-            payload={"gate": "safety", "findings": [f.describe() for f in findings]},
-        )
-
     # 콘텐츠 → 자산 → 발행 대기 (FK 순서). auto=approved, hybrid=사람 관문 대기.
     content_item_id = store.save_content_item(
         cycle_id=cycle_id,
@@ -318,9 +355,7 @@ def _prepare_target(
         body=body,
         media_spec=media_spec,
         hook_pattern=content.hook_pattern,
-        # 모드가 기본값을 정하고(auto=approved, hybrid=needs_review), 안전 검열에
-        # 걸린 건은 auto여도 사람에게 넘긴다.
-        status=DRAFT_STATUS[target.mode] if not findings else "needs_review",
+        status=DRAFT_STATUS[target.mode],
     )
     media_asset_id = store.save_media_asset(
         content_item_id=content_item_id,

@@ -32,6 +32,7 @@ class CycleStore(Protocol):
     def create_cycle(self, goal_ref: str) -> str: ...
     def save_topic(self, *, title: str, summary: str, source: str) -> str: ...
     def recent_topic_titles(self, *, days: int) -> tuple[str, ...]: ...
+    def recent_media_specs(self, *, days: int, limit: int) -> tuple[Mapping[str, object], ...]: ...
     def save_content_item(
         self,
         *,
@@ -89,6 +90,10 @@ class InMemoryCycleStore:
     def recent_topic_titles(self, *, days: int) -> tuple[str, ...]:
         """인메모리는 프로세스와 함께 사라지므로 days를 무시하고 전부 돌려준다."""
         return tuple(str(t["title"]) for t in self.topics.values())
+
+    def recent_media_specs(self, *, days: int, limit: int) -> tuple[Mapping[str, object], ...]:
+        specs = [ci["media_spec"] for ci in self.content_items.values()]
+        return tuple(s for s in reversed(specs) if isinstance(s, Mapping))[:limit]
 
     def save_content_item(
         self,
@@ -184,6 +189,16 @@ class PgCycleStore:
             (days,),
         ).fetchall()
         return tuple(str(r[0]) for r in rows)
+
+    def recent_media_specs(self, *, days: int, limit: int) -> tuple[Mapping[str, object], ...]:
+        """최근 N일 콘텐츠의 media_spec — 근접중복 판정의 재료."""
+        rows = self._conn.execute(
+            "SELECT media_spec FROM content_item "
+            "WHERE created_at > now() - make_interval(days => %s) AND media_spec IS NOT NULL "
+            "ORDER BY created_at DESC LIMIT %s",
+            (days, limit),
+        ).fetchall()
+        return tuple(r[0] for r in rows if isinstance(r[0], Mapping))
 
     def save_content_item(
         self,

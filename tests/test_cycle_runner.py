@@ -381,6 +381,13 @@ def test_blocked_material_forces_human_review() -> None:
     assert item["status"] == "needs_review"
 
 
+def test_blocked_content_is_never_rendered() -> None:
+    """관문이 렌더 앞에 있다 — 막힐 콘텐츠에 TTS·이미지 비용을 쓰지 않는다."""
+    store = _run_shorts(_spec_with("대통령 연설 분석"))
+    assert store.media_assets == {}
+    assert store.publications == {}
+
+
 def test_blocked_material_in_the_caption_too() -> None:
     """자막만 보면 뚫린다 — 캡션도 그대로 발행된다."""
     store = _run_shorts(_spec_with(), body="크랙 받는 법 알려드립니다")
@@ -393,4 +400,52 @@ def test_findings_are_logged_with_location() -> None:
     store = _run_shorts(_spec_with("대통령 연설 분석"))
     notices = [e for e in store.events if e["kind"] == "notice"]
     blob = json.dumps(notices, ensure_ascii=False)
-    assert "safety" in blob and "political" in blob and "topic" in blob
+    assert "publish" in blob and "political" in blob and "topic" in blob
+
+
+# ── FR-A2 근접중복 배선 ───────────────────────────────────────────
+
+
+def test_near_duplicate_of_recent_content_is_blocked() -> None:
+    """어제 낸 대본을 살짝 바꿔 다시 낸 것 — 실제로 일어난 사고다."""
+    store = InMemoryCycleStore()
+    yesterday = _spec_with()
+    store.save_content_item(
+        cycle_id="c0", topic_id="t0", content_format="shorts",
+        body="본문", media_spec=yesterday, hook_pattern="curiosity", status="approved",
+    )  # fmt: skip
+    run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target(fmt="shorts")],
+        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(_spec_with()))),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+    )
+    blob = json.dumps(store.events, ensure_ascii=False)
+    assert "근접중복" in blob
+    assert store.media_assets == {}, "중복인데 렌더까지 했다"
+
+
+def test_different_content_passes_the_similarity_gate() -> None:
+    store = InMemoryCycleStore()
+    store.save_content_item(
+        cycle_id="c0", topic_id="t0", content_format="shorts",
+        body="본문",
+        media_spec={"topic": "ORM 쿼리 폭발", "slides": [
+            {"subtitle": "함정", "narration": "반복문마다 쿼리가 나갑니다."}]},
+        hook_pattern="curiosity", status="approved",
+    )  # fmt: skip
+    run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target(fmt="shorts")],
+        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(_spec_with()))),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+    )
+    assert len(store.media_assets) == 1
