@@ -91,6 +91,23 @@ def make_gate(ffprobe: str, ffmpeg: str) -> AssessQuality:
     return assess
 
 
+def ensure_channel(conn: psycopg.Connection, *, handle: str) -> str:
+    """유튜브 채널 행 1개 확보(있으면 재사용) — publication의 FK 대상.
+
+    인메모리 저장소는 channel_id로 아무 문자열이나 받았지만 원장은 UUID FK다.
+    저장소를 Postgres로 바꾸면서 드러났다.
+    """
+    row = conn.execute("SELECT id FROM channel WHERE handle = %s", (handle,)).fetchone()
+    if row is None:
+        row = conn.execute(
+            "INSERT INTO channel (platform, handle, mode) "
+            "VALUES ('youtube', %s, 'auto') RETURNING id",
+            (handle,),
+        ).fetchone()
+    assert row is not None
+    return str(row[0])
+
+
 def sidecar(mp4: Path) -> Path:
     """mp4 옆의 캡션·주제 저장 경로."""
     return mp4.with_suffix(".json")
@@ -192,6 +209,7 @@ def main() -> int:
     )
     conn = None
     store: CycleStore
+    channel_id = "yt-pipeline-test"  # 인메모리는 임의 문자열이면 된다
     if args.store == "memory":
         print("⚠ 원장 없이 실행 — 과거 발행 이력을 못 읽어 **주제 중복 차단이 꺼집니다**")
         store = InMemoryCycleStore()
@@ -204,6 +222,7 @@ def main() -> int:
             print("      원장 없이 돌리려면 --store memory (주제 중복 차단이 꺼집니다)")
             return 1
         store = PgCycleStore(conn)
+        channel_id = ensure_channel(conn, handle="yt-pipeline-test")
         recent = store.recent_topic_titles(days=14)
         print(f"      최근 14일 발행 주제 {len(recent)}건 — 후보에서 제외됩니다")
 
@@ -220,7 +239,7 @@ def main() -> int:
         goal_ref="engagement_depth",
         targets=[
             CycleTarget(
-                channel_id="yt-pipeline-test",
+                channel_id=channel_id,
                 platform="youtube",
                 content_format="shorts",
                 mode="auto",
