@@ -265,9 +265,9 @@ def main() -> int:
 
     target = result.prepared[0]
     assert target.content_item_id and target.media_asset_id
-    item = store.content_items[target.content_item_id]
-    asset_row = store.media_assets[target.media_asset_id]
-    topic = store.topics[str(result.topic_id)]
+    item = store.read_content_item(target.content_item_id)
+    asset_row = store.read_media_asset(target.media_asset_id)
+    topic = store.read_topic(str(result.topic_id))
 
     caption = str(item["body"])
     asset = MediaAsset(

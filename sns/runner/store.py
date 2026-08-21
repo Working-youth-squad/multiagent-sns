@@ -33,6 +33,11 @@ class CycleStore(Protocol):
     def save_topic(self, *, title: str, summary: str, source: str) -> str: ...
     def recent_topic_titles(self, *, days: int) -> tuple[str, ...]: ...
     def recent_media_specs(self, *, days: int, limit: int) -> tuple[Mapping[str, object], ...]: ...
+    # 되읽기 — 쓰기만 있는 저장소는 반쪽이다. 발행 스크립트·승인 화면이 산출물을
+    # 확인하려면 필요하고, 없으면 호출부가 인메모리 내부 dict를 직접 뒤지게 된다.
+    def read_content_item(self, content_item_id: str) -> Mapping[str, object]: ...
+    def read_media_asset(self, media_asset_id: str) -> Mapping[str, object]: ...
+    def read_topic(self, topic_id: str) -> Mapping[str, object]: ...
     def save_content_item(
         self,
         *,
@@ -94,6 +99,15 @@ class InMemoryCycleStore:
     def recent_media_specs(self, *, days: int, limit: int) -> tuple[Mapping[str, object], ...]:
         specs = [ci["media_spec"] for ci in self.content_items.values()]
         return tuple(s for s in reversed(specs) if isinstance(s, Mapping))[:limit]
+
+    def read_content_item(self, content_item_id: str) -> Mapping[str, object]:
+        return self.content_items[content_item_id]
+
+    def read_media_asset(self, media_asset_id: str) -> Mapping[str, object]:
+        return self.media_assets[media_asset_id]
+
+    def read_topic(self, topic_id: str) -> Mapping[str, object]:
+        return self.topics[topic_id]
 
     def save_content_item(
         self,
@@ -199,6 +213,35 @@ class PgCycleStore:
             (days, limit),
         ).fetchall()
         return tuple(r[0] for r in rows if isinstance(r[0], Mapping))
+
+    def _row(
+        self, sql: str, params: tuple[object, ...], fields: tuple[str, ...]
+    ) -> dict[str, object]:
+        row = self._conn.execute(sql, params).fetchone()
+        if row is None:
+            raise KeyError(params[0])
+        return dict(zip(fields, row, strict=True))
+
+    def read_content_item(self, content_item_id: str) -> Mapping[str, object]:
+        return self._row(
+            "SELECT body, hook_pattern, media_spec, status, format FROM content_item WHERE id = %s",
+            (content_item_id,),
+            ("body", "hook_pattern", "media_spec", "status", "format"),
+        )
+
+    def read_media_asset(self, media_asset_id: str) -> Mapping[str, object]:
+        return self._row(
+            "SELECT kind, storage_url, checksum, quality_status FROM media_asset WHERE id = %s",
+            (media_asset_id,),
+            ("kind", "storage_url", "checksum", "quality_status"),
+        )
+
+    def read_topic(self, topic_id: str) -> Mapping[str, object]:
+        return self._row(
+            "SELECT title, summary, source, status FROM topic WHERE id = %s",
+            (topic_id,),
+            ("title", "summary", "source", "status"),
+        )
 
     def save_content_item(
         self,
