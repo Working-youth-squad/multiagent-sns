@@ -151,3 +151,29 @@ def test_state_machine_permanent_error_goes_failed() -> None:
     again = _run(store, yt)  # failed는 종결 — 재호출 0
     assert again.state == "failed"
     assert yt.inserted_bodies == []
+
+
+# ── 꺾쇠 제거 (실 업로드에서 400으로 드러남) ──────────────────────
+
+
+def test_angle_brackets_are_stripped_from_title_and_description() -> None:
+    """유튜브는 제목·설명에 '<' '>'가 있으면 400 invalidDescription을 준다.
+
+    실제로 HTML 신기능 영상을 올리다 막혔다 — 캡션에 `<dialog>` 태그가 들어 있었다.
+    웹 주제에서는 필연적으로 나오는 문자라 어댑터가 처리한다.
+    """
+    title, desc = split_caption("<dialog> 태그 정리\n\n`<details>`로 아코디언을 만듭니다.")
+    assert "<" not in title and ">" not in title
+    assert "<" not in desc and ">" not in desc
+    assert "dialog" in title and "details" in desc
+
+
+def test_stripping_keeps_the_rest_of_the_text_intact() -> None:
+    _, desc = split_caption("제목\n\n1. <dialog> 태그: showModal()로 띄웁니다.")
+    assert desc == "1. dialog 태그: showModal()로 띄웁니다."
+
+
+def test_text_without_brackets_is_untouched() -> None:
+    title, desc = split_caption("파이썬 팁 #Shorts\n\n본문입니다.")
+    assert title == "파이썬 팁 #Shorts"
+    assert desc == "본문입니다."

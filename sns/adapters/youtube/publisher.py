@@ -35,9 +35,19 @@ _QUOTA_REASONS = frozenset(
 )
 
 
+def _strip_angle_brackets(text: str) -> str:
+    """'<' '>' 제거 — 유튜브가 400 invalidDescription으로 거부하는 문자다.
+
+    실 업로드에서 드러났다: HTML 신기능 영상의 캡션에 `<dialog>`가 들어 있어 막혔다.
+    웹 주제를 다루면 필연적으로 나오므로 에이전트에게 맡길 게 아니라 어댑터가 지운다.
+    괄호만 빼고 이름은 남긴다 — "dialog 태그"로도 뜻이 통한다.
+    """
+    return text.replace("<", "").replace(">", "")
+
+
 def split_caption(caption: str) -> tuple[str, str]:
     """caption 패킹 규칙: 1행 → 제목(#Shorts 보장, ≤100자), 나머지 → 설명."""
-    first, _, rest = caption.partition("\n")
+    first, _, rest = _strip_angle_brackets(caption).partition("\n")
     title = first.strip() or "Untitled"
     if _SHORTS_TAG.lower() not in title.lower():
         budget = MAX_TITLE_LEN - len(_SHORTS_TAG) - 1
