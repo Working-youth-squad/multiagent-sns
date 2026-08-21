@@ -186,13 +186,35 @@ def _parse_slide(raw: object, index: int) -> Slide:
     )
 
 
+def _reject_generated_images_in_code_videos(slides: tuple[Slide, ...]) -> None:
+    """코드가 한 컷이라도 있으면 `image_prompt`를 영상 전체에서 거부한다.
+
+    컷 하나만 봐서는 판정할 수 없어 여기(영상 단위)에 있다. 근거는 실측이다 —
+    같은 영상에서 컷 둘만 gpt-image-1로 바꿔 나란히 놓고 골랐는데, 코드를 다루는 영상은
+    핵심 컷이 대개 숫자와 비교였다. "101번 → 2번"을 개념 그림은 글자로 쓰지만 생성
+    이미지는 화살표 개수를 세게 만든다. **코드를 보여주는 순간 그 영상은 코드 영상이다.**
+
+    실사 사진(`image_query`)은 이 규칙 밖이다 — 막은 건 생성 이미지고, 근거가 다르다.
+    """
+    code_cuts = [i for i, s in enumerate(slides) if s.code.strip()]
+    prompt_cuts = [i for i, s in enumerate(slides) if s.image_prompt]
+    if code_cuts and prompt_cuts:
+        raise VideoSpecError(
+            "코드가 있는 영상에서는 'image_prompt'를 쓸 수 없음 — 개념 그림(concept)을 쓰세요. "
+            f"코드: {', '.join(f'slides[{i}]' for i in code_cuts)} / "
+            f"생성 요청: {', '.join(f'slides[{i}]' for i in prompt_cuts)}"
+        )
+
+
 def _parse_slides(spec: Mapping[str, object]) -> tuple[Slide, ...]:
     value = spec.get("slides")
     if not isinstance(value, list) or not value:
         raise VideoSpecError(f"'slides'는 비지 않은 리스트여야 함: {value!r}")
     if len(value) > MAX_SLIDES:
         raise VideoSpecError(f"'slides'는 {MAX_SLIDES}장 이하여야 함: {len(value)}장")
-    return tuple(_parse_slide(raw, i) for i, raw in enumerate(value))
+    slides = tuple(_parse_slide(raw, i) for i, raw in enumerate(value))
+    _reject_generated_images_in_code_videos(slides)
+    return slides
 
 
 def _valid_hex(color: str) -> bool:

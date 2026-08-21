@@ -409,3 +409,66 @@ def test_too_long_image_prompt_rejected() -> None:
                 ],
             }
         )
+
+
+# ── 생성 이미지는 코드 영상에서 금지 (영상 단위) ──────────────────
+
+
+def _slide(**over: object) -> dict[str, object]:
+    return {"subtitle": "부제", "narration": "한 문장.", **over}
+
+
+def test_image_prompt_allowed_when_no_slide_has_code() -> None:
+    """코드가 없는 영상(커리어·트렌드·도구 소개)에서는 생성 이미지가 제 자리다."""
+    spec = parse_video_spec(
+        {
+            **MINIMAL,
+            "slides": [
+                _slide(image_prompt="a lone figure walking toward a bright doorway"),
+                _slide(concept={"kind": "remember", "line": "기억할 한 줄"}),
+            ],
+        }
+    )
+    assert spec.slides[0].image_prompt
+
+
+def test_image_prompt_rejected_when_another_slide_has_code() -> None:
+    """코드를 보여주는 순간 그 영상은 코드 영상이다 — 핵심 컷이 숫자·비교라
+    개념 그림이 이긴다(gpt-image-1과 A/B로 확인)."""
+    with pytest.raises(VideoSpecError, match="image_prompt"):
+        parse_video_spec(
+            {
+                **MINIMAL,
+                "slides": [
+                    _slide(image_prompt="a lone figure walking toward a bright doorway"),
+                    _slide(code="x = 1", lang="python"),
+                ],
+            }
+        )
+
+
+def test_rejection_names_both_offending_cuts() -> None:
+    """어느 컷을 고쳐야 하는지 모르면 에이전트가 같은 실수를 반복한다."""
+    with pytest.raises(VideoSpecError) as exc:
+        parse_video_spec(
+            {
+                **MINIMAL,
+                "slides": [
+                    _slide(),
+                    _slide(code="x = 1"),
+                    _slide(image_prompt="a glowing doorway in the dark"),
+                ],
+            }
+        )
+    assert "slides[1]" in str(exc.value) and "slides[2]" in str(exc.value)
+
+
+def test_stock_photos_are_not_restricted_by_code() -> None:
+    """실사 사진은 이 규칙 밖이다 — 막은 건 생성 이미지고, 근거가 다르다."""
+    spec = parse_video_spec(
+        {
+            **MINIMAL,
+            "slides": [_slide(image_query="server room racks"), _slide(code="x = 1")],
+        }
+    )
+    assert spec.slides[0].image_query == "server room racks"
