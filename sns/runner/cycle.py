@@ -27,6 +27,7 @@ from sns.agents.content import ContentRejected, run_content
 from sns.agents.topic import TopicResult, TopicSelectionError, run_topic
 from sns.publish.modes import DRAFT_STATUS, PublishMode
 from sns.quality.gate import QualityReport
+from sns.quality.safety import screen_content
 from sns.render.card.spec import CardSpecError
 from sns.render.images.credit import with_image_credits
 from sns.render.images.resolve import ImageResolution
@@ -299,6 +300,16 @@ def _prepare_target(
         # 게이트 미배선 → 자동 발행 보류. 사람 관문/후속 게이트가 passed로 승격(FR-Q3).
         quality_status, quality_report = "needs_review", None
 
+    # FR-Q7 안전 검열 — 금지 소재가 있으면 auto 채널이어도 자동 승인하지 않는다.
+    # 검사 시점이 렌더 뒤인 건 자막·나레이션이 spec 안에 있어서다(캡션만 보면 뚫린다).
+    findings = screen_content(body=body, media_spec=media_spec)
+    if findings:
+        store.log_event(
+            cycle_id=cycle_id,
+            kind="notice",
+            payload={"gate": "safety", "findings": [f.describe() for f in findings]},
+        )
+
     # 콘텐츠 → 자산 → 발행 대기 (FK 순서). auto=approved, hybrid=사람 관문 대기.
     content_item_id = store.save_content_item(
         cycle_id=cycle_id,
@@ -307,7 +318,9 @@ def _prepare_target(
         body=body,
         media_spec=media_spec,
         hook_pattern=content.hook_pattern,
-        status=DRAFT_STATUS[target.mode],
+        # 모드가 기본값을 정하고(auto=approved, hybrid=needs_review), 안전 검열에
+        # 걸린 건은 auto여도 사람에게 넘긴다.
+        status=DRAFT_STATUS[target.mode] if not findings else "needs_review",
     )
     media_asset_id = store.save_media_asset(
         content_item_id=content_item_id,

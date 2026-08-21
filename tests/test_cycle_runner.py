@@ -346,3 +346,51 @@ def test_recent_topics_are_excluded_from_the_next_cycle() -> None:
     )
     used = [t["title"] for t in store.topics.values()]
     assert used == ["google_trends-topic-1", "google_trends-topic-2"], used
+
+
+# ── FR-Q7 안전 검열 배선 ──────────────────────────────────────────
+
+
+def _spec_with(topic: str = "정상 주제") -> dict[str, object]:
+    return {"topic": topic, "slides": [{"subtitle": "부제", "narration": "한 문장."}]}
+
+
+def _run_shorts(spec: dict[str, object], *, body: str = "본문", mode: str = "auto") -> Any:
+    store = InMemoryCycleStore()
+    run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target(mode=mode, fmt="shorts")],
+        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(spec, body=body))),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+    )
+    return store
+
+
+def test_clean_content_still_auto_approves() -> None:
+    (item,) = _run_shorts(_spec_with()).content_items.values()
+    assert item["status"] == "approved"
+
+
+def test_blocked_material_forces_human_review() -> None:
+    """auto 채널이어도 금지 소재가 있으면 자동 승인하지 않는다(FR-Q7: 발행 차단)."""
+    (item,) = _run_shorts(_spec_with("대통령 연설 분석")).content_items.values()
+    assert item["status"] == "needs_review"
+
+
+def test_blocked_material_in_the_caption_too() -> None:
+    """자막만 보면 뚫린다 — 캡션도 그대로 발행된다."""
+    store = _run_shorts(_spec_with(), body="크랙 받는 법 알려드립니다")
+    (item,) = store.content_items.values()
+    assert item["status"] == "needs_review"
+
+
+def test_findings_are_logged_with_location() -> None:
+    """왜 막혔는지 남지 않으면 사람이 승인 화면에서 판단할 수 없다."""
+    store = _run_shorts(_spec_with("대통령 연설 분석"))
+    notices = [e for e in store.events if e["kind"] == "notice"]
+    blob = json.dumps(notices, ensure_ascii=False)
+    assert "safety" in blob and "political" in blob and "topic" in blob
