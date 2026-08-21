@@ -146,11 +146,25 @@ def test_compare_marks_both_rows_distinctly() -> None:
     assert greenish, "빠른 쪽 표시가 없음"
 
 
-def test_every_kind_has_field_metadata() -> None:
-    """필드 목록과 폭 상한이 어긋나면 파서가 상한 없는 필드를 통과시킨다."""
+def test_every_field_is_covered_by_exactly_one_metadata_table() -> None:
+    """필드가 어느 표에도 없으면 파서가 상한 없이 통과시키고, 둘에 있으면 판정이 갈린다."""
+    from sns.render.concept_image import INDEX_FIELDS, LIST_FIELDS
+
     for kind, fields in CONCEPT_FIELDS.items():
         for field in fields:
-            assert field in MAX_FIELD_WIDTH, f"{kind}/{field}의 폭 상한 없음"
+            tables = [
+                field in INDEX_FIELDS,
+                field in LIST_FIELDS,  # 목록은 항목별 폭도 MAX_FIELD_WIDTH에서 본다
+                field in MAX_FIELD_WIDTH and field not in LIST_FIELDS,
+            ]
+            assert sum(tables) == 1, f"{kind}/{field}의 메타데이터가 {sum(tables)}곳"
+
+
+def test_list_fields_also_declare_an_item_width() -> None:
+    from sns.render.concept_image import LIST_FIELDS
+
+    for name in LIST_FIELDS:
+        assert name in MAX_FIELD_WIDTH, f"{name}의 항목 폭 상한 없음"
 
 
 def test_hangul_text_never_uses_the_mono_font() -> None:
@@ -189,3 +203,91 @@ def test_missing_font_raises_instead_of_tofu(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(mod, "FONT_CANDIDATES", ())
     with pytest.raises(FontNotFoundError):
         render_concept_square(parse_concept(EMPHASIS))
+
+
+# ── 추가 템플릿 3종 (코드 없는 영상용) ────────────────────────────
+#
+# 도구 소개·트렌드 주제는 보여줄 코드가 없어 정사각이 통째로 비었다(실제로 6컷 전부).
+# 기존 3종만으로 채우면 같은 카드가 반복돼 매번 같은 영상처럼 보인다.
+
+FLOW: dict[str, object] = {
+    "kind": "flow",
+    "steps": ["주제 한 줄 입력", "AI가 대본 작성", "영상·음성 합성"],
+    "active": 1,
+}
+STEPS: dict[str, object] = {
+    "kind": "steps",
+    "items": ["대본 자동 생성", "영상 자동 합성", "자막·TTS 자동"],
+    "active": 2,
+}
+TERMINAL: dict[str, object] = {
+    "kind": "terminal",
+    "commands": ["git clone MoneyPrinter", "pip install -r req.txt"],
+    "note": "깃허브에서 무료",
+}
+NEW_KINDS = (FLOW, STEPS, TERMINAL)
+
+
+@pytest.mark.parametrize("raw", NEW_KINDS, ids=lambda r: str(r["kind"]))
+def test_new_kinds_render_and_are_deterministic(raw: dict[str, object]) -> None:
+    concept = parse_concept(raw)
+    png = render_concept_square(concept)
+    assert opened(png).size == (940, 940)
+    assert png == render_concept_square(concept)
+
+
+@pytest.mark.parametrize("raw", NEW_KINDS, ids=lambda r: str(r["kind"]))
+def test_new_kinds_stay_inside_the_square(raw: dict[str, object]) -> None:
+    img = opened(render_concept_square(parse_concept(raw)))
+    for x in (6, 933):
+        assert {img.getpixel((x, y)) for y in range(60, 880, 7)} == {BACKGROUND}
+
+
+def test_list_field_is_required() -> None:
+    with pytest.raises(ConceptError, match="steps"):
+        parse_concept({"kind": "flow", "active": 0})
+
+
+def test_list_field_rejects_non_list() -> None:
+    with pytest.raises(ConceptError, match="steps"):
+        parse_concept({"kind": "flow", "steps": "한 줄", "active": 0})
+
+
+def test_too_many_items_rejected() -> None:
+    """flow 상자가 4개면 상자가 얇아져 글자가 안 들어간다 — 실측으로 3개가 상한."""
+    with pytest.raises(ConceptError, match="steps"):
+        parse_concept({"kind": "flow", "steps": ["가", "나", "다", "라"], "active": 0})
+
+
+def test_item_over_width_rejected() -> None:
+    with pytest.raises(ConceptError, match="steps"):
+        parse_concept({"kind": "flow", "steps": ["가" * 40], "active": 0})
+
+
+def test_active_out_of_range_rejected() -> None:
+    """강조 위치가 목록 밖이면 아무것도 강조되지 않은 채 조용히 그려진다."""
+    with pytest.raises(ConceptError, match="active"):
+        parse_concept({**FLOW, "active": 5})
+
+
+def test_active_defaults_to_first() -> None:
+    concept = parse_concept({"kind": "flow", "steps": ["가", "나"]})
+    assert concept.fields["active"] == 0
+
+
+def test_active_must_be_an_integer() -> None:
+    with pytest.raises(ConceptError, match="active"):
+        parse_concept({**FLOW, "active": "1"})
+
+
+def test_flow_highlight_moves_the_picture() -> None:
+    """같은 그림에 강조만 옮겨 컷을 잇는다 — 코드의 focus_lines와 같은 원리."""
+    first = render_concept_square(parse_concept({**FLOW, "active": 0}))
+    last = render_concept_square(parse_concept({**FLOW, "active": 2}))
+    assert first != last
+
+
+def test_terminal_note_is_optional() -> None:
+    assert opened(render_concept_square(parse_concept({
+        "kind": "terminal", "commands": ["pip install sns"]
+    }))).size == (940, 940)  # fmt: skip

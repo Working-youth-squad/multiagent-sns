@@ -21,6 +21,7 @@
 import io
 from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import cast
 
 from PIL import Image, ImageDraw, ImageFont
 
@@ -34,12 +35,25 @@ CONCEPT_FIELDS: dict[str, tuple[str, ...]] = {
     "emphasis": ("tag", "headline", "sub"),
     "compare": ("before_label", "before_note", "after_label", "after_note", "footer"),
     "remember": ("line", "code"),
+    # 코드가 없는 영상(도구 소개·트렌드)에서 정사각이 비지 않게 하는 3종.
+    "flow": ("steps", "active"),  # 파이프라인 — 단계 상자 + 화살표
+    "steps": ("items", "active"),  # 번호 목록 — 기능 나열
+    "terminal": ("commands", "note"),  # 설치·시작 명령
 }
+# 목록 필드 → 최대 항목 수. 항목별 폭 상한은 MAX_FIELD_WIDTH를 함께 쓴다.
+#   flow 3개  : 실측으로 4개면 상자가 얇아져 글자가 안 들어간다.
+#   steps 4개 : 번호 목록은 상자가 없어 한 줄 더 들어간다.
+LIST_FIELDS: dict[str, int] = {"steps": 3, "items": 4, "commands": 2}
+# 0-기반 강조 위치. 같은 그림에 강조만 옮겨 연속 컷을 만든다(코드의 focus_lines와 같은 원리).
+INDEX_FIELDS: frozenset[str] = frozenset({"active"})
 # 없으면 그림이 성립하지 않는 필드.
 REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "emphasis": ("headline",),
     "compare": ("before_label", "after_label"),
     "remember": ("line",),
+    "flow": ("steps",),
+    "steps": ("items",),
+    "terminal": ("commands",),
 }
 # 표시 폭 상한(한글 1자 = 2). 전부 940 정사각 기준 실측이다.
 MAX_FIELD_WIDTH: dict[str, int] = {
@@ -53,6 +67,10 @@ MAX_FIELD_WIDTH: dict[str, int] = {
     "footer": 24,
     "line": 34,
     "code": 22,
+    "steps": 20,  # 상자 안 한 줄 — 한글 10자
+    "items": 24,  # 번호 옆 한 줄 — 한글 12자
+    "commands": 34,  # 터미널 명령 (ASCII 기준)
+    "note": 24,
 }
 
 INK = (230, 237, 243)
@@ -73,7 +91,57 @@ class ConceptError(ValueError):
 @dataclass(frozen=True)
 class Concept:
     kind: str
-    fields: Mapping[str, str]
+    # 값은 문자열 / 문자열 튜플(목록) / 정수(강조 위치) 셋 중 하나다.
+    fields: Mapping[str, object]
+
+
+def _check_width(name: str, text: str) -> str:
+    if display_width(text) > MAX_FIELD_WIDTH[name]:
+        raise ConceptError(
+            f"'{name}'이 정사각 폭을 넘음 — 표시 폭 {MAX_FIELD_WIDTH[name]} 이하"
+            f"(한글 {MAX_FIELD_WIDTH[name] // 2}자): 현재 {display_width(text)}"
+        )
+    return text
+
+
+def _parse_text(raw: Mapping[str, object], name: str) -> str:
+    value = raw.get(name, "")
+    if not isinstance(value, str):
+        raise ConceptError(f"'{name}'은 문자열이어야 함: {value!r}")
+    return _check_width(name, value.strip())
+
+
+def _parse_list(raw: Mapping[str, object], name: str) -> tuple[str, ...]:
+    value = raw.get(name, ())
+    if isinstance(value, str) or not isinstance(value, list | tuple):
+        if value == ():
+            return ()
+        raise ConceptError(f"'{name}'은 문자열 리스트여야 함: {value!r}")
+    limit = LIST_FIELDS[name]
+    if len(value) > limit:
+        raise ConceptError(f"'{name}'은 {limit}개 이하여야 함: {len(value)}개")
+    items: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ConceptError(f"'{name}' 항목은 문자열이어야 함: {item!r}")
+        items.append(_check_width(name, item.strip()))
+    return tuple(items)
+
+
+def _parse_index(raw: Mapping[str, object], name: str) -> int:
+    value = raw.get(name, 0)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise ConceptError(f"'{name}'은 정수여야 함(0-기반 강조 위치): {value!r}")
+    return value
+
+
+def _check_index_range(kind: str, fields: Mapping[str, object], name: str) -> None:
+    target = next((f for f in CONCEPT_FIELDS[kind] if f in LIST_FIELDS), None)
+    items = fields.get(target or "", ())
+    count = len(items) if isinstance(items, tuple) else 0
+    index = fields[name]
+    if not isinstance(index, int) or not 0 <= index < max(count, 1):
+        raise ConceptError(f"'{name}'이 범위(0~{max(count - 1, 0)}) 밖: {index!r}")
 
 
 def parse_concept(raw: Mapping[str, object]) -> Concept:
@@ -86,25 +154,33 @@ def parse_concept(raw: Mapping[str, object]) -> Concept:
         if key != "kind" and key not in allowed:
             raise ConceptError(f"'{kind}'가 모르는 필드: {key!r} (허용: {list(allowed)})")
 
-    fields: dict[str, str] = {}
+    fields: dict[str, object] = {}
     for name in allowed:
-        value = raw.get(name, "")
-        if not isinstance(value, str):
-            raise ConceptError(f"'{name}'은 문자열이어야 함: {value!r}")
-        text = value.strip()
-        if display_width(text) > MAX_FIELD_WIDTH[name]:
-            raise ConceptError(
-                f"'{name}'이 정사각 폭을 넘음 — 표시 폭 {MAX_FIELD_WIDTH[name]} 이하"
-                f"(한글 {MAX_FIELD_WIDTH[name] // 2}자): 현재 {display_width(text)}"
-            )
-        fields[name] = text
+        if name in INDEX_FIELDS:
+            fields[name] = _parse_index(raw, name)
+        elif name in LIST_FIELDS:
+            fields[name] = _parse_list(raw, name)
+        else:
+            fields[name] = _parse_text(raw, name)
+
     for name in REQUIRED_FIELDS[kind]:
         if not fields[name]:
             raise ConceptError(f"'{kind}'에는 '{name}'이 필요함")
+
+    # 강조 위치는 목록이 정해진 **뒤에** 검사한다. 범위를 넘으면 아무것도 강조되지 않은 채
+    # 조용히 그려져, 컷이 바뀌어도 화면이 그대로인 걸 아무도 모른다.
+    for name in allowed:
+        if name in INDEX_FIELDS:
+            _check_index_range(kind, fields, name)
     return Concept(kind=kind, fields=fields)
 
 
 # ── 그리기 도구 ───────────────────────────────────────────────────
+
+
+def _text(fields: Mapping[str, object], name: str) -> str:
+    """문자열 필드 꺼내기 — 값 타입이 셋(문자열·목록·정수)이라 레이아웃에서 좁혀 쓴다."""
+    return cast(str, fields[name])
 
 
 def _text_size(
@@ -192,34 +268,34 @@ def _cell_center(size: int, index: int, cell: int, gap: int) -> int:
 # ── 종류별 레이아웃 ───────────────────────────────────────────────
 
 
-def _draw_emphasis(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, str],
+def _draw_emphasis(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, object],
                    kor: str, mono: str) -> None:  # fmt: skip
     """숫자 하나를 크게. 블록 전체를 세로 중앙에 둔다 — 고정 y는 아래를 휑하게 남긴다."""
     inner = size - round(size * 0.15)
     tag_font = ImageFont.truetype(kor, round(size / 23.5))
     sub_font = ImageFont.truetype(kor, round(size / 20.4))
     # 숫자는 고정폭이 더 단단해 보인다. 한글이 섞이면 본문 폰트로([_font_for]).
-    head_path = mono if f["headline"].isascii() else kor
-    head_font = _fit_font(draw, f["headline"], head_path, round(size / 6.3), inner)
+    head_path = mono if _text(f, "headline").isascii() else kor
+    head_font = _fit_font(draw, _text(f, "headline"), head_path, round(size / 6.3), inner)
 
-    tag_h = _text_size(draw, f["tag"], tag_font)[1] if f["tag"] else 0
-    head_h = _text_size(draw, f["headline"], head_font)[1]
+    tag_h = _text_size(draw, _text(f, "tag"), tag_font)[1] if _text(f, "tag") else 0
+    head_h = _text_size(draw, _text(f, "headline"), head_font)[1]
     sub_lines = (
-        wrap_balanced(f["sub"], lambda s: _text_size(draw, s, sub_font)[0], inner)
-        if f["sub"]
+        wrap_balanced(_text(f, "sub"), lambda s: _text_size(draw, s, sub_font)[0], inner)
+        if _text(f, "sub")
         else []
     )
     sub_step = round(sub_font.size * 1.35)
     rule_gap = round(size * 0.055)
 
-    block = tag_h + (round(size * 0.07) if f["tag"] else 0) + head_h
+    block = tag_h + (round(size * 0.07) if _text(f, "tag") else 0) + head_h
     if sub_lines:
         block += rule_gap * 2 + sub_step * len(sub_lines)
     y = (size - block) // 2
 
-    if f["tag"]:
-        y = _centered(draw, size, y, f["tag"], tag_font, DIM) + round(size * 0.07)
-    y = _centered(draw, size, y, f["headline"], head_font, ACCENT)
+    if _text(f, "tag"):
+        y = _centered(draw, size, y, _text(f, "tag"), tag_font, DIM) + round(size * 0.07)
+    y = _centered(draw, size, y, _text(f, "headline"), head_font, ACCENT)
     if sub_lines:
         y += rule_gap
         draw.rectangle(((size - 128) // 2, y, (size + 128) // 2, y + 5), fill=EDGE)
@@ -229,12 +305,12 @@ def _draw_emphasis(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, str],
             y += sub_step
 
 
-def _draw_compare(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, str],
+def _draw_compare(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, object],
                   kor: str, mono: str) -> None:  # fmt: skip
     """위=느린 방법(칸마다 훑음), 아래=빠른 방법(곧바로 꽂힘)."""
     label_size, foot_size = round(size / 21.4), round(size / 16.8)
     note_font = ImageFont.truetype(kor, round(size / 26.1))
-    foot_font = _font_for(f["footer"], mono, kor, foot_size)
+    foot_font = _font_for(_text(f, "footer"), mono, kor, foot_size)
     cell, gap = round(size * 0.102), round(size * 0.019)
     target = _CELLS - 1
 
@@ -255,26 +331,28 @@ def _draw_compare(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, str],
             y = _centered(draw, size, y, note, note_font, DIM)
         return y
 
-    y = row(round(size * 0.075), f["before_label"], f["before_note"], SLOW, scan=True)
+    y = row(round(size * 0.075), _text(f, "before_label"), _text(f, "before_note"), SLOW, scan=True)
     y += round(size * 0.045)
     draw.line((round(size * 0.12), y, size - round(size * 0.12), y), fill=EDGE, width=3)
-    y = row(y + round(size * 0.045), f["after_label"], f["after_note"], FAST, scan=False)
-    if f["footer"]:
-        _centered(draw, size, y + round(size * 0.05), f["footer"], foot_font, ACCENT)
+    y = row(
+        y + round(size * 0.045), _text(f, "after_label"), _text(f, "after_note"), FAST, scan=False
+    )
+    if _text(f, "footer"):
+        _centered(draw, size, y + round(size * 0.05), _text(f, "footer"), foot_font, ACCENT)
 
 
-def _draw_remember(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, str],
+def _draw_remember(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, object],
                    kor: str, mono: str) -> None:  # fmt: skip
     """마무리 — 배지 + 한 줄 + 코드 알약. 블록 전체를 세로 중앙에."""
     badge_font = ImageFont.truetype(kor, round(size / 24.7))
     body_font = ImageFont.truetype(kor, round(size / 15.2))
-    code_font = _font_for(f["code"], mono, kor, round(size / 18.1))
+    code_font = _font_for(_text(f, "code"), mono, kor, round(size / 18.1))
     inner = size - round(size * 0.16)
 
-    lines = wrap_balanced(f["line"], lambda s: _text_size(draw, s, body_font)[0], inner)
+    lines = wrap_balanced(_text(f, "line"), lambda s: _text_size(draw, s, body_font)[0], inner)
     body_step = round(body_font.size * 1.35)
     badge_h = _text_size(draw, "기억하세요", badge_font)[1] + 36
-    code_h = (_text_size(draw, f["code"], code_font)[1] + 40) if f["code"] else 0
+    code_h = (_text_size(draw, _text(f, "code"), code_font)[1] + 40) if _text(f, "code") else 0
 
     block = badge_h + round(size * 0.075) + body_step * len(lines)
     if code_h:
@@ -285,12 +363,108 @@ def _draw_remember(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, str],
     for line in lines:
         _centered(draw, size, y, line, body_font, INK)
         y += body_step
-    if f["code"]:
-        _pill(draw, size, y + round(size * 0.055), f["code"], code_font, CELL_FILL, ACCENT,
+    if _text(f, "code"):
+        _pill(draw, size, y + round(size * 0.055), _text(f, "code"), code_font, CELL_FILL, ACCENT,
               outline=ACCENT)  # fmt: skip
 
 
-_LAYOUTS = {"emphasis": _draw_emphasis, "compare": _draw_compare, "remember": _draw_remember}
+def _draw_flow(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, object],
+               kor: str, mono: str) -> None:  # fmt: skip
+    """파이프라인 — 단계 상자를 세로로 잇는다. 강조는 지금 말하는 단계 하나."""
+    steps = cast(tuple[str, ...], f["steps"])
+    active = cast(int, f["active"])
+    font = ImageFont.truetype(kor, round(size / 20.4))
+    box_h, gap = round(size * 0.16), round(size * 0.062)
+    y = (size - (len(steps) * box_h + (len(steps) - 1) * gap)) // 2
+    margin = round(size * 0.117)
+    for index, label in enumerate(steps):
+        on = index == active
+        draw.rounded_rectangle(
+            (margin, y, size - margin, y + box_h), radius=round(size * 0.023),
+            fill=CELL_FILL, outline=ACCENT if on else EDGE, width=5 if on else 3,
+        )  # fmt: skip
+        text_w, text_h = _text_size(draw, label, font)
+        draw.text(((size - text_w) // 2, y + (box_h - text_h) // 2 - round(size * 0.006)),
+                  label, font=font, fill=INK if on else DIM)  # fmt: skip
+        if index < len(steps) - 1:
+            _down_arrow(draw, size // 2, y + box_h + 10, gap - 16, EDGE, 5)
+        y += box_h + gap
+
+
+def _draw_steps(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, object],
+                kor: str, mono: str) -> None:  # fmt: skip
+    """번호 목록 — 기능 나열. 강조 항목만 번호가 채워지고 글자가 밝다."""
+    items = cast(tuple[str, ...], f["items"])
+    active = cast(int, f["active"])
+    font = ImageFont.truetype(kor, round(size / 19.6))
+    num_font = ImageFont.truetype(kor, round(size / 24.7))
+    step = round(size * 0.179)
+    radius = round(size * 0.036)
+    left = round(size * 0.111)
+    y = (size - step * len(items)) // 2 + round(size * 0.019)
+    for index, text in enumerate(items):
+        on = index == active
+        cy = y + radius
+        draw.ellipse((left, cy - radius, left + radius * 2, cy + radius),
+                     fill=ACCENT if on else CELL_FILL,
+                     outline=ACCENT if on else EDGE, width=3)  # fmt: skip
+        nw, nh = _text_size(draw, str(index + 1), num_font)
+        draw.text((left + radius - nw // 2, cy - nh // 2 - round(size * 0.004)),
+                  str(index + 1), font=num_font, fill=(12, 16, 22) if on else DIM)  # fmt: skip
+        inner = size - left - radius * 2 - round(size * 0.09)
+        lines = wrap_balanced(text, lambda s: _text_size(draw, s, font)[0], inner)
+        line_h = round(font.size * 1.24)
+        ly = cy - (len(lines) * line_h) // 2
+        for line in lines:
+            draw.text((left + radius * 2 + round(size * 0.03), ly - round(size * 0.006)),
+                      line, font=font, fill=INK if on else DIM)  # fmt: skip
+            ly += line_h
+        y += step
+
+
+def _draw_terminal(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, object],
+                   kor: str, mono: str) -> None:  # fmt: skip
+    """터미널 창 — 도구 소개의 '지금 해보세요' 자리. 개발 채널에선 대개 설치 명령이다."""
+    commands = cast(tuple[str, ...], f["commands"])
+    note = cast(str, f["note"])
+    font = _font_for(" ".join(commands), mono, kor, round(size / 21.4))
+    line_h = round(font.size * 1.55)
+    bar_h = round(size * 0.075)
+    inner_pad = round(size * 0.05)
+    win_h = bar_h + inner_pad * 2 + line_h * len(commands)
+    note_font = ImageFont.truetype(kor, round(size / 23.5))
+    note_h = (_text_size(draw, note, note_font)[1] + round(size * 0.075)) if note else 0
+    margin = round(size * 0.064)
+
+    top = (size - (win_h + note_h)) // 2
+    draw.rounded_rectangle((margin, top, size - margin, top + win_h),
+                           radius=round(size * 0.019), fill=(11, 14, 19),
+                           outline=EDGE, width=3)  # fmt: skip
+    draw.line((margin, top + bar_h, size - margin, top + bar_h), fill=EDGE, width=3)
+    dot_r = round(size * 0.013)
+    for i, color in enumerate(((255, 95, 86), (255, 189, 46), (39, 201, 63))):
+        cx = margin + round(size * 0.043) + i * round(size * 0.043)
+        cy = top + bar_h // 2
+        draw.ellipse((cx - dot_r, cy - dot_r, cx + dot_r, cy + dot_r), fill=color)
+
+    y = top + bar_h + inner_pad
+    x = margin + round(size * 0.047)
+    for command in commands:
+        draw.text((x, y), "$", font=font, fill=FAST)
+        draw.text((x + round(size * 0.047), y), command, font=font, fill=INK)
+        y += line_h
+    if note:
+        _centered(draw, size, top + win_h + round(size * 0.062), note, note_font, DIM)
+
+
+_LAYOUTS = {
+    "emphasis": _draw_emphasis,
+    "compare": _draw_compare,
+    "remember": _draw_remember,
+    "flow": _draw_flow,
+    "steps": _draw_steps,
+    "terminal": _draw_terminal,
+}
 
 
 def render_concept_square(
