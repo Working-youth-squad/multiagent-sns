@@ -31,6 +31,7 @@ class CycleStore(Protocol):
 
     def create_cycle(self, goal_ref: str) -> str: ...
     def save_topic(self, *, title: str, summary: str, source: str) -> str: ...
+    def recent_topic_titles(self, *, days: int) -> tuple[str, ...]: ...
     def save_content_item(
         self,
         *,
@@ -84,6 +85,10 @@ class InMemoryCycleStore:
         tid = self._id("topic")
         self.topics[tid] = {"title": title, "summary": summary, "source": source, "status": "used"}
         return tid
+
+    def recent_topic_titles(self, *, days: int) -> tuple[str, ...]:
+        """인메모리는 프로세스와 함께 사라지므로 days를 무시하고 전부 돌려준다."""
+        return tuple(str(t["title"]) for t in self.topics.values())
 
     def save_content_item(
         self,
@@ -170,6 +175,15 @@ class PgCycleStore:
             "VALUES (%s, %s, %s, 'used') RETURNING id",
             (title, summary, source),
         )
+
+    def recent_topic_titles(self, *, days: int) -> tuple[str, ...]:
+        """최근 N일 안에 실제로 쓴 주제 제목 — 주제 중복 차단의 재료."""
+        rows = self._conn.execute(
+            "SELECT title FROM topic WHERE status = 'used' "
+            "AND created_at > now() - make_interval(days => %s) ORDER BY created_at DESC",
+            (days,),
+        ).fetchall()
+        return tuple(str(r[0]) for r in rows)
 
     def save_content_item(
         self,

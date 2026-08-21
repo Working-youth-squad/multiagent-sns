@@ -3,7 +3,9 @@
 기존 `e2e_youtube_shorts.py`와 다른 점: 대본이 **하드코딩이 아니라 에이전트 산출물**이다.
 실 트렌드 → 실 Gemini(주제·대본) → 실 TTS 영상 → 실 품질 게이트 → 실 업로드까지 간다.
 
-Postgres는 필요 없다 — `InMemoryCycleStore`로 사이클을 돌린다(원장 영속은 e2e_cycle.py가 검증).
+**원장(Postgres)이 기본이다.** 예전엔 InMemoryCycleStore로 돌렸는데, 그러면 매 실행이
+기억을 잃어 주제 중복 차단이 동작하지 않는다 — 실제로 2026-08-20/21 이틀 연속 같은
+Cursor 영상이 나갔다. --store memory로 끌 수 있지만 그때는 경고를 찍는다.
 
 전제:
   1. env GEMINI_API_KEY          — aistudio.google.com/apikey
@@ -30,6 +32,7 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+import psycopg
 from dotenv import load_dotenv
 
 from sns.adapters.youtube.auth import build_youtube, load_credentials
@@ -44,7 +47,7 @@ from sns.render.video.quality import check_video
 from sns.render.video.tts import synthesize_google
 from sns.research.trends import default_service
 from sns.runner.cycle import AssessQuality, CycleTarget, run_cycle
-from sns.runner.store import InMemoryCycleStore
+from sns.runner.store import CycleStore, InMemoryCycleStore, PgCycleStore
 from sns.tools.contracts import ContentFormat, MediaAsset, MediaKind
 from sns.tools.fakes import FakeReadStats
 
@@ -166,6 +169,10 @@ def main() -> int:
     parser.add_argument("--file", default=None, help="기존 mp4 업로드 (렌더·에이전트 건너뜀)")
     parser.add_argument("--caption-file", default=None, help="--file과 함께 쓸 캡션 텍스트 파일")
     parser.add_argument("--font", default=None, help="한글 TTF 경로 (미지정 시 자동 탐색)")
+    parser.add_argument(
+        "--store", choices=("pg", "memory"), default="pg",
+        help="원장 저장소. pg(기본)라야 주제 중복 차단이 동작한다",
+    )  # fmt: skip
     args = parser.parse_args()
 
     load_dotenv(ROOT / ".env", override=False)
@@ -183,7 +190,22 @@ def main() -> int:
     renderer = VideoRenderMedia(
         media_store, synthesize=synthesize_google, font_path=args.font, ffmpeg=ffmpeg
     )
-    store = InMemoryCycleStore()
+    conn = None
+    store: CycleStore
+    if args.store == "memory":
+        print("⚠ 원장 없이 실행 — 과거 발행 이력을 못 읽어 **주제 중복 차단이 꺼집니다**")
+        store = InMemoryCycleStore()
+    else:
+        try:
+            conn = psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=10, autocommit=True)
+        except (KeyError, psycopg.OperationalError) as exc:
+            print("중단: 원장(PostgreSQL) 연결 실패 — docker compose up -d postgres")
+            print(f"      {exc}")
+            print("      원장 없이 돌리려면 --store memory (주제 중복 차단이 꺼집니다)")
+            return 1
+        store = PgCycleStore(conn)
+        recent = store.recent_topic_titles(days=14)
+        print(f"      최근 14일 발행 주제 {len(recent)}건 — 후보에서 제외됩니다")
 
     print("[1/4] 실 트렌드 조회")
     trends = default_service()

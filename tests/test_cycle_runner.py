@@ -325,3 +325,24 @@ def test_without_resolver_spec_and_body_pass_through() -> None:
     (item,) = store.content_items.values()
     assert "image_ref" not in item["media_spec"]["slides"][0]
     assert "Pexels" not in item["body"]
+
+
+# ── 주제 중복 차단 배선 ───────────────────────────────────────────
+
+
+def test_recent_topics_are_excluded_from_the_next_cycle() -> None:
+    """어제 쓴 주제가 오늘 후보에서 빠져야 한다 — 실제로 같은 영상이 두 번 나갔다."""
+    store = InMemoryCycleStore()
+    store.save_topic(title="google_trends-topic-1", summary="어제 쓴 주제", source="google_trends")
+    run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target()],
+        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script())),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+    )
+    used = [t["title"] for t in store.topics.values()]
+    assert used == ["google_trends-topic-1", "google_trends-topic-2"], used

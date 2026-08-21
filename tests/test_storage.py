@@ -31,3 +31,21 @@ def test_get_round_trips_bytes() -> None:
 def test_get_unknown_url_raises() -> None:
     with pytest.raises(KeyError):
         InMemoryMediaStore().get("mem://image/missing.png")
+
+
+# ── 최근 발행 주제 조회 (중복 차단의 재료) ────────────────────────
+
+
+def test_recent_topics_returns_saved_titles() -> None:
+    from sns.runner.store import InMemoryCycleStore
+
+    store = InMemoryCycleStore()
+    store.save_topic(title="cursor/plugins", summary="요약", source="github_trending")
+    store.save_topic(title="vercel/next.js", summary="요약", source="github_trending")
+    assert set(store.recent_topic_titles(days=14)) == {"cursor/plugins", "vercel/next.js"}
+
+
+def test_recent_topics_empty_on_fresh_store() -> None:
+    from sns.runner.store import InMemoryCycleStore
+
+    assert InMemoryCycleStore().recent_topic_titles(days=14) == ()

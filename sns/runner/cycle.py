@@ -95,6 +95,10 @@ class CycleResult:
 # 주제 이미지 해소 seam — `image_query`를 렌더 전에 `image_ref`로 못박는다
 # ([sns.render.images.resolve]). 주입인 이유는 둘이다: 외부 호출·저장소를 러너가 몰라야
 # 하고, 테스트가 네트워크 없이 돌아야 한다. 미배선(None)이면 사이클은 그대로 굴러간다.
+# 주제 중복 차단 창(일). 트렌드 소스가 같은 항목을 노출하는 기간보다 길게 잡되, 진짜로
+# 다시 뜨는 주제는 언젠가 돌아올 수 있게 무한정 막지는 않는다.
+RECENT_TOPIC_DAYS = 14
+
 ResolveMediaSpec = Callable[[Mapping[str, object]], ImageResolution]
 
 
@@ -135,11 +139,14 @@ def run_cycle(
     try:
         # ── 주제(사이클당 1건, 통제변수: 동일 주제 도메인) ──────────────
         try:
+            # 최근 발행 주제는 후보에서 뺀다. 트렌드 소스는 같은 항목을 며칠씩 노출해서,
+            # 이게 없으면 어제와 같은 영상이 나간다(실제로 그랬다 — 2026-08-20/21 Cursor).
             topic = run_topic(
                 model,
                 platform=targets[0].platform,
                 research_trends=research_trends,
                 read_stats=read_stats,
+                exclude_titles=store.recent_topic_titles(days=RECENT_TOPIC_DAYS),
             )
         except TopicSelectionError as exc:
             store.log_event(
