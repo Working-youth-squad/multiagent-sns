@@ -11,6 +11,8 @@ import pytest
 
 from sns.render.video.spec import (
     DEFAULT_VOICE,
+    MAX_IMAGE_PROMPT_LEN,
+    MAX_IMAGE_QUERY_LEN,
     MAX_NARRATION_WIDTH,
     MAX_SIDE,
     MAX_SLIDES,
@@ -378,6 +380,32 @@ def test_non_ascii_image_prompt_rejected() -> None:
                 **MINIMAL,
                 "slides": [
                     {"subtitle": "부제", "narration": "한 문장.", "image_prompt": "빛나는 정육면체"}
+                ],
+            }
+        )
+
+
+def test_generation_prompt_gets_more_room_than_a_search_query() -> None:
+    """근거가 반대다 — 검색어는 짧아야 걸리고, 생성 프롬프트는 구도를 설명해야 한다."""
+    assert MAX_IMAGE_PROMPT_LEN > MAX_IMAGE_QUERY_LEN
+    composition = "a single request splitting into a hundred thin glowing arrows striking a rack"
+    assert len(composition) > MAX_IMAGE_QUERY_LEN  # 검색어 상한으로는 못 쓰는 길이
+    spec = parse_video_spec(
+        {
+            **MINIMAL,
+            "slides": [{"subtitle": "부제", "narration": "한 문장.", "image_prompt": composition}],
+        }
+    )
+    assert spec.slides[0].image_prompt == composition
+
+
+def test_too_long_image_prompt_rejected() -> None:
+    with pytest.raises(VideoSpecError, match="image_prompt"):
+        parse_video_spec(
+            {
+                **MINIMAL,
+                "slides": [
+                    {"subtitle": "부제", "narration": "한 문장.", "image_prompt": "a " * 150}
                 ],
             }
         )

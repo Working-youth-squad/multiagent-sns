@@ -42,9 +42,12 @@ MAX_SUBTITLE_WIDTH = 40
 # 컷 1개의 나레이션 폭 상한. Chirp 3 HD 한국어 실측 8.0자/초 → 한글 31자면 약 3.9초로
 # FR-A2의 화면 전환 주기(2~4초) 안에 들어온다. 한 컷 = 한 화면이라 이게 곧 정지 시간이다.
 MAX_NARRATION_WIDTH = 62
-# 스톡 검색어·생성 주제 길이 상한. 검색은 길수록 0건에 수렴하고, 생성 주제는 길수록
-# 고정 화풍과 싸운다([sns.render.images.generate.STYLE_RULES]).
+# 스톡 검색어 상한 — 길수록 결과가 0건으로 수렴한다(검색은 짧아야 걸린다).
 MAX_IMAGE_QUERY_LEN = 60
+# 생성 프롬프트 상한 — 근거가 반대다. 구도를 설명해야 하므로 문장 하나는 들어가야 하고,
+# 검색어 길이(60)를 물려 뒀더니 "무엇이 어떻게 놓였는지"를 쓸 수 없었다. 다만 무한정
+# 길면 고정 화풍([sns.render.images.generate.STYLE_RULES])과 싸우기 시작한다.
+MAX_IMAGE_PROMPT_LEN = 200
 
 DEFAULT_VOICE = "ko-KR-Chirp3-HD-Charon"
 # 코드가 없는 컷의 정사각을 채우는 그라데이션 + 텍스트/액센트 (다크 브랜드 팔레트).
@@ -127,8 +130,10 @@ def _parse_focus(raw: Mapping[str, object], where: str, code: str) -> tuple[int,
     return cast(tuple[int, ...], numbers)
 
 
-def _parse_image_text(raw: Mapping[str, object], key: str, where: str, code: str) -> str:
-    """스톡 검색어·생성 주제. 영문·짧게만 받는다 — 게이트와 모델이 모두 영어 기준이다."""
+def _parse_image_text(
+    raw: Mapping[str, object], key: str, where: str, code: str, max_len: int
+) -> str:
+    """스톡 검색어·생성 프롬프트. 영문만 받는다 — 게이트와 모델이 모두 영어 기준이다."""
     query = _optional_str(raw, key, where).strip()
     if not query:
         return ""
@@ -136,10 +141,8 @@ def _parse_image_text(raw: Mapping[str, object], key: str, where: str, code: str
         raise VideoSpecError(f"{where}'{key}'와 'code'는 함께 쓸 수 없음 — 정사각은 하나뿐이다")
     if not query.isascii():
         raise VideoSpecError(f"{where}'{key}'는 영문이어야 함(금지어 판정 기준): {query!r}")
-    if len(query) > MAX_IMAGE_QUERY_LEN:
-        raise VideoSpecError(
-            f"{where}'{key}'는 {MAX_IMAGE_QUERY_LEN}자 이하여야 함: {len(query)}자"
-        )
+    if len(query) > max_len:
+        raise VideoSpecError(f"{where}'{key}'는 {max_len}자 이하여야 함: {len(query)}자")
     return query
 
 
@@ -177,8 +180,8 @@ def _parse_slide(raw: object, index: int) -> Slide:
         lang=_optional_str(raw, "lang", where),
         focus_lines=_parse_focus(raw, where, code),
         concept=concept,
-        image_query=_parse_image_text(raw, "image_query", where, code),
-        image_prompt=_parse_image_text(raw, "image_prompt", where, code),
+        image_query=_parse_image_text(raw, "image_query", where, code, MAX_IMAGE_QUERY_LEN),
+        image_prompt=_parse_image_text(raw, "image_prompt", where, code, MAX_IMAGE_PROMPT_LEN),
         image_ref=_optional_str(raw, "image_ref", where),
     )
 
