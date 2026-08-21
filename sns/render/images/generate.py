@@ -12,10 +12,20 @@
 **항상 `provider:model` 형식이다.** 이름만 보고 프로바이더를 추측하는 규칙(gpt-로
 시작하면 OpenAI…)은 새 모델이 나올 때마다 깨진다. 명시가 싸다.
 
-**둘 다 유료다.** Google은 2026-08 실측으로 이미지 모델 7종 전부 무료 티어 할당량이 0이고
-(`GenerateRequestsPerDayPerProjectPerModel-FreeTier` = 0), OpenAI 이미지 API도 과금이다.
-그래서 이 모듈은 기본 배선에서 빠져 있다 — [sns.render.images.resolve]에 `generate`를
-주입해야만 돈다. 429는 오류가 아니라 **기본 상태**라, 프로바이더별로 사유를 갈라 안내한다.
+**기본 배선에서 빠져 있다** — [sns.render.images.resolve]에 `generate`를 주입해야만 돈다.
+이유가 둘이다.
+
+1. 유료다. Google은 2026-08 실측으로 이미지 모델 7종 전부 무료 티어 할당량이 0이고
+   (`GenerateRequestsPerDayPerProjectPerModel-FreeTier` = 0), OpenAI 이미지 API도 과금이다.
+   429는 오류가 아니라 **기본 상태**라 프로바이더별로 사유를 갈라 안내한다.
+2. **같은 영상으로 A/B를 해보고 개념 그림([sns.render.concept_image])을 택했다.**
+   gpt-image-1이 화풍은 잘 맞췄지만(어두운 배경·글자 없음), 개발 콘텐츠의 핵심 컷은
+   대개 숫자와 비교다 — "101번 → 2번"을 개념 그림은 글자로 쓰고, 생성 이미지는
+   화살표 개수를 세게 만든다. 생성이 이기는 자리는 훅처럼 인상이 전부인 컷뿐인데,
+   그 한 컷 때문에 과금·비결정론을 상시 배선할 이유가 없다.
+
+그래서 Content Agent 프롬프트도 `image_prompt`를 권하지 않는다. 이 모듈은 남겨 둔다 —
+화풍 비교(scripts/preview_generated_image.py)와, 나중에 판단이 바뀔 때의 진입점이다.
 
 화풍은 프로바이더와 무관하게 코드가 고정한다(`STYLE_RULES`). 화풍이 갈리면 모델 비교가
 화풍 비교로 오염된다. **글자는 넣지 않게 한다** — 생성 모델의 글자는 뭉개지고, 글자는
