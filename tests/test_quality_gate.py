@@ -1,5 +1,7 @@
 """C3 품질 게이트 검증 — FR-Q1/Q2/Q4·FR-A2 카드 항목. 순수 함수 결정론."""
 
+from dataclasses import replace
+
 from sns.quality.gate import (
     MAX_CONTENT_SIMILARITY,
     QualityReport,
@@ -8,6 +10,7 @@ from sns.quality.gate import (
     contrast_ratio,
 )
 from sns.render.card import parse_card_spec, render_card
+from sns.render.card.spec import CardSpec
 
 VALID_SPEC: dict[str, object] = {
     "hook": "You are shipping bugs in your sleep",
@@ -19,8 +22,13 @@ VALID_SPEC: dict[str, object] = {
 
 def _report(spec_overrides: dict[str, object] | None = None, **kwargs: object) -> QualityReport:
     spec = parse_card_spec({**VALID_SPEC, **(spec_overrides or {})})
-    render = render_card(spec)
-    return check_card(spec, render, **kwargs)  # type: ignore[arg-type]
+    return check_card(spec, render_card(spec), **kwargs)  # type: ignore[arg-type]
+
+
+def _report_unparsed(spec: CardSpec, **kwargs: object) -> QualityReport:
+    """파싱 용량 상한을 우회한 스펙으로 게이트를 검사 — 게이트는 파싱 뒤의 방어선이라
+    상한 안에서도 넘칠 수 있는 경우(폰트·안전영역 변화)를 계속 잡아야 한다."""
+    return check_card(spec, render_card(spec), **kwargs)  # type: ignore[arg-type]
 
 
 def test_clean_card_passes() -> None:
@@ -39,7 +47,10 @@ def test_low_contrast_fails() -> None:
 
 
 def test_overflow_fails() -> None:
-    report = _report({"body": [f"crowded line {i}" for i in range(40)]})
+    crowded = replace(
+        parse_card_spec(VALID_SPEC), body=tuple(f"crowded line {i}" for i in range(40))
+    )
+    report = _report_unparsed(crowded)
     assert report.status == "failed"
     assert any(c.name == "text_overflow" and not c.passed for c in report.checks)
 

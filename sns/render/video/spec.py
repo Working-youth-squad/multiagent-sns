@@ -14,6 +14,8 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from sns.render.text import display_width, split_sentences
+
 # 쇼츠/릴스 세로 규격 9:16 (FR-M2). spec이 명시하면 덮어쓰되 비율은 강제.
 DEFAULT_WIDTH = 1080
 DEFAULT_HEIGHT = 1920
@@ -21,6 +23,12 @@ DEFAULT_HEIGHT = 1920
 MAX_SIDE = 4096
 # 슬라이드 수 상한: 쇼츠 최대 180s ÷ 화면 전환 최소 2~4s(FR-A2) 감안한 넉넉한 값.
 MAX_SLIDES = 60
+# 컷 1개(=문장 1개)의 나레이션 표시 폭 상한.
+# Chirp 3 HD 한국어 실측 발화 속도 8.0자/초 → 한글 31자(폭 62)면 약 3.9초로,
+# FR-A2가 요구하는 화면 전환 주기 2~4초 안에 들어온다. 문장이 이보다 길면 그 컷의
+# 화면이 4초 넘게 정지하므로 파싱에서 끊는다 — 나레이션 **전체** 길이는 제한하지
+# 않는다(문장으로 쪼개면 정보량을 깎지 않고도 전환 주기를 지킬 수 있다).
+MAX_NARRATION_WIDTH = 62
 
 DEFAULT_VOICE = "ko-KR-Chirp3-HD-Charon"
 # 세로 그라데이션 배경 (위 → 아래) + 텍스트/액센트 — 다크 브랜드 팔레트.
@@ -46,6 +54,18 @@ class Slide:
 
 
 @dataclass(frozen=True)
+class Cut:
+    """화면 전환 단위 = 나레이션 문장 1개.
+
+    렌더러의 세그먼트 1개에 대응한다. 같은 슬라이드에서 나온 컷들은 같은 화면 요소
+    (title·body)를 쓰지만 각자 세그먼트라 줌 방향이 교차하고 자막이 바뀐다.
+    """
+
+    slide: "Slide"
+    text: str  # 이 컷의 나레이션 문장 (TTS 입력이자 자막)
+
+
+@dataclass(frozen=True)
 class VideoSpec:
     width: int
     height: int
@@ -55,6 +75,15 @@ class VideoSpec:
     background2: str  # 그라데이션 하단
     foreground: str
     accent: str  # 제목 장식·진행바 색
+
+    @property
+    def cuts(self) -> tuple[Cut, ...]:
+        """전 슬라이드를 문장 단위 컷으로 펼친다 — 렌더러의 실제 반복 단위."""
+        return tuple(
+            Cut(slide=slide, text=sentence)
+            for slide in self.slides
+            for sentence in split_sentences(slide.narration_text)
+        )
 
 
 def _valid_hex(color: str) -> bool:
@@ -107,7 +136,19 @@ def _parse_slides(spec: Mapping[str, object]) -> tuple[Slide, ...]:
             )
         else:
             raise VideoSpecError(f"'slides[{i}]'는 문자열 또는 매핑이어야 함: {raw!r}")
+        _check_narration_cuts(slides[-1].narration_text, i)
     return tuple(slides)
+
+
+def _check_narration_cuts(narration: str, i: int) -> None:
+    """문장 하나하나가 컷이 되므로, **문장별**로 폭 상한을 강제한다."""
+    for j, sentence in enumerate(split_sentences(narration)):
+        if display_width(sentence) > MAX_NARRATION_WIDTH:
+            raise VideoSpecError(
+                f"'slides[{i}].narration'의 {j + 1}번째 문장이 한 컷에 담기엔 김 — "
+                f"표시 폭 {MAX_NARRATION_WIDTH} 이하(한글 {MAX_NARRATION_WIDTH // 2}자), "
+                f"현재 {display_width(sentence)}. 문장을 나누면 컷이 늘어 화면 전환이 빨라진다"
+            )
 
 
 def _parse_color(spec: Mapping[str, object], key: str, default: str) -> str:
