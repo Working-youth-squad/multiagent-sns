@@ -25,6 +25,8 @@ AlertKind = Literal[
     "quota_exceeded",
     "quality_blocked",
     "cycle_error",
+    "manual_assigned",
+    "manual_registered",
 ]
 
 
@@ -106,6 +108,36 @@ def cycle_error(*, error_raw: str, cycle_id: str | None = None) -> Alert:
         title="사이클 실패 (최상위 catch)",
         error_raw=error_raw,
         context={"cycle_id": cycle_id} if cycle_id else {},
+    )
+
+
+def manual_assigned(
+    platform: Platform, *, channel_id: str, topic_title: str, cycle_id: str
+) -> Alert:
+    """수동(manual) 채널에 주제가 배정됨 — 사람이 직접 작성·발행해야 한다(FR-E5)."""
+    return Alert(
+        kind="manual_assigned",
+        severity="info",
+        title=f"[{platform}] 수동 발행 주제 배정 — 사람 작성 필요",
+        platform=platform,
+        context={"channel_id": channel_id, "topic_title": topic_title, "cycle_id": cycle_id},
+    )
+
+
+def manual_registered(
+    platform: Platform, *, channel_id: str, external_post_id: str, publication_id: str
+) -> Alert:
+    """사람이 직접 발행한 게시물이 [sns.publish.manual]로 등록 완료됨."""
+    return Alert(
+        kind="manual_registered",
+        severity="info",
+        title=f"[{platform}] 수동 발행 등록 완료",
+        platform=platform,
+        context={
+            "channel_id": channel_id,
+            "external_post_id": external_post_id,
+            "publication_id": publication_id,
+        },
     )
 
 
