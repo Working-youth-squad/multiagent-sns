@@ -423,18 +423,35 @@ def _draw_steps(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, object],
         y += step
 
 
-def terminal_font_size(commands: tuple[str, ...] | list[str], size: int) -> int:
-    """창 폭에 들어가는 최대 글자 크기 — 결정론 탐색.
+def terminal_text_budget(size: int) -> int:
+    """명령 한 줄이 쓸 수 있는 가로 폭 — 창 안쪽에서 좌우 여백을 같게 둔 나머지.
+
+    명령은 `margin + pad`(프롬프트 `$`)에서 다시 `pad`만큼 들여쓴 자리에서 시작한다.
+    오른쪽에도 같은 `pad`를 남겨야 창에 닿지 않는다.
+    """
+    return size - round(size * 0.064) * 2 - round(size * 0.047) * 3
+
+
+def terminal_font_size(
+    commands: tuple[str, ...] | list[str], size: int, mono_path: str | None = None
+) -> int:
+    """창 폭에 들어가는 최대 글자 크기 — **실측** 탐색.
 
     글자 수 상한만으로는 부족하다. 실제로 에이전트가 쓴 `pip install -r requirements.txt`가
-    창 밖으로 넘쳤다 — 같은 글자 수라도 렌더 폭은 다르다. 코드 이미지의 크기 역산과 같은 규율.
+    창 밖으로 넘쳤다 — 같은 글자 수라도 렌더 폭은 다르다.
+
+    폭을 **추정하면 안 된다**. 고정폭 폰트라도 자간이 제각각이라(Cascadia 0.586em,
+    DejaVu 0.602em) 한쪽에 맞춘 계수는 다른 쪽에서 창을 넘긴다 — 0.6배로 역산했다가
+    CI(DejaVu)에서 그렇게 넘쳤다. [_fit_font]와 같은 규율로 진짜 폭을 재며 줄인다.
     """
     longest = max((c for c in commands), key=len, default="")
-    inner = size - round(size * 0.064) * 2 - round(size * 0.047) * 2
     start = round(size / 21.4)
+    if not longest:
+        return start
+    path, _ = pick_font(mono_path, MONO_CANDIDATES)
+    budget = terminal_text_budget(size)
     for candidate in range(start, 15, -1):
-        # 고정폭 폰트의 자간은 크기에 비례한다(대략 0.6배) — 폰트 로드 없이 역산한다.
-        if len(longest) * candidate * 0.6 <= inner:
+        if ImageFont.truetype(path, candidate).getlength(longest) <= budget:
             return candidate
     return 16
 
@@ -444,7 +461,10 @@ def _draw_terminal(draw: ImageDraw.ImageDraw, size: int, f: Mapping[str, object]
     """터미널 창 — 도구 소개의 '지금 해보세요' 자리. 개발 채널에선 대개 설치 명령이다."""
     commands = cast(tuple[str, ...], f["commands"])
     note = cast(str, f["note"])
-    font = _font_for(" ".join(commands), mono, kor, terminal_font_size(commands, size))
+    # 크기를 잰 폰트와 그리는 폰트가 같아야 실측이 의미가 있다 — 한글이 섞이면 둘 다
+    # 본문 폰트로 간다([_font_for]와 같은 판정).
+    face = mono if " ".join(commands).isascii() else kor
+    font = ImageFont.truetype(face, terminal_font_size(commands, size, face))
     line_h = round(font.size * 1.55)
     bar_h = round(size * 0.075)
     inner_pad = round(size * 0.05)

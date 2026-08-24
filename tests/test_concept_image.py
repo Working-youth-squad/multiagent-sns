@@ -321,3 +321,30 @@ def test_short_command_keeps_the_full_size() -> None:
     assert terminal_font_size(["pip install sns"], 940) > terminal_font_size(
         ["pip install -r requirements.txt"], 940
     )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "pip install -r requirements.txt",
+        "docker compose up -d postgres --build",
+        "uv run python -m sns.runner.cycle --goal g",
+        "npx create-next-app@latest my-app --typescript",
+    ],
+)
+def test_fitted_command_measures_within_the_window(command: str) -> None:
+    """폰트를 **실제로 재서** 창 안에 드는지 본다 — 위 픽셀 테스트는 CI 폰트에서만 걸린다.
+
+    자간이 폰트마다 달라(Cascadia 0.586em, DejaVu 0.602em) 계수로 역산하면 어느 한쪽에서
+    반드시 넘친다. 실측이면 어느 폰트로 돌리든 이 단언이 성립한다 — 그게 요점이다.
+    """
+    from PIL import ImageFont
+
+    from sns.render.concept_image import terminal_font_size, terminal_text_budget
+    from sns.render.fonts import MONO_CANDIDATES, pick_font
+
+    path, _ = pick_font(None, MONO_CANDIDATES)
+    px = terminal_font_size([command], 940)
+    width = ImageFont.truetype(path, px).getlength(command)
+    budget = terminal_text_budget(940)
+    assert width <= budget, f"{px}px에서 폭 {width:.0f} > 예산 {budget}"
