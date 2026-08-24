@@ -1,5 +1,9 @@
 """발행 러너 — 품질 게이트 배선 + 멱등 상태머신 구동 (C5, 07-발행 §2).
 
+**기계 발행 경계**: 이 러너는 `auto`·`hybrid` 발행만 다룬다([sns.publish.modes]).
+`manual`(수동)은 사람이 플랫폼에서 직접 발행하고 [sns.publish.manual]로 등록만
+하므로 여기의 선택 쿼리에 절대 잡히지 않는다.
+
 DB에서 발행 대기(`publication.status='pending'`) 건을 읽어, 렌더된 자산의 품질
 게이트 결과(`media_asset.quality_status`)를 상태머신의 `quality_passed`로 **배선**한다:
 
@@ -50,7 +54,7 @@ _SELECT_PENDING = """
 SELECT DISTINCT ON (p.id)
        p.id, ci.cycle_id, ch.platform, COALESCE(ci.body, ''),
        ma.kind, ma.storage_url, ma.checksum, ma.quality_status,
-       pa.state
+       pa.state, COALESCE(p.mode, ch.mode)
   FROM publication p
   JOIN channel ch      ON ch.id = p.channel_id
   JOIN content_item ci ON ci.id = p.content_item_id
@@ -59,6 +63,9 @@ SELECT DISTINCT ON (p.id)
    AND ma.kind = CASE WHEN ci.format = 'feed_image' THEN 'image' ELSE 'video' END
   LEFT JOIN publish_attempt pa ON pa.publication_id = p.id
  WHERE p.status = 'pending'
+   -- 기계 발행은 auto·hybrid만(sns.publish.modes MACHINE_MODES와 동일 집합).
+   -- manual은 사람이 직접 발행·등록(FR-E5), off는 발행 중지.
+   AND COALESCE(p.mode, ch.mode) IN ('auto', 'hybrid')
  ORDER BY p.id, ma.created_at DESC
 """
 
@@ -101,6 +108,7 @@ def run_pending_publications(conn: psycopg.Connection, publish: Publish) -> list
             checksum,
             qstatus,
             attempt_state,
+            mode,
         ) = row
         publication_id = str(pub_id)
 
@@ -164,6 +172,7 @@ def run_pending_publications(conn: psycopg.Connection, publish: Publish) -> list
             "publish_attempted",
             {
                 "publication_id": publication_id,
+                "mode": mode,
                 "state": attempt.state,
                 "error_class": attempt.error_class,
                 "external_post_id": attempt.external_post_id,

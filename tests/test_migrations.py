@@ -120,6 +120,46 @@ def test_metric_missing_xor_rejected(conn: psycopg.Connection) -> None:
         )
 
 
+def test_channel_manual_mode_accepted(conn: psycopg.Connection) -> None:
+    # 002: 발행 모드 3분류 — manual(수동) 채널 허용.
+    conn.execute(
+        "INSERT INTO channel (platform, handle, mode) VALUES ('instagram', %s, 'manual')",
+        (f"h-{uuid.uuid4().hex[:8]}",),
+    )
+    conn.commit()
+
+
+def test_publication_mode_check_rejected(conn: psycopg.Connection) -> None:
+    # publication.mode 스냅샷은 3모드만 허용(off는 발행 모드가 아님).
+    pub_id = _seed_publication(conn)
+    with pytest.raises(errors.CheckViolation), conn.transaction():
+        conn.execute("UPDATE publication SET mode = 'off' WHERE id = %s", (pub_id,))
+
+
+def test_duplicate_external_post_per_channel_rejected(conn: psycopg.Connection) -> None:
+    # 002 부분 유니크 인덱스: 같은 채널에 같은 외부 게시물 id 이중 등록 차단(수동 멱등의 물리 강제).
+    pub_id = _seed_publication(conn)
+    conn.execute("UPDATE publication SET external_post_id = 'ext-dup' WHERE id = %s", (pub_id,))
+    conn.commit()
+    row = conn.execute(
+        "SELECT channel_id, content_item_id FROM publication WHERE id = %s", (pub_id,)
+    ).fetchone()
+    assert row is not None
+    ci2 = conn.execute(
+        "INSERT INTO content_item (cycle_id, topic_id, format) "
+        "SELECT cycle_id, topic_id, format FROM content_item WHERE id = %s RETURNING id",
+        (row[1],),
+    ).fetchone()
+    assert ci2 is not None
+    conn.commit()
+    with pytest.raises(errors.UniqueViolation), conn.transaction():
+        conn.execute(
+            "INSERT INTO publication (content_item_id, channel_id, external_post_id) "
+            "VALUES (%s, %s, 'ext-dup')",
+            (ci2[0], row[0]),
+        )
+
+
 def test_publish_attempt_invalid_state_rejected(conn: psycopg.Connection) -> None:
     pub_id = _seed_publication(conn)
     with pytest.raises(errors.CheckViolation), conn.transaction():

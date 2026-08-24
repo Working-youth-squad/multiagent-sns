@@ -174,6 +174,36 @@ class _SelectiveFail:
         return PublishResult(post_id=f"post-{idempotency_key[:6]}")
 
 
+def test_manual_channel_never_machine_published(db: psycopg.Connection, seed: SeedFn) -> None:
+    # 발행 모드 3분류: manual(수동) 채널의 발행 건은 기계 발행 경로에 절대 들어가지
+    # 않는다 — 사람이 직접 발행하고 sns.publish.manual로 등록만 한다(FR-E5).
+    pub_id = seed(quality_status="passed", mode="manual")
+    publish = FakePublish()
+    results = run_pending_publications(db, publish)
+
+    assert [r for r in results if r.publication_id == pub_id] == []
+    assert publish.calls == []
+    assert _status(db, pub_id) == "pending"
+
+
+def test_off_channel_not_selected(db: psycopg.Connection, seed: SeedFn) -> None:
+    # off = 발행 중지. 대기 건이 있어도 기계 발행하지 않는다.
+    pub_id = seed(quality_status="passed", mode="off")
+    results = run_pending_publications(db, FakePublish())
+    assert [r for r in results if r.publication_id == pub_id] == []
+    assert _status(db, pub_id) == "pending"
+
+
+def test_publish_event_records_mode(db: psycopg.Connection, seed: SeedFn) -> None:
+    # 증빙: publish_attempted 이벤트에 발행 모드가 남는다.
+    seed(quality_status="passed", mode="hybrid")
+    run_pending_publications(db, FakePublish())
+    row = db.execute(
+        "SELECT payload->>'mode' FROM run_event WHERE kind = 'publish_attempted'"
+    ).fetchone()
+    assert row is not None and row[0] == "hybrid"
+
+
 def test_channel_isolation(db: psycopg.Connection, seed: SeedFn) -> None:
     # FR-P4: 한 건의 영구 실패가 다른 건 발행을 막지 않는다.
     bad = seed(quality_status="passed", platform="instagram", checksum="bad")
