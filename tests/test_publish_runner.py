@@ -204,6 +204,45 @@ def test_publish_event_records_mode(db: psycopg.Connection, seed: SeedFn) -> Non
     assert row is not None and row[0] == "hybrid"
 
 
+def test_hybrid_not_approved_stays_pending_even_when_quality_passed(
+    db: psycopg.Connection, seed: SeedFn
+) -> None:
+    # FR-Q3/C9: 품질 게이트가 passed를 내려도 hybrid는 content_item 승인이 없으면
+    # 발행 진입하지 않는다 — 승인 UI 없이 자동 발행되는 구멍을 막는다.
+    pub_id = seed(quality_status="passed", mode="hybrid", content_status="needs_review")
+    publish = FakePublish()
+    results = run_pending_publications(db, publish)
+
+    r = _only(results, pub_id)
+    assert r.outcome == "awaiting_review"
+    assert publish.calls == []
+    assert _status(db, pub_id) == "pending"
+
+
+def test_hybrid_approved_and_quality_passed_publishes(db: psycopg.Connection, seed: SeedFn) -> None:
+    pub_id = seed(quality_status="passed", mode="hybrid", content_status="approved")
+    publish = FakePublish()
+    results = run_pending_publications(db, publish)
+
+    assert _only(results, pub_id).outcome == "published"
+    assert publish.calls == [pub_id]
+    assert _status(db, pub_id) == "published"
+
+
+def test_hybrid_rejected_content_skips_regardless_of_quality(
+    db: psycopg.Connection, seed: SeedFn
+) -> None:
+    # 사람 반려([sns.web.approve])는 미디어 품질과 무관하게 즉시 종결한다.
+    pub_id = seed(quality_status="passed", mode="hybrid", content_status="rejected")
+    publish = FakePublish()
+    results = run_pending_publications(db, publish)
+
+    r = _only(results, pub_id)
+    assert r.outcome == "skipped"
+    assert publish.calls == []
+    assert _status(db, pub_id) == "skipped"
+
+
 def test_channel_isolation(db: psycopg.Connection, seed: SeedFn) -> None:
     # FR-P4: 한 건의 영구 실패가 다른 건 발행을 막지 않는다.
     bad = seed(quality_status="passed", platform="instagram", checksum="bad")
