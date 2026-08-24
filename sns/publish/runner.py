@@ -13,6 +13,10 @@ DB에서 발행 대기(`publication.status='pending'`) 건을 읽어, 렌더된 
 - `needs_review`  → `pending` 유지 + notice. hybrid 사람 관문(FR-Q3) 대기 — 사람이
   승인해 `passed`로 바뀌면 다음 구동에서 발행된다. 영구 skipped로 종결하지 않는다.
   (자산 기본 quality_status가 `needs_review`라, 아직 게이트 미판정 자산도 여기 해당.)
+- **hybrid 콘텐츠 승인 관문(FR-Q3, C9)**: mode='hybrid'는 미디어 품질과 별개로
+  `content_item.status='approved'`도 요구한다 — 품질 게이트가 자동으로 `passed`를
+  내려도(주입된 게이트가 needs_review를 내지 않는 한) 사람이 [sns.web.approve]에서
+  승인하기 전엔 발행되지 않는다. `rejected`는 media 품질과 무관하게 즉시 skipped.
 - 자산 없음        → `pending` 유지(다음 렌더 사이클 대기) + notice 기록.
 
 부작용(외부 발행)은 주입된 `publish`(동결 `Publish` 계약)로만 — 프레임워크·벤더
@@ -54,7 +58,7 @@ _SELECT_PENDING = """
 SELECT DISTINCT ON (p.id)
        p.id, ci.cycle_id, ch.platform, COALESCE(ci.body, ''),
        ma.kind, ma.storage_url, ma.checksum, ma.quality_status,
-       pa.state, COALESCE(p.mode, ch.mode)
+       pa.state, COALESCE(p.mode, ch.mode), ci.status
   FROM publication p
   JOIN channel ch      ON ch.id = p.channel_id
   JOIN content_item ci ON ci.id = p.content_item_id
@@ -109,6 +113,7 @@ def run_pending_publications(conn: psycopg.Connection, publish: Publish) -> list
             qstatus,
             attempt_state,
             mode,
+            content_status,
         ) = row
         publication_id = str(pub_id)
 
@@ -123,11 +128,15 @@ def run_pending_publications(conn: psycopg.Connection, publish: Publish) -> list
         # state_machine 불변식과 일치시켜 재검사 금지. 이 조건이 없으면 첫 판정 뒤
         # 새로 렌더된 저품질 자산이 최신으로 잡혀, 컨테이너를 남긴 채 publication만
         # 뒤집혀 원장↔발행상태가 갈라진다.
-        if attempt_state is None and qstatus != "passed":
-            # failed=자동 게이트 하드 실패(콘텐츠 거부)만 skipped로 종결한다.
-            # needs_review는 사람 승인 대기라 pending 유지 — skipped로 종결하면
+        # hybrid는 미디어 품질과 별개로 content_item.status='approved'도 요구한다
+        # (FR-Q3, C9 승인 UI가 이 값을 뒤집는다) — 품질 게이트가 자동 passed를 내려도
+        # 사람 승인 전엔 발행 진입하지 않는다.
+        content_not_approved = mode == "hybrid" and content_status != "approved"
+        if attempt_state is None and (qstatus != "passed" or content_not_approved):
+            # 자동 게이트 하드 실패(failed) 또는 사람 반려(rejected)만 skipped로 종결.
+            # needs_review/미승인은 승인 대기라 pending 유지 — skipped로 종결하면
             # 나중에 승인돼도 재선택 안 돼 영영 발행되지 않는다(FR-Q3).
-            if qstatus == "failed":
+            if qstatus == "failed" or content_status == "rejected":
                 with conn.transaction():
                     conn.execute(
                         "UPDATE publication SET status = 'skipped' WHERE id = %s", (pub_id,)
@@ -148,6 +157,7 @@ def run_pending_publications(conn: psycopg.Connection, publish: Publish) -> list
                         "publication_id": publication_id,
                         "reason": "awaiting_review",
                         "quality_status": qstatus,
+                        "content_status": content_status,
                     },
                 )
                 results.append(RunnerResult(publication_id, "awaiting_review", None))
