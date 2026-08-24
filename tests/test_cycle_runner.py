@@ -134,6 +134,32 @@ def test_auto_content_approved() -> None:
     assert ci["status"] == "approved"
 
 
+def test_manual_target_assigned_without_content() -> None:
+    # manual(수동) 대상: AI 초안·발행 대기를 만들지 않고 주제 배정 notice만 남긴다.
+    store, result = _run(_topic_script(), [_target(mode="manual")])
+    assert result.status == "completed"  # 주제 전달이 manual 대상의 이번 사이클 몫 전부
+    (t,) = result.targets
+    assert t.outcome == "manual_assigned"
+    assert t.content_item_id is None and t.publication_id is None
+    assert not store.content_items and not store.publications
+    (notice,) = [e for e in store.events if e["kind"] == "notice"]
+    assert notice["payload"]["reason"] == "manual_assignment"
+    assert notice["payload"]["topic_id"] in store.topics
+
+
+def test_manual_and_auto_share_same_topic() -> None:
+    # 3모드 비교의 전제: manual도 같은 사이클의 같은 주제(프롬프트)를 배정받는다.
+    script = _topic_script() + _content_script()
+    store, result = _run(
+        script, [_target(mode="manual", ch="ch-m"), _target(mode="auto", ch="ch-a")]
+    )
+    outcomes = {t.channel_id: t.outcome for t in result.targets}
+    assert outcomes == {"ch-m": "manual_assigned", "ch-a": "prepared"}
+    assert len(store.topics) == 1  # 주제는 사이클당 1건 — manual/auto 공유
+    (pub,) = store.publications.values()  # 기계 발행 대기는 auto 것 하나뿐
+    assert pub["mode"] == "auto"  # 발행 시점 모드 스냅샷(증빙)
+
+
 def test_topic_failure_fails_cycle() -> None:
     failing = FakeResearchTrends(
         failing_sources=(

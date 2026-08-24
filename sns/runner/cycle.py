@@ -25,6 +25,7 @@ from langchain_core.language_models import BaseChatModel
 
 from sns.agents.content import ContentRejected, run_content
 from sns.agents.topic import TopicResult, TopicSelectionError, run_topic
+from sns.publish.modes import DRAFT_STATUS, PublishMode
 from sns.quality.gate import QualityReport
 from sns.render.card.spec import CardSpecError
 from sns.render.video.spec import VideoSpecError
@@ -39,8 +40,9 @@ from sns.tools.contracts import (
     ResearchTrends,
 )
 
-ChannelMode = Literal["auto", "hybrid"]
-TargetOutcome = Literal["prepared", "failed"]
+# 발행 모드 3분류([sns.publish.modes] 정본): auto·hybrid·manual
+ChannelMode = PublishMode
+TargetOutcome = Literal["prepared", "manual_assigned", "failed"]
 
 # 포맷 → 렌더 자산 종류. 피드=이미지, 릴스/쇼츠=영상.
 _FORMAT_KIND: dict[ContentFormat, MediaKind] = {
@@ -63,7 +65,7 @@ class CycleTarget:
     channel_id: str
     platform: Platform
     content_format: ContentFormat
-    mode: ChannelMode  # auto → 초안 approved, hybrid → needs_review(사람 관문)
+    mode: ChannelMode  # auto → 초안 approved, hybrid → needs_review, manual → 주제 배정만
 
 
 @dataclass(frozen=True)
@@ -147,6 +149,23 @@ def run_cycle(
         # ── 대상별 콘텐츠 제작·적재(도메인 오류만 격리) ─────────────────
         results: list[TargetResult] = []
         for target in targets:
+            # manual(수동) 대상: AI 초안·기계 발행 없이 같은 주제만 배정한다 —
+            # 사람이 직접 작성·발행 후 sns.publish.manual로 등록한다(FR-E5).
+            if target.mode == "manual":
+                store.log_event(
+                    cycle_id=cycle_id,
+                    kind="notice",
+                    payload={
+                        "reason": "manual_assignment",
+                        "channel_id": target.channel_id,
+                        "topic_id": topic_id,
+                        "topic_title": topic.title,
+                    },
+                )
+                results.append(
+                    TargetResult(channel_id=target.channel_id, outcome="manual_assigned")
+                )
+                continue
             try:
                 results.append(
                     _prepare_target(
@@ -176,13 +195,20 @@ def run_cycle(
                 )
 
         # 전 대상 실패면 failed(무인 운영에서 completed 오독 방지).
+        # manual 배정도 전진으로 친다 — 주제 전달이 그 대상의 이번 사이클 몫 전부다.
         prepared = sum(t.outcome == "prepared" for t in results)
-        status: Literal["completed", "failed"] = "completed" if prepared else "failed"
+        assigned = sum(t.outcome == "manual_assigned" for t in results)
+        status: Literal["completed", "failed"] = "completed" if prepared or assigned else "failed"
         store.complete_cycle(cycle_id, status=status)
         store.log_event(
             cycle_id=cycle_id,
             kind="cycle_completed",
-            payload={"prepared": prepared, "total": len(results), "status": status},
+            payload={
+                "prepared": prepared,
+                "manual_assigned": assigned,
+                "total": len(results),
+                "status": status,
+            },
         )
         return CycleResult(
             cycle_id=cycle_id, status=status, topic_id=topic_id, targets=tuple(results)
@@ -249,7 +275,7 @@ def _prepare_target(
         body=content.body,
         media_spec=content.media_spec,
         hook_pattern=content.hook_pattern,
-        status="approved" if target.mode == "auto" else "needs_review",
+        status=DRAFT_STATUS[target.mode],
     )
     media_asset_id = store.save_media_asset(
         content_item_id=content_item_id,
@@ -260,7 +286,7 @@ def _prepare_target(
         quality_report=quality_report,
     )
     publication_id = store.create_publication(
-        content_item_id=content_item_id, channel_id=target.channel_id
+        content_item_id=content_item_id, channel_id=target.channel_id, mode=target.mode
     )
     return TargetResult(
         channel_id=target.channel_id,

@@ -28,7 +28,7 @@ _MUTABLE_TABLES = (
 _SEED_WITH_MEDIA = """
 WITH ch AS (
     INSERT INTO channel (platform, handle, mode)
-    VALUES (%(platform)s, %(handle)s, 'auto') RETURNING id
+    VALUES (%(platform)s, %(handle)s, %(mode)s) RETURNING id
 ), cy AS (
     INSERT INTO cycle (goal_ref) VALUES ('test-goal') RETURNING id
 ), tp AS (
@@ -48,7 +48,7 @@ SELECT ci.id, ch.id FROM ci, ch RETURNING id
 _SEED_NO_MEDIA = """
 WITH ch AS (
     INSERT INTO channel (platform, handle, mode)
-    VALUES (%(platform)s, %(handle)s, 'auto') RETURNING id
+    VALUES (%(platform)s, %(handle)s, %(mode)s) RETURNING id
 ), cy AS (
     INSERT INTO cycle (goal_ref) VALUES ('test-goal') RETURNING id
 ), tp AS (
@@ -117,9 +117,11 @@ def seed(db: psycopg.Connection) -> SeedFn:
         platform: str = "instagram",
         checksum: str = "chk-seed",
         with_media: bool = True,
+        mode: str = "auto",
     ) -> str:
         params = {
             "platform": platform,
+            "mode": mode,
             "handle": f"h-{uuid.uuid4().hex[:8]}",
             "fmt": fmt,
             "body": body,
