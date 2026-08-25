@@ -32,7 +32,6 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from sns.render.code_image import render_code_square
 from sns.render.concept_image import render_concept_square
 from sns.render.fonts import FONT_CANDIDATES, pick_font
 from sns.render.text import wrap_balanced
@@ -136,6 +135,10 @@ def _square(slide: Slide, side: int, spec: VideoSpec, mono_path: str | None,
     """
     for source in spec.square_sources:
         if source == "code" and slide.code.strip():
+            # 지연 import — 코드를 쓰지 않는 도메인이 pygments를 물지 않게 한다
+            # ([sns.render.video.tts]의 google.cloud 지연 import와 같은 규율).
+            from sns.render.code_image import render_code_square
+
             png = render_code_square(
                 slide.code, lang=slide.lang or None, size=side,
                 focus_lines=slide.focus_lines, mono_path=mono_path, font_path=font_path,

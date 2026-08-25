@@ -10,7 +10,7 @@ import io
 
 from PIL import Image, ImageDraw, UnidentifiedImageError
 
-from sns.render.code_image import DEFAULT_SIZE, EDGE
+from sns.render.square import DEFAULT_SIZE, EDGE
 
 # 940까지 늘려도 뭉개지지 않는 최소 변. Pexels 원본은 보통 이보다 훨씬 크고,
 # 이 밑으로 내려가면 화면 한가운데가 흐릿해져 오히려 그라데이션만 못하다.

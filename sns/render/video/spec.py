@@ -24,7 +24,6 @@ from dataclasses import dataclass, field
 from typing import cast
 
 from sns.domain import DEFAULT_DOMAIN, Domain
-from sns.render.code_image import MAX_CODE_LINES
 from sns.render.concept_image import Concept, ConceptError, parse_concept
 from sns.render.text import display_width
 
@@ -46,6 +45,10 @@ MAX_NARRATION_WIDTH = 62
 # 스톡 검색어 상한 — 길수록 결과가 0건으로 수렴한다(검색은 짧아야 걸린다).
 # 정사각 소스 → 그 소스가 쓰는 슬라이드 필드. **파서와 렌더러의 단일 출처**다 —
 # 따로 두면 한쪽만 갱신돼 "프롬프트는 막았는데 파서는 받는" 상태가 다시 생긴다.
+# 코드 줄 상한 — [sns.render.code_image]의 렌더 한계와 같은 값이다. 여기 복제해 두는 건
+# spec이 그 모듈(과 pygments)을 물지 않게 하기 위해서다. 어긋나면 아래 테스트가 잡는다.
+MAX_CODE_LINES = 18
+
 SQUARE_FIELDS: dict[str, tuple[str, ...]] = {
     "code": ("code", "lang", "focus_lines"),
     "concept": ("concept",),

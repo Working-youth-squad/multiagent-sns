@@ -25,8 +25,8 @@ from typing import cast
 
 from PIL import Image, ImageDraw, ImageFont
 
-from sns.render.code_image import BACKGROUND, DEFAULT_SIZE, EDGE
 from sns.render.fonts import FONT_CANDIDATES, MONO_CANDIDATES, pick_font
+from sns.render.square import BACKGROUND, DEFAULT_SIZE, EDGE
 from sns.render.text import display_width, wrap_balanced
 
 # 종류별로 받는 필드. 목록에 없는 필드는 거부한다 — 조용히 무시하면 LLM이 없는 필드를
