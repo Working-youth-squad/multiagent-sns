@@ -6,7 +6,12 @@
 
 import pytest
 
-from scripts.run_profile_cycle import channel_mode_of
+from scripts.run_profile_cycle import (
+    build_parser,
+    channel_mode_of,
+    content_format_for,
+    platform_of,
+)
 
 
 def test_manual_mode_is_not_promoted_to_auto() -> None:
@@ -23,3 +28,37 @@ def test_unknown_mode_is_refused() -> None:
     """조용한 폴백이 있으면 오타 하나가 발행 모드를 바꾼다."""
     with pytest.raises(SystemExit):
         channel_mode_of("whatever")
+
+
+def test_card_format_ignores_platform() -> None:
+    assert content_format_for("instagram", "card") == "feed_image"
+    assert content_format_for("youtube", "card") == "feed_image"
+
+
+def test_video_format_follows_platform() -> None:
+    assert content_format_for("instagram", "video") == "reels"
+    assert content_format_for("youtube", "video") == "shorts"
+
+
+def test_known_platforms_pass_through() -> None:
+    assert platform_of("instagram") == "instagram"
+    assert platform_of("youtube") == "youtube"
+
+
+def test_unknown_platform_is_refused() -> None:
+    """조용히 shorts로 떨구면 플랫폼이 늘 때 틀린 포맷이 나간다."""
+    with pytest.raises(SystemExit):
+        platform_of("tiktok")
+
+
+def test_parser_defaults_to_card() -> None:
+    args = build_parser().parse_args(["my-channel"])
+    assert args.format == "card"
+    assert args.font is None
+    assert args.ffmpeg == "ffmpeg"
+
+
+def test_parser_accepts_video_and_font() -> None:
+    args = build_parser().parse_args(["c", "--format", "video", "--font", "/f.ttf"])
+    assert args.format == "video"
+    assert args.font == "/f.ttf"

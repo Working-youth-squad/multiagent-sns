@@ -8,8 +8,12 @@ import json
 import re
 import subprocess
 import tempfile
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
+
+from sns.quality.gate import QualityCheck, QualityReport
+from sns.tools.contracts import ContentFormat, MediaAsset
 
 MIN_WIDTH = 1080
 MIN_HEIGHT = 1920
@@ -97,3 +101,28 @@ def check_video(
                 )
 
     return VideoQualityReport(passed=not failures, failures=tuple(failures))
+
+
+# 사이클의 `AssessQuality`와 구조적으로 같다. Protocol을 import하면 순환이 난다 —
+# sns.runner.cycle → sns.render.video.spec → sns.render.video(패키지 init) → 이 모듈.
+AssessQualityFn = Callable[..., QualityReport]
+
+
+def make_video_gate(ffprobe: str = "ffprobe", ffmpeg: str = "ffmpeg") -> AssessQualityFn:
+    """영상 품질 게이트를 사이클의 `assess_quality` 형태로 조립.
+
+    **전달받은 `media`의 바이트를 읽는다 — 다시 렌더하지 않는다.** 영상은 컷마다 유료
+    TTS를 사므로 재렌더는 비용이 두 배다. 러너가 렌더 결과(`MediaAsset`)를 그대로
+    넘겨주므로([sns.runner.cycle]) 저장소에서 읽으면 된다.
+    """
+
+    def assess(
+        *, media_spec: Mapping[str, object], media: MediaAsset, content_format: ContentFormat
+    ) -> QualityReport:
+        report = check_video(Path(media.storage_url).read_bytes(), ffprobe=ffprobe, ffmpeg=ffmpeg)
+        checks = tuple(QualityCheck(f, False, f) for f in report.failures) or (
+            QualityCheck("video_spec", True, "규격·길이·오디오 하한 통과"),
+        )
+        return QualityReport(status="passed" if report.passed else "failed", checks=checks)
+
+    return assess
