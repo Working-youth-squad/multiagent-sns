@@ -1,10 +1,7 @@
-"""Topic 에이전트 (FR-G1·G4, 04 §4) — 주제 발굴, deepagents 기반.
-
-주제 범위·카테고리는 도메인 팩([sns.domain])이 정한다. 이 모듈은 "어떤 도메인이든
-근거 위에서 하나를 고른다"는 절차만 갖는다.
+"""Topic 에이전트 (FR-G1·G4, 04 §4) — 개발자 주제 발굴, deepagents 기반.
 
 역할: `research_trends`(외부 트렌드 = 근거)와 `read_stats`(과거 성과)를 도구로 읽고,
-팩이 준 카테고리 중 하나로 주제 **1건을 선택**한다. 선택 원칙(설명 난이도 하한·호기심
+카테고리 5종 중 하나로 주제 **1건을 선택**한다. 선택 원칙(설명 난이도 하한·호기심
 후크, 04 §4)은 프롬프트로 위임하되, **제목은 트렌드 다이제스트에서 온 근거 있는
 후보 중에서만** 고르게 한다(할루시네이션 방지, FR-G4). LLM이 수치·후보를 지어내지
 않도록 선택은 `choose_topic` 툴로 코드가 포착하고, 후보 인덱스·카테고리 유효성은
@@ -18,26 +15,27 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Literal, get_args
 
 from deepagents import create_deep_agent
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
-from sns.domain import DEFAULT_DOMAIN, Domain
 from sns.tools.contracts import Platform, ReadStats, ResearchTrends, SourceResult
 
+# 주제 카테고리 5종 (04 §4 · 11-데이터모델 content_item.topic_category).
+# 기본값 = 개발 채널. 온보딩된 채널은 run_topic(categories=...)로 자기 5종을 넘긴다.
+TopicCategory = Literal["신기술", "기초지식", "꿀팁", "현직자일상", "개발자유머"]
+TOPIC_CATEGORIES: tuple[str, ...] = get_args(TopicCategory)
 
-def _system_prompt(domain: Domain) -> str:
-    """도메인 팩 → Topic 시스템 프롬프트.
 
-    카테고리 목록과 대상 서술만 팩에서 온다. 선정 원칙(04 §4.2)은 도메인 무관이라
-    여기 남는다 — 어떤 주제를 다루든 "한 컷에 이해되는가"는 같은 기준이다.
-    """
+def _system_prompt(categories: tuple[str, ...]) -> str:
+    audience = "개발자 대상" if categories == TOPIC_CATEGORIES else "이 채널의"
     return f"""당신은 SNS 성장 엔진의 Topic 에이전트다. \
-{domain.audience} 콘텐츠의 주제를 딱 하나 고른다.
+{audience} 콘텐츠의 주제를 딱 하나 고른다.
 
-카테고리(반드시 이 중 하나): {" · ".join(domain.categories)}.
+카테고리(반드시 이 중 하나): {" · ".join(categories)}.
 
 선정 원칙:
 1. 설명 난이도 하한 — 한 컷/한 카드로 이해되는 주제만. 배경지식이 3개 이상 필요하면 고르지 않는다.
@@ -60,7 +58,7 @@ class TopicCandidate:
 @dataclass(frozen=True)
 class TopicResult:
     title: str  # 후보 다이제스트에서 온 근거 있는 제목
-    # 팩이 카테고리를 정하므로 Literal이 아니다 — 검증은 choose_topic이 런타임에 한다.
+    # 기본 5종 밖 카테고리(온보딩 채널)도 담아야 해서 str — 유효성은 run_topic이 검증.
     category: str
     source: str  # 후보의 출처 트렌드 소스
     summary: str  # 에이전트가 붙인 한 줄 요약
@@ -132,15 +130,19 @@ def run_topic(
     read_stats: ReadStats,
     limit: int = 10,
     exclude_titles: Sequence[str] = (),
-    domain: Domain = DEFAULT_DOMAIN,
+    categories: Sequence[str] | None = None,
+    guidance: str | None = None,
 ) -> TopicResult:
     """트렌드 근거 + 과거 성과로 주제 1건을 선택. 유효 선택만 반환.
 
     `exclude_titles`는 최근 발행한 주제다. 트렌드 소스는 같은 항목을 며칠씩 노출하므로
     이걸 안 빼면 어제와 같은 영상이 나간다(실제로 그랬다).
 
-    `domain`은 주제 범위·카테고리를 정하는 팩([sns.domain])이다.
+    `categories`·`guidance`는 온보딩된 채널의 프로필 주입점(기본 None = 기존 동작
+    무변경): categories는 카테고리 5종 교체, guidance는 채널 주제 범위·컨셉 지침
+    ([sns.onboarding.profile.build_channel_brief])이다.
     """
+    active_categories = TOPIC_CATEGORIES if categories is None else tuple(categories)
     digest = research_trends(limit=limit)
     candidates = _candidates(digest.source_results, exclude_titles)
     if not candidates:
@@ -186,8 +188,8 @@ def run_topic(
         """고른 후보 index·카테고리·한 줄 요약으로 주제를 확정한다."""
         if not isinstance(index, int) or not 0 <= index < len(candidates):
             return f"오류: index는 0..{len(candidates) - 1} 범위여야 함 (받음: {index!r})"
-        if category not in domain.categories:
-            return f"오류: category는 {list(domain.categories)} 중 하나여야 함 (받음: {category!r})"
+        if category not in active_categories:
+            return f"오류: category는 {list(active_categories)} 중 하나여야 함 (받음: {category!r})"
         chosen["index"] = index
         chosen["category"] = category
         chosen["summary"] = summary
@@ -196,28 +198,27 @@ def run_topic(
     agent = create_deep_agent(
         model=model,
         tools=[read_trends, read_topic_stats, choose_topic],
-        system_prompt=_system_prompt(domain),
+        system_prompt=_system_prompt(active_categories),
     )
-    state = agent.invoke(
-        {
-            "messages": [
-                HumanMessage(
-                    f"플랫폼 {platform}. read_trends 후보 중에서 {domain.topic_domain} "
-                    "주제 1건을 골라 "
-                    "choose_topic으로 확정하라."
-                )
-            ]
-        }
+    subject = "개발자 주제" if categories is None else "이 채널에 맞는 주제"
+    request = (
+        f"플랫폼 {platform}. read_trends 후보 중에서 {subject} 1건을 골라 "
+        "choose_topic으로 확정하라."
     )
+    if guidance:
+        request = f"{guidance}\n\n{request}"
+    state = agent.invoke({"messages": [HumanMessage(request)]})
     if "index" not in chosen:
         # 마지막 메시지를 근거로 남겨 거부율/원인 분석 (analyst.AnalysisRejected와 같은 규율).
         last = state["messages"][-1].content
         raise TopicSelectionError(f"choose_topic 미호출 — 주제 미확정. 마지막 메시지: {last!r}")
 
     cand = candidates[int(chosen["index"])]  # type: ignore[call-overload]
+    category = str(chosen["category"])
+    assert category in active_categories  # choose_topic이 이미 검증
     return TopicResult(
         title=cand.text,
-        category=str(chosen["category"]),
+        category=category,
         source=cand.source,
         summary=str(chosen["summary"]),
         reason=f"trend={cand.source}",

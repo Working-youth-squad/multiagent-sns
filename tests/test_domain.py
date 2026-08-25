@@ -97,15 +97,6 @@ FAKE = Domain(
 )
 
 
-def test_topic_prompt_is_built_from_the_pack() -> None:
-    from sns.agents.topic import _system_prompt
-
-    prompt = _system_prompt(FAKE)
-    assert "정원사 대상" in prompt
-    assert "흙" in prompt and "물주기" in prompt
-    assert "개발자" not in prompt, "팩 밖의 도메인 문구가 남아 있다"
-
-
 def test_content_prompt_documents_only_pack_concept_kinds() -> None:
     from sns.agents.content import _system_prompt
 
@@ -246,38 +237,6 @@ def test_generated_image_rule_is_skipped_without_code() -> None:
     slide = {**_MINIMAL["slides"][0], "image_prompt": "a small green plant on a desk"}  # type: ignore[index]
     parsed = parse_video_spec({**_MINIMAL, "slides": [slide]}, domain=NO_CODE)
     assert parsed.slides[0].image_prompt
-
-
-def test_run_cycle_passes_the_pack_to_the_agents() -> None:
-    """러너가 팩을 안 넘기면 팩의 카테고리가 거부되어 주제 확정 자체가 실패한다.
-
-    가짜 팩의 "흙"은 개발자 팩에 없는 카테고리라, `choose_topic`이 기본 팩으로 검증하면
-    거부하고 사이클이 TopicSelectionError로 죽는다 — 전달 여부가 결과로 드러난다.
-    """
-    from sns.runner.cycle import run_cycle
-    from sns.runner.store import InMemoryCycleStore
-    from sns.tools.fakes import FakeReadStats, FakeRenderMedia, FakeResearchTrends
-    from tests.test_cycle_runner import ScriptedChatModel as Scripted
-    from tests.test_cycle_runner import (
-        _content_script,
-        _passing_quality,
-        _target,
-        _topic_script,
-    )
-
-    script = _topic_script(category="흙") + _content_script()
-    result = run_cycle(
-        InMemoryCycleStore(),
-        goal_ref="engagement_depth",
-        targets=[_target()],
-        model=Scripted(messages=iter(script)),
-        research_trends=FakeResearchTrends(),
-        read_stats=FakeReadStats(),
-        render_media=FakeRenderMedia(),
-        assess_quality=_passing_quality,
-        domain=FAKE,
-    )
-    assert result.status == "completed"
 
 
 def test_llm_grounding_sends_the_pack_prompt() -> None:

@@ -16,6 +16,7 @@ DSN = derive_test_dsn(os.environ.get("DATABASE_URL", "postgresql://sns:sns@local
 EXPECTED_TABLES = {
     "schema_version",
     "channel",
+    "channel_profile",
     "cycle",
     "topic",
     "topic_stats",

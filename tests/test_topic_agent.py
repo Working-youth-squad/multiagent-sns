@@ -184,3 +184,47 @@ def test_all_candidates_excluded_fails_loudly() -> None:
 
 def test_no_exclusions_behaves_as_before() -> None:
     assert _run_excluding(_choose(0, "꿀팁"), []).title == "google_trends-topic-1"
+
+
+# ── 온보딩 채널 프로필 주입 (categories·guidance) ─────────────────
+
+
+def test_custom_categories_replace_default() -> None:
+    result = run_topic(
+        ScriptedChatModel(messages=iter(_choose(0, "레시피"))),
+        platform="youtube",
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        categories=("레시피", "꿀팁"),
+    )
+    assert result.category == "레시피"
+
+
+def test_default_category_invalid_under_custom_set() -> None:
+    # 카테고리를 교체하면 기본 5종("신기술")은 더 이상 유효하지 않다.
+    with pytest.raises(TopicSelectionError):
+        run_topic(
+            ScriptedChatModel(messages=iter(_choose(0, "신기술"))),
+            platform="youtube",
+            research_trends=FakeResearchTrends(),
+            read_stats=FakeReadStats(),
+            categories=("레시피",),
+        )
+
+
+def test_guidance_reaches_the_agent_request() -> None:
+    seen: list[str] = []
+
+    class Recording(ScriptedChatModel):
+        def _generate(self, messages: Any, **kwargs: Any) -> Any:
+            seen.append("\n".join(str(m.content) for m in messages))
+            return super()._generate(messages, **kwargs)
+
+    run_topic(
+        Recording(messages=iter(_choose(0, "꿀팁"))),
+        platform="youtube",
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        guidance="이 채널의 주제 범위: 요리 (세부: 비건)",
+    )
+    assert any("주제 범위: 요리" in s for s in seen)

@@ -81,6 +81,38 @@ def _run(
     return store, result
 
 
+def test_channel_brief_and_categories_thread_to_topic(monkeypatch: pytest.MonkeyPatch) -> None:
+    """온보딩 프로필 주입점 — run_cycle이 channel_brief·topic_categories를 run_topic에 전달."""
+    import sns.runner.cycle as cycle_mod
+
+    captured: dict[str, Any] = {}
+    real_run_topic = cycle_mod.run_topic
+
+    def spy(model: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return real_run_topic(model, **kwargs)
+
+    monkeypatch.setattr(cycle_mod, "run_topic", spy)
+    store = InMemoryCycleStore()
+    result = run_cycle(
+        store,
+        goal_ref="reach_growth",
+        targets=[_target()],
+        model=ScriptedChatModel(
+            messages=iter(_topic_script(category="레시피") + _content_script())
+        ),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+        channel_brief="이 채널의 주제 범위: 요리",
+        topic_categories=("레시피", "꿀팁"),
+    )
+    assert result.status == "completed"
+    assert captured["guidance"] == "이 채널의 주제 범위: 요리"
+    assert captured["categories"] == ("레시피", "꿀팁")
+
+
 def test_single_target_prepared() -> None:
     store, result = _run(_topic_script() + _content_script(), [_target()])
     assert result.status == "completed"

@@ -25,7 +25,6 @@ from langchain_core.language_models import BaseChatModel
 
 from sns.agents.content import ContentRejected, run_content
 from sns.agents.topic import TopicResult, TopicSelectionError, run_topic
-from sns.domain import DEFAULT_DOMAIN, Domain
 from sns.publish.modes import DRAFT_STATUS, PublishMode
 from sns.quality.gate import QualityReport
 from sns.quality.safety import screen_content
@@ -122,7 +121,8 @@ def run_cycle(
     assess_quality: AssessQuality | None = None,
     resolve_media_spec: ResolveMediaSpec | None = None,
     playbook_guidance: str | None = None,
-    domain: Domain = DEFAULT_DOMAIN,
+    channel_brief: str | None = None,
+    topic_categories: Sequence[str] | None = None,
 ) -> CycleResult:
     """한 사이클 구동.
 
@@ -162,7 +162,9 @@ def run_cycle(
                 research_trends=research_trends,
                 read_stats=read_stats,
                 exclude_titles=store.recent_topic_titles(days=RECENT_TOPIC_DAYS),
-                domain=domain,
+                # 온보딩 채널 프로필 주입점(기본 None = 기존 동작 무변경).
+                categories=topic_categories,
+                guidance=channel_brief,
             )
         except TopicSelectionError as exc:
             store.log_event(
@@ -212,7 +214,6 @@ def run_cycle(
                         resolve_media_spec=resolve_media_spec,
                         recent_signatures=recent_signatures,
                         playbook_guidance=playbook_guidance,
-                        domain=domain,
                     )
                 )
             except (ContentRejected, CardSpecError, VideoSpecError) as exc:
@@ -276,16 +277,11 @@ def _prepare_target(
     resolve_media_spec: ResolveMediaSpec | None,
     recent_signatures: tuple[frozenset[str], ...],
     playbook_guidance: str | None,
-    domain: Domain,
 ) -> TargetResult:
     fmt = target.content_format
 
     content = run_content(
-        model,
-        topic=topic,
-        content_format=fmt,
-        playbook_guidance=playbook_guidance,
-        domain=domain,
+        model, topic=topic, content_format=fmt, playbook_guidance=playbook_guidance
     )
     store.log_event(
         cycle_id=cycle_id,
