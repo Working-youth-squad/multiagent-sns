@@ -23,6 +23,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
 from sns.agents.topic import TopicResult
+from sns.domain import DEFAULT_DOMAIN, Domain
 from sns.render.card.spec import CardSpecError, parse_card_spec
 from sns.render.video.spec import VideoSpecError, parse_video_spec
 from sns.tools.contracts import ContentFormat
@@ -31,8 +32,8 @@ from sns.tools.contracts import ContentFormat
 HookPattern = Literal["bold_claim", "curiosity", "story", "shock", "question"]
 HOOK_PATTERNS: tuple[str, ...] = get_args(HookPattern)
 
-_SYSTEM_PROMPT = """당신은 SNS 성장 엔진의 Content 에이전트다. \
-주어진 개발자 주제로 포맷에 맞는 콘텐츠를 만든다.
+_PROMPT_HEAD = """당신은 SNS 성장 엔진의 Content 에이전트다. \
+주어진 «DOMAIN» 주제로 포맷에 맞는 콘텐츠를 만든다.
 
 규칙:
 1. 첫 화면(훅)과 본문을 분리한다. 훅은 스크롤을 멈출 이유를 첫 프레임/첫 카드에 담는다.
@@ -58,30 +59,13 @@ _SYSTEM_PROMPT = """당신은 SNS 성장 엔진의 Content 에이전트다. \
        한 줄은 짧게(48자 이내 권장 — 길면 글자가 작아져 안 읽힌다). 비우면 배경만 나온다.
        나레이션이 코드를 가리키는 컷에는 넣어라 — 말과 화면이 같은 것을 가리켜야 한다.
      * lang(선택): pygments 렉서 이름("python","javascript","sql"…). 비우면 추측한다.
-     * concept(선택): 코드가 없는 컷에 **우리가 그리는 그림**. 종류 6개뿐이고
+     * concept(선택): 코드가 없는 컷에 **우리가 그리는 그림**. 종류 «N»개뿐이고
        컷 성격에 맞는 걸 고른다. 다른 kind나 없는 필드를 쓰면 거부된다.
        **코드가 없는 주제(도구 소개·트렌드·커리어)라면 정사각을 비우지 말고 여기서 골라라.**
        같은 kind를 연속 컷에 쓰되 active만 옮기면 화면이 진행되는 것처럼 보인다.
-       - 충격적인 수치·키워드 한 방:
-         {"kind":"emphasis","tag":"최악의 경우","headline":"100억","sub":"십만 건 × 십만 건 비교"}
-         headline은 한글 8자 이내. 숫자 하나면 가장 세다.
-       - 느린 방법 vs 빠른 방법 도해(왜 빨라지는지 보여주는 컷):
-         {"kind":"compare","before_label":"list","before_note":"6번 비교",
-          "after_label":"set","after_note":"1번 비교","footer":"O(n) -> O(1)"}
-         label은 짧은 이름(한글 8자 이내), footer는 전후 변화 한 줄.
-       - 마무리 "기억하세요" 한 줄:
-         {"kind":"remember","line":"반복문 안에서 in을 쓴다면","code":"set(...)"}
-         line은 한글 17자 이내, code는 기억할 짧은 코드(선택).
-       - 동작 원리·파이프라인(무엇이 어떤 순서로 일어나는지):
-         {"kind":"flow","steps":["주제 한 줄 입력","AI가 대본 작성","영상·음성 합성"],"active":1}
-         steps는 **최대 3개**, 각 한글 10자 이내. active(0-기반)는 지금 말하는 단계.
-       - 기능·항목 나열:
-         {"kind":"steps","items":["대본 자동 생성","영상 자동 합성","자막·TTS 자동"],"active":2}
-         items는 **최대 4개**, 각 한글 12자 이내. active는 지금 말하는 항목.
-       - 설치·시작 명령(도구 소개의 마무리):
-         {"kind":"terminal","commands":["pip install foo"],"note":"깃허브에서 무료"}
-         commands는 **최대 2줄**, 각 34자 이내. note는 한 줄 설명(선택).
-     * image_query(선택): **물리적 대상**을 말하는 컷에만 쓰는 실사 스톡 검색어
+"""
+
+_PROMPT_TAIL = """     * image_query(선택): **물리적 대상**을 말하는 컷에만 쓰는 실사 스톡 검색어
        (영어 2~4단어). 데이터센터·모니터·서버처럼 실제로 사진이 존재하는 대상일 때만
        의미가 있다. **추상 개념에는 절대 쓰지 마라** — 검색어의 단어에만 반응해
        엉뚱한 사진이 온다(전에 "list vs set" 컷에 전선 사진이 붙었다). 개념은 concept이
@@ -107,6 +91,23 @@ _SYSTEM_PROMPT = """당신은 SNS 성장 엔진의 Content 에이전트다. \
 6. 정치·특정인 비방·음란·불법 복제 소재는 쓰지 않는다 — 게이트에 걸려 발행이 막힌다.
 
 set_hook과 set_media_spec을 모두 호출한 뒤 마지막 메시지로 본문을 마무리한다."""
+
+
+def _system_prompt(domain: Domain) -> str:
+    """도메인 팩 → Content 시스템 프롬프트.
+
+    팩에서 오는 건 둘이다 — 주제 범위 문구와 개념 그림 예시 블록. 그림꼴의 *구조*는
+    [sns.render.concept_image]에 남는다. 예시만 팩인 이유는 `compare` 같은 중립
+    종류도 예시는 도메인 향이 강하기 때문이다("list vs set", "O(n) -> O(1)").
+
+    프롬프트에 JSON 중괄호가 많아 f-string을 쓰지 않는다 — 전부 이스케이프해야 해서
+    읽기 어려워진다. 마커 치환이 원문을 그대로 두므로 프롬프트를 고칠 때 안전하다.
+    """
+    examples = "\n".join(domain.concept_examples[k] for k in domain.concept_kinds)
+    head = _PROMPT_HEAD.replace("«DOMAIN»", domain.topic_domain).replace(
+        "«N»", str(len(domain.concept_kinds))
+    )
+    return head + examples + "\n" + _PROMPT_TAIL
 
 
 @dataclass(frozen=True)
@@ -140,14 +141,18 @@ def _message_text(content: object) -> str:
     return str(content)
 
 
-def _validate_spec(spec: object, fmt: ContentFormat) -> dict[str, object]:
-    """포맷별 기존 파서로 media_spec 검증. 통과한 dict를 그대로 반환(jsonb 저장용)."""
+def _validate_spec(spec: object, fmt: ContentFormat, domain: Domain) -> dict[str, object]:
+    """포맷별 기존 파서로 media_spec 검증. 통과한 dict를 그대로 반환(jsonb 저장용).
+
+    영상 파서에는 팩을 넘긴다 — 프롬프트가 열어준 개념 그림과 파서가 받는 종류가
+    어긋나면 에이전트가 고칠 수 없는 오류를 반복한다.
+    """
     if not isinstance(spec, dict):
         raise ValueError("media_spec은 객체여야 함")
     if fmt == "feed_image":
         parse_card_spec(spec)  # 던지면 CardSpecError
     elif fmt in ("reels", "shorts"):
-        parse_video_spec(spec)  # 던지면 VideoSpecError
+        parse_video_spec(spec, domain=domain)  # 던지면 VideoSpecError
     else:
         raise ValueError(f"미지원 포맷: {fmt}")
     return spec
@@ -159,8 +164,12 @@ def run_content(
     topic: TopicResult,
     content_format: ContentFormat,
     playbook_guidance: str | None = None,
+    domain: Domain = DEFAULT_DOMAIN,
 ) -> ContentResult:
-    """주제 → 포맷별 콘텐츠. 훅·검증된 media_spec·본문 모두 확보돼야 반환."""
+    """주제 → 포맷별 콘텐츠. 훅·검증된 media_spec·본문 모두 확보돼야 반환.
+
+    `domain`은 주제 범위와 쓸 수 있는 개념 그림을 정하는 팩([sns.domain])이다.
+    """
     captured: dict[str, object] = {}
 
     @tool
@@ -179,7 +188,7 @@ def run_content(
         except (TypeError, ValueError) as exc:
             return f"오류: JSON 파싱 실패 — {exc}"
         try:
-            captured["spec"] = _validate_spec(spec, content_format)
+            captured["spec"] = _validate_spec(spec, content_format, domain)
         except (CardSpecError, VideoSpecError, ValueError) as exc:
             return f"오류: media_spec 검증 실패 — {exc}"
         return "media_spec 검증 통과"
@@ -188,7 +197,7 @@ def run_content(
     agent = create_deep_agent(
         model=model,
         tools=[set_hook, set_media_spec],
-        system_prompt=_SYSTEM_PROMPT,
+        system_prompt=_system_prompt(domain),
     )
     state = agent.invoke(
         {

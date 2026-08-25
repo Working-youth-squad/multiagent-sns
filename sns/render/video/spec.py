@@ -23,6 +23,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import cast
 
+from sns.domain import DEFAULT_DOMAIN, Domain
 from sns.render.code_image import MAX_CODE_LINES
 from sns.render.concept_image import Concept, ConceptError, parse_concept
 from sns.render.text import display_width
@@ -146,7 +147,7 @@ def _parse_image_text(
     return query
 
 
-def _parse_concept(raw: Mapping[str, object], where: str) -> Concept | None:
+def _parse_concept(raw: Mapping[str, object], where: str, kinds: tuple[str, ...]) -> Concept | None:
     """개념 그림 — 검증은 [sns.render.concept_image]에 위임하고 예외만 갈아 끼운다."""
     value = raw.get("concept")
     if value is None:
@@ -154,12 +155,12 @@ def _parse_concept(raw: Mapping[str, object], where: str) -> Concept | None:
     if not isinstance(value, Mapping):
         raise VideoSpecError(f"{where}'concept'는 매핑이어야 함: {value!r}")
     try:
-        return parse_concept(value)
+        return parse_concept(value, kinds=kinds)
     except ConceptError as exc:
         raise VideoSpecError(f"{where}'concept'가 잘못됨 — {exc}") from exc
 
 
-def _parse_slide(raw: object, index: int) -> Slide:
+def _parse_slide(raw: object, index: int, kinds: tuple[str, ...]) -> Slide:
     where = f"'slides[{index}]'의 "
     if not isinstance(raw, Mapping):
         raise VideoSpecError(f"'slides[{index}]'는 매핑이어야 함: {raw!r}")
@@ -168,7 +169,7 @@ def _parse_slide(raw: object, index: int) -> Slide:
         raise VideoSpecError(
             f"{where}'code'는 {MAX_CODE_LINES}줄 이하여야 함: {len(code.rstrip().split(chr(10)))}줄"
         )
-    concept = _parse_concept(raw, where)
+    concept = _parse_concept(raw, where, kinds)
     if concept is not None and (code.strip() or raw.get("image_query") or raw.get("image_prompt")):
         raise VideoSpecError(
             f"{where}'concept'는 'code'·'image_query'·'image_prompt'와 함께 쓸 수 없음"
@@ -206,13 +207,13 @@ def _reject_generated_images_in_code_videos(slides: tuple[Slide, ...]) -> None:
         )
 
 
-def _parse_slides(spec: Mapping[str, object]) -> tuple[Slide, ...]:
+def _parse_slides(spec: Mapping[str, object], kinds: tuple[str, ...]) -> tuple[Slide, ...]:
     value = spec.get("slides")
     if not isinstance(value, list) or not value:
         raise VideoSpecError(f"'slides'는 비지 않은 리스트여야 함: {value!r}")
     if len(value) > MAX_SLIDES:
         raise VideoSpecError(f"'slides'는 {MAX_SLIDES}장 이하여야 함: {len(value)}장")
-    slides = tuple(_parse_slide(raw, i) for i, raw in enumerate(value))
+    slides = tuple(_parse_slide(raw, i, kinds) for i, raw in enumerate(value))
     _reject_generated_images_in_code_videos(slides)
     return slides
 
@@ -250,7 +251,9 @@ def _parse_voice(spec: Mapping[str, object]) -> str:
     return value
 
 
-def parse_video_spec(media_spec: Mapping[str, object]) -> VideoSpec:
+def parse_video_spec(
+    media_spec: Mapping[str, object], *, domain: Domain = DEFAULT_DOMAIN
+) -> VideoSpec:
     """`media_spec` → `VideoSpec`. 누락·형식 오류는 `VideoSpecError`."""
     width = _parse_dimension(media_spec, "width", DEFAULT_WIDTH)
     height = _parse_dimension(media_spec, "height", DEFAULT_HEIGHT)
@@ -260,7 +263,7 @@ def parse_video_spec(media_spec: Mapping[str, object]) -> VideoSpec:
         width=width,
         height=height,
         topic=_require_text(media_spec, "topic", "", MAX_TOPIC_WIDTH),
-        slides=_parse_slides(media_spec),
+        slides=_parse_slides(media_spec, domain.concept_kinds),
         voice=_parse_voice(media_spec),
         background=_parse_color(media_spec, "background", DEFAULT_BACKGROUND),
         background2=_parse_color(media_spec, "background2", DEFAULT_BACKGROUND2),

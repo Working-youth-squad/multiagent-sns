@@ -145,11 +145,16 @@ def _check_index_range(kind: str, fields: Mapping[str, object], name: str) -> No
         raise ConceptError(f"'{name}'이 범위(0~{max(count - 1, 0)}) 밖: {index!r}")
 
 
-def parse_concept(raw: Mapping[str, object]) -> Concept:
-    """`concept` 매핑 → 검증된 `Concept`. 미지의 종류·필드·과폭은 전부 거부."""
+def parse_concept(raw: Mapping[str, object], *, kinds: tuple[str, ...] = ()) -> Concept:
+    """`concept` 매핑 → 검증된 `Concept`. 미지의 종류·필드·과폭은 전부 거부.
+
+    `kinds`가 오면 그 목록으로 한 번 더 좁힌다 — 도메인 팩이 안 쓰는 그림꼴을 막는다
+    (예: 마케팅 도메인에 `terminal`). 비면 렌더러가 아는 전부를 허용한다.
+    """
+    allowed_kinds = kinds or tuple(CONCEPT_FIELDS)
     kind = raw.get("kind")
-    if not isinstance(kind, str) or kind not in CONCEPT_FIELDS:
-        raise ConceptError(f"'kind'는 {sorted(CONCEPT_FIELDS)} 중 하나여야 함: {kind!r}")
+    if not isinstance(kind, str) or kind not in allowed_kinds:
+        raise ConceptError(f"'kind'는 {sorted(allowed_kinds)} 중 하나여야 함: {kind!r}")
     allowed = CONCEPT_FIELDS[kind]
     for key in raw:
         if key != "kind" and key not in allowed:

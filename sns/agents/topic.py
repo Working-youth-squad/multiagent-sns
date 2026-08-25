@@ -1,7 +1,10 @@
-"""Topic 에이전트 (FR-G1·G4, 04 §4) — 개발자 주제 발굴, deepagents 기반.
+"""Topic 에이전트 (FR-G1·G4, 04 §4) — 주제 발굴, deepagents 기반.
+
+주제 범위·카테고리는 도메인 팩([sns.domain])이 정한다. 이 모듈은 "어떤 도메인이든
+근거 위에서 하나를 고른다"는 절차만 갖는다.
 
 역할: `research_trends`(외부 트렌드 = 근거)와 `read_stats`(과거 성과)를 도구로 읽고,
-카테고리 5종 중 하나로 주제 **1건을 선택**한다. 선택 원칙(설명 난이도 하한·호기심
+팩이 준 카테고리 중 하나로 주제 **1건을 선택**한다. 선택 원칙(설명 난이도 하한·호기심
 후크, 04 §4)은 프롬프트로 위임하되, **제목은 트렌드 다이제스트에서 온 근거 있는
 후보 중에서만** 고르게 한다(할루시네이션 방지, FR-G4). LLM이 수치·후보를 지어내지
 않도록 선택은 `choose_topic` 툴로 코드가 포착하고, 후보 인덱스·카테고리 유효성은
@@ -15,23 +18,26 @@ import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Literal, get_args
 
 from deepagents import create_deep_agent
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
+from sns.domain import DEFAULT_DOMAIN, Domain
 from sns.tools.contracts import Platform, ReadStats, ResearchTrends, SourceResult
 
-# 주제 카테고리 5종 (04 §4 · 11-데이터모델 content_item.topic_category).
-TopicCategory = Literal["신기술", "기초지식", "꿀팁", "현직자일상", "개발자유머"]
-TOPIC_CATEGORIES: tuple[str, ...] = get_args(TopicCategory)
 
-_SYSTEM_PROMPT = """당신은 SNS 성장 엔진의 Topic 에이전트다. \
-개발자 대상 콘텐츠의 주제를 딱 하나 고른다.
+def _system_prompt(domain: Domain) -> str:
+    """도메인 팩 → Topic 시스템 프롬프트.
 
-카테고리(반드시 이 중 하나): 신기술 · 기초지식 · 꿀팁 · 현직자일상 · 개발자유머.
+    카테고리 목록과 대상 서술만 팩에서 온다. 선정 원칙(04 §4.2)은 도메인 무관이라
+    여기 남는다 — 어떤 주제를 다루든 "한 컷에 이해되는가"는 같은 기준이다.
+    """
+    return f"""당신은 SNS 성장 엔진의 Topic 에이전트다. \
+{domain.audience} 콘텐츠의 주제를 딱 하나 고른다.
+
+카테고리(반드시 이 중 하나): {" · ".join(domain.categories)}.
 
 선정 원칙:
 1. 설명 난이도 하한 — 한 컷/한 카드로 이해되는 주제만. 배경지식이 3개 이상 필요하면 고르지 않는다.
@@ -54,7 +60,8 @@ class TopicCandidate:
 @dataclass(frozen=True)
 class TopicResult:
     title: str  # 후보 다이제스트에서 온 근거 있는 제목
-    category: TopicCategory
+    # 팩이 카테고리를 정하므로 Literal이 아니다 — 검증은 choose_topic이 런타임에 한다.
+    category: str
     source: str  # 후보의 출처 트렌드 소스
     summary: str  # 에이전트가 붙인 한 줄 요약
     reason: str  # 선택 근거(관측·디버깅용)
@@ -125,11 +132,14 @@ def run_topic(
     read_stats: ReadStats,
     limit: int = 10,
     exclude_titles: Sequence[str] = (),
+    domain: Domain = DEFAULT_DOMAIN,
 ) -> TopicResult:
     """트렌드 근거 + 과거 성과로 주제 1건을 선택. 유효 선택만 반환.
 
     `exclude_titles`는 최근 발행한 주제다. 트렌드 소스는 같은 항목을 며칠씩 노출하므로
     이걸 안 빼면 어제와 같은 영상이 나간다(실제로 그랬다).
+
+    `domain`은 주제 범위·카테고리를 정하는 팩([sns.domain])이다.
     """
     digest = research_trends(limit=limit)
     candidates = _candidates(digest.source_results, exclude_titles)
@@ -176,8 +186,8 @@ def run_topic(
         """고른 후보 index·카테고리·한 줄 요약으로 주제를 확정한다."""
         if not isinstance(index, int) or not 0 <= index < len(candidates):
             return f"오류: index는 0..{len(candidates) - 1} 범위여야 함 (받음: {index!r})"
-        if category not in TOPIC_CATEGORIES:
-            return f"오류: category는 {list(TOPIC_CATEGORIES)} 중 하나여야 함 (받음: {category!r})"
+        if category not in domain.categories:
+            return f"오류: category는 {list(domain.categories)} 중 하나여야 함 (받음: {category!r})"
         chosen["index"] = index
         chosen["category"] = category
         chosen["summary"] = summary
@@ -186,13 +196,14 @@ def run_topic(
     agent = create_deep_agent(
         model=model,
         tools=[read_trends, read_topic_stats, choose_topic],
-        system_prompt=_SYSTEM_PROMPT,
+        system_prompt=_system_prompt(domain),
     )
     state = agent.invoke(
         {
             "messages": [
                 HumanMessage(
-                    f"플랫폼 {platform}. read_trends 후보 중에서 개발자 주제 1건을 골라 "
+                    f"플랫폼 {platform}. read_trends 후보 중에서 {domain.topic_domain} "
+                    "주제 1건을 골라 "
                     "choose_topic으로 확정하라."
                 )
             ]
@@ -206,13 +217,8 @@ def run_topic(
     cand = candidates[int(chosen["index"])]  # type: ignore[call-overload]
     return TopicResult(
         title=cand.text,
-        category=_as_category(str(chosen["category"])),
+        category=str(chosen["category"]),
         source=cand.source,
         summary=str(chosen["summary"]),
         reason=f"trend={cand.source}",
     )
-
-
-def _as_category(value: str) -> TopicCategory:
-    assert value in TOPIC_CATEGORIES
-    return value  # type: ignore[return-value]

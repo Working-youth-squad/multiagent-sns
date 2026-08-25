@@ -15,6 +15,7 @@ import os
 from collections.abc import Callable, Mapping
 from concurrent.futures import Future, ThreadPoolExecutor
 
+from sns.domain import DEFAULT_DOMAIN, Domain
 from sns.tools.contracts import ResearchTrends, SourceResult, TrendDigest
 
 # 소스 fetcher: limit개 트렌드 항목(문자열)을 반환. 실패는 예외로 던진다 — 서비스가 격리.
@@ -96,7 +97,10 @@ def _bind(fetch: Callable[..., tuple[str, ...]], **bound: object) -> SourceFetch
 
 
 def default_service(
-    timeout_s: float = DEFAULT_TIMEOUT_S, *, env: Mapping[str, str] | None = None
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    *,
+    env: Mapping[str, str] | None = None,
+    domain: Domain = DEFAULT_DOMAIN,
 ) -> ResearchTrendsService:
     """사용 가능한 실 fetcher를 배선한 서비스. 새 소스가 붙을 때마다 여기 등록한다.
 
@@ -139,9 +143,14 @@ def default_service(
 
     gemini_key = env_map.get(ENV_GEMINI_API_KEY)
     if gemini_key:
-        fetchers["llm_grounding"] = _bind(fetch_llm_grounding, api_key=gemini_key)
+        fetchers["llm_grounding"] = _bind(
+            fetch_llm_grounding, api_key=gemini_key, prompt=domain.grounding_prompt
+        )
 
-    return ResearchTrendsService(fetchers, timeout_s=timeout_s)
+    # 팩이 안 쓰는 소스는 키가 있어도 빼둔다 — 도메인이 바뀌면 개발 니치 소스(HN·Lobsters·
+    # GitHub)는 잡음이 된다.
+    wanted = {k: v for k, v in fetchers.items() if k in domain.trend_sources}
+    return ResearchTrendsService(wanted, timeout_s=timeout_s)
 
 
 # mypy(sns): 서비스가 동결 계약 ResearchTrends를 구조적으로 만족함을 강제.
