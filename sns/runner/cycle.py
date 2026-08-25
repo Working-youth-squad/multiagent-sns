@@ -13,7 +13,8 @@ CycleStore seam 위에서 엮어, **한 주제로 여러 채널 대상의 콘텐
   기록하고 다음 대상으로 넘어간다 — 사이클 전체를 죽이지 않는다.
 - **품질 게이트는 주입식**(assess_quality): 게이트가 렌더러 내부(CardRender)를 봐야
   하므로 얇은 RenderMedia 계약으론 못 부른다 → 조립은 caller 몫. 미주입 시 자산은
-  needs_review로 적재(사람 관문/후속 게이트 대기, FR-Q3).
+  failed로 적재한다(fail-closed) — 승인으로 되살릴 사람 관문이 없으므로, 판정받지
+  않은 자산이 발행에 새어 나가지 않게 막는 쪽으로 기운다.
 - LLM 착지점(FR-C4)은 content_item.body 하나뿐 — topic/media_spec/hook은 코드가 검증.
 """
 
@@ -25,7 +26,6 @@ from langchain_core.language_models import BaseChatModel
 
 from sns.agents.content import ContentRejected, run_content
 from sns.agents.topic import TopicResult, TopicSelectionError, run_topic
-from sns.publish.modes import DRAFT_STATUS, PublishMode
 from sns.quality.gate import QualityReport
 from sns.quality.safety import screen_content
 from sns.quality.signature import MAX_CONTENT_SIMILARITY, max_similarity, spec_signature
@@ -44,12 +44,9 @@ from sns.tools.contracts import (
     ResearchTrends,
 )
 
-# 발행 모드 3분류([sns.publish.modes] 정본): auto·hybrid·manual
-ChannelMode = PublishMode
-# blocked = 관문(안전·근접중복)에 걸려 **렌더도 하지 않고** 사람 검토로 넘긴 것.
-# failed(도메인 오류)와 구분한다 — 원고는 멀쩡히 있고 판단만 남았다.
-# manual_assigned = 수동 채널에 주제만 배정한 것(FR-E5) — 렌더도 초안도 없다.
-TargetOutcome = Literal["prepared", "blocked", "manual_assigned", "failed"]
+# blocked = 관문(안전·근접중복)에 걸려 **렌더도 하지 않고** 종결한 것.
+# failed(도메인 오류)와 구분한다 — 원고는 멀쩡히 있고 게이트에 걸렸을 뿐이다.
+TargetOutcome = Literal["prepared", "blocked", "failed"]
 
 # 포맷 → 렌더 자산 종류. 피드=이미지, 릴스/쇼츠=영상.
 _FORMAT_KIND: dict[ContentFormat, MediaKind] = {
@@ -72,7 +69,6 @@ class CycleTarget:
     channel_id: str
     platform: Platform
     content_format: ContentFormat
-    mode: ChannelMode  # auto → 초안 approved, hybrid → needs_review, manual → 주제 배정만
 
 
 @dataclass(frozen=True)
@@ -178,23 +174,6 @@ def run_cycle(
         # ── 대상별 콘텐츠 제작·적재(도메인 오류만 격리) ─────────────────
         results: list[TargetResult] = []
         for target in targets:
-            # manual(수동) 대상: AI 초안·기계 발행 없이 같은 주제만 배정한다 —
-            # 사람이 직접 작성·발행 후 sns.publish.manual로 등록한다(FR-E5).
-            if target.mode == "manual":
-                store.log_event(
-                    cycle_id=cycle_id,
-                    kind="notice",
-                    payload={
-                        "reason": "manual_assignment",
-                        "channel_id": target.channel_id,
-                        "topic_id": topic_id,
-                        "topic_title": topic.title,
-                    },
-                )
-                results.append(
-                    TargetResult(channel_id=target.channel_id, outcome="manual_assigned")
-                )
-                continue
             try:
                 results.append(
                     _prepare_target(
@@ -226,20 +205,13 @@ def run_cycle(
                 )
 
         # 전 대상 실패면 failed(무인 운영에서 completed 오독 방지).
-        # manual 배정도 전진으로 친다 — 주제 전달이 그 대상의 이번 사이클 몫 전부다.
         prepared = sum(t.outcome == "prepared" for t in results)
-        assigned = sum(t.outcome == "manual_assigned" for t in results)
-        status: Literal["completed", "failed"] = "completed" if prepared or assigned else "failed"
+        status: Literal["completed", "failed"] = "completed" if prepared else "failed"
         store.complete_cycle(cycle_id, status=status)
         store.log_event(
             cycle_id=cycle_id,
             kind="cycle_completed",
-            payload={
-                "prepared": prepared,
-                "manual_assigned": assigned,
-                "total": len(results),
-                "status": status,
-            },
+            payload={"prepared": prepared, "total": len(results), "status": status},
         )
         return CycleResult(
             cycle_id=cycle_id, status=status, topic_id=topic_id, targets=tuple(results)
@@ -312,7 +284,8 @@ def _prepare_target(
                 body=content.body,
                 media_spec=content.media_spec,
                 hook_pattern=content.hook_pattern,
-                status="needs_review",
+                # 되살릴 승인 경로가 없으므로 게이트 차단은 그 자리에서 종결한다.
+                status="rejected",
             ),
             error=" / ".join(reasons),
         )
@@ -344,10 +317,10 @@ def _prepare_target(
         quality_status = report.status
         quality_report: Mapping[str, object] | None = report.to_json()
     else:
-        # 게이트 미배선 → 자동 발행 보류. 사람 관문/후속 게이트가 passed로 승격(FR-Q3).
-        quality_status, quality_report = "needs_review", None
+        # 게이트 미배선 → fail-closed. 판정받지 않은 자산은 발행에 진입하지 않는다.
+        quality_status, quality_report = "failed", None
 
-    # 콘텐츠 → 자산 → 발행 대기 (FK 순서). auto=approved, hybrid=사람 관문 대기.
+    # 콘텐츠 → 자산 → 발행 대기 (FK 순서).
     content_item_id = store.save_content_item(
         cycle_id=cycle_id,
         topic_id=topic_id,
@@ -355,7 +328,7 @@ def _prepare_target(
         body=body,
         media_spec=media_spec,
         hook_pattern=content.hook_pattern,
-        status=DRAFT_STATUS[target.mode],
+        status="approved",
     )
     media_asset_id = store.save_media_asset(
         content_item_id=content_item_id,
@@ -366,7 +339,7 @@ def _prepare_target(
         quality_report=quality_report,
     )
     publication_id = store.create_publication(
-        content_item_id=content_item_id, channel_id=target.channel_id, mode=target.mode
+        content_item_id=content_item_id, channel_id=target.channel_id
     )
     return TargetResult(
         channel_id=target.channel_id,

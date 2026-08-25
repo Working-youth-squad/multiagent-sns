@@ -76,6 +76,8 @@
 
 ### D-1. hybrid 사람 관문이 코드에 없다 · **실험 타당성 위협**
 
+> **[사후 무효]** 이 결함은 승인 관문 구현(C9)으로 한 번 닫혔다가, 이후 발행 모드 3분류(수동·반자동·자동) 자체가 제거되면서 대상이 사라졌다. 아래는 당시 기록이다.
+
 ```sql
 -- sns/publish/runner.py:_SELECT_PENDING
 WHERE p.status = 'pending'

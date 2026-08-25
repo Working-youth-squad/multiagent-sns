@@ -1,5 +1,5 @@
 %% multiagent-sns — 시스템 아키텍처 (v2 · 2026-08-11 개정 기획서 기준)
-%% 계정 4개(auto vs hybrid) 실험 · 무료 트렌드 소스 · 알고리즘 신호 최적화 · Discord 알림 반영
+%% 계정 4개 전 채널 완전자동 · 무료 트렌드 소스 · 알고리즘 신호 최적화 · Discord 알림 반영
 flowchart TB
     subgraph SCHED["스케줄 실행 — 1주차 확정: 상주 러너(무료 VM) or GitHub Actions cron"]
         CRON["슬롯 스케줄러<br/>(발행 사이클 트리거 · 계정 4개 × 일 1건)"]
@@ -37,17 +37,16 @@ flowchart TB
     end
 
     subgraph PUBAPI["발행 어댑터 — 공식 API만 (FR-P)"]
-        IGAPI["Instagram Graph API<br/>IG-auto · IG-hybrid 2계정<br/>(피드 이미지 · 릴스)"]
-        YTAPI["YouTube Data API v3<br/>YT-auto · YT-hybrid 2계정<br/>(쇼츠)"]
+        IGAPI["Instagram Graph API<br/>IG 2계정<br/>(피드 이미지 · 릴스)"]
+        YTAPI["YouTube Data API v3<br/>YT 2계정<br/>(쇼츠)"]
     end
 
     subgraph DATA["PostgreSQL (단일 DB)"]
-        DB[("channel(mode)·cycle·topic·topic_stats<br/>content_item(hook_pattern·edited_by_human)<br/>media_asset·publication·publish_attempt<br/>metric_*·reward·playbook·analysis_note·run_event")]
+        DB[("channel·cycle·topic·topic_stats<br/>content_item(hook_pattern)<br/>media_asset·publication·publish_attempt<br/>metric_*·reward·playbook·analysis_note·run_event")]
     end
 
     subgraph WEB["웹 (FastAPI + 경량 프론트)"]
-        UI_IN["인사이트 탭 [필수 FR-W3]<br/>추이·기울기 · auto vs hybrid 비교<br/>신호 스코어보드 · 분석글"]
-        UI_HY["hybrid 승인 화면 [필수 FR-E1/Q3]<br/>주제 선택 → 초안 수정 → 승인"]
+        UI_IN["인사이트 탭 [필수 FR-W3]<br/>추이·기울기<br/>신호 스코어보드 · 분석글"]
         UI_OPT["온보딩·설정 (선택 FR-W1/W2)"]
     end
 
@@ -63,7 +62,6 @@ flowchart TB
     A_ANALYST -.신호 스코어보드·조기판정<br/>FR-A1·A3.-> DB
     CORE <--> DB
     RENDER --> DB
-    UI_HY -->|승인/수정| DB
     UI_IN <--> DB
     UI_OPT <--> DB
     A_PUB -.성공/실패.-> DISCORD

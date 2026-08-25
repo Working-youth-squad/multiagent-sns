@@ -1,22 +1,13 @@
 """발행 러너 — 품질 게이트 배선 + 멱등 상태머신 구동 (C5, 07-발행 §2).
 
-**기계 발행 경계**: 이 러너는 `auto`·`hybrid` 발행만 다룬다([sns.publish.modes]).
-`manual`(수동)은 사람이 플랫폼에서 직접 발행하고 [sns.publish.manual]로 등록만
-하므로 여기의 선택 쿼리에 절대 잡히지 않는다.
-
 DB에서 발행 대기(`publication.status='pending'`) 건을 읽어, 렌더된 자산의 품질
 게이트 결과(`media_asset.quality_status`)를 상태머신의 `quality_passed`로 **배선**한다:
 
 - `passed`        → `run_publish`로 종결까지 1회 전진 (멱등 — 재구동해도 이중 발행 0).
-- `failed`        → (진입 시에만) `publication`을 `skipped`로 종결 — 자동 게이트 하드
+- `failed`        → (진입 시에만) `publication`을 `skipped`로 종결 — 게이트 하드
   실패 = 콘텐츠 거부. 게이트는 '진입'만 막는다(05 FR-Q): 진행 중 시도는 재검사 안 함.
-- `needs_review`  → `pending` 유지 + notice. hybrid 사람 관문(FR-Q3) 대기 — 사람이
-  승인해 `passed`로 바뀌면 다음 구동에서 발행된다. 영구 skipped로 종결하지 않는다.
-  (자산 기본 quality_status가 `needs_review`라, 아직 게이트 미판정 자산도 여기 해당.)
-- **hybrid 콘텐츠 승인 관문(FR-Q3, C9)**: mode='hybrid'는 미디어 품질과 별개로
-  `content_item.status='approved'`도 요구한다 — 품질 게이트가 자동으로 `passed`를
-  내려도(주입된 게이트가 needs_review를 내지 않는 한) 사람이 [sns.web.approve]에서
-  승인하기 전엔 발행되지 않는다. `rejected`는 media 품질과 무관하게 즉시 skipped.
+  자산 기본값이 `failed`(fail-closed)라 **게이트 미판정 자산도 여기 해당** — 승인으로
+  되살리는 사람 관문은 없다.
 - 자산 없음        → `pending` 유지(다음 렌더 사이클 대기) + notice 기록.
 
 부작용(외부 발행)은 주입된 `publish`(동결 `Publish` 계약)로만 — 프레임워크·벤더
@@ -41,7 +32,7 @@ from sns.publish.state_machine import AttemptStatus, PublishAttempt, run_publish
 from sns.publish.stores import PgPublishAttemptStore
 from sns.tools.contracts import MediaAsset, Publish
 
-Outcome = Literal["published", "failed", "retryable", "skipped", "awaiting_review", "no_media"]
+Outcome = Literal["published", "failed", "retryable", "skipped", "no_media"]
 
 # 상태머신 종결/진행 상태 → 러너 outcome. 진행 중(pending·container_created)=retryable.
 _STATE_OUTCOME: dict[AttemptStatus, Outcome] = {
@@ -58,7 +49,7 @@ _SELECT_PENDING = """
 SELECT DISTINCT ON (p.id)
        p.id, ci.cycle_id, ch.platform, COALESCE(ci.body, ''),
        ma.kind, ma.storage_url, ma.checksum, ma.quality_status,
-       pa.state, COALESCE(p.mode, ch.mode), ci.status
+       pa.state
   FROM publication p
   JOIN channel ch      ON ch.id = p.channel_id
   JOIN content_item ci ON ci.id = p.content_item_id
@@ -67,9 +58,8 @@ SELECT DISTINCT ON (p.id)
    AND ma.kind = CASE WHEN ci.format = 'feed_image' THEN 'image' ELSE 'video' END
   LEFT JOIN publish_attempt pa ON pa.publication_id = p.id
  WHERE p.status = 'pending'
-   -- 기계 발행은 auto·hybrid만(sns.publish.modes MACHINE_MODES와 동일 집합).
-   -- manual은 사람이 직접 발행·등록(FR-E5), off는 발행 중지.
-   AND COALESCE(p.mode, ch.mode) IN ('auto', 'hybrid')
+   -- 발행 중지 채널은 제외(001의 channel.status = 운영 상태).
+   AND ch.status = 'active'
  ORDER BY p.id, ma.created_at DESC
 """
 
@@ -112,8 +102,6 @@ def run_pending_publications(conn: psycopg.Connection, publish: Publish) -> list
             checksum,
             qstatus,
             attempt_state,
-            mode,
-            content_status,
         ) = row
         publication_id = str(pub_id)
 
@@ -127,40 +115,22 @@ def run_pending_publications(conn: psycopg.Connection, publish: Publish) -> list
         # 게이트 배선(진입 시에만 — 이미 진행 중인 시도는 위 attempt_state로 통과):
         # state_machine 불변식과 일치시켜 재검사 금지. 이 조건이 없으면 첫 판정 뒤
         # 새로 렌더된 저품질 자산이 최신으로 잡혀, 컨테이너를 남긴 채 publication만
-        # 뒤집혀 원장↔발행상태가 갈라진다.
-        # hybrid는 미디어 품질과 별개로 content_item.status='approved'도 요구한다
-        # (FR-Q3, C9 승인 UI가 이 값을 뒤집는다) — 품질 게이트가 자동 passed를 내려도
-        # 사람 승인 전엔 발행 진입하지 않는다.
-        content_not_approved = mode == "hybrid" and content_status != "approved"
-        if attempt_state is None and (qstatus != "passed" or content_not_approved):
-            # 자동 게이트 하드 실패(failed) 또는 사람 반려(rejected)만 skipped로 종결.
-            # needs_review/미승인은 승인 대기라 pending 유지 — skipped로 종결하면
-            # 나중에 승인돼도 재선택 안 돼 영영 발행되지 않는다(FR-Q3).
-            if qstatus == "failed" or content_status == "rejected":
-                with conn.transaction():
-                    conn.execute(
-                        "UPDATE publication SET status = 'skipped' WHERE id = %s", (pub_id,)
-                    )
-                    _log_event(
-                        conn,
-                        cycle_id,
-                        "notice",
-                        {"publication_id": publication_id, "reason": "quality_failed"},
-                    )
-                results.append(RunnerResult(publication_id, "skipped", None))
-            else:
+        # 뒤집혀 원장↔발행상태가 갈라진다. 미통과 자산은 즉시 skipped로 종결한다 —
+        # 되살릴 사람 관문이 없으므로 pending으로 남겨둘 이유가 없다.
+        if attempt_state is None and qstatus != "passed":
+            with conn.transaction():
+                conn.execute("UPDATE publication SET status = 'skipped' WHERE id = %s", (pub_id,))
                 _log_event(
                     conn,
                     cycle_id,
                     "notice",
                     {
                         "publication_id": publication_id,
-                        "reason": "awaiting_review",
+                        "reason": "quality_failed",
                         "quality_status": qstatus,
-                        "content_status": content_status,
                     },
                 )
-                results.append(RunnerResult(publication_id, "awaiting_review", None))
+            results.append(RunnerResult(publication_id, "skipped", None))
             continue
 
         media = MediaAsset(kind=kind, storage_url=storage_url, checksum=checksum)
@@ -182,7 +152,6 @@ def run_pending_publications(conn: psycopg.Connection, publish: Publish) -> list
             "publish_attempted",
             {
                 "publication_id": publication_id,
-                "mode": mode,
                 "state": attempt.state,
                 "error_class": attempt.error_class,
                 "external_post_id": attempt.external_post_id,

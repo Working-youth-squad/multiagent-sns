@@ -82,12 +82,11 @@ def find_font() -> str | None:
 
 
 def ensure_channel(conn: psycopg.Connection, *, handle: str) -> str:
-    """데모용 instagram/auto 채널 1개 확보(있으면 재사용)."""
+    """데모용 instagram 채널 1개 확보(있으면 재사용)."""
     row = conn.execute("SELECT id FROM channel WHERE handle = %s", (handle,)).fetchone()
     if row is None:
         row = conn.execute(
-            "INSERT INTO channel (platform, handle, mode) "
-            "VALUES ('instagram', %s, 'auto') RETURNING id",
+            "INSERT INTO channel (platform, handle) VALUES ('instagram', %s) RETURNING id",
             (handle,),
         ).fetchone()
     assert row is not None
@@ -161,10 +160,7 @@ def main() -> int:
             goal_ref="engagement_depth",
             targets=[
                 CycleTarget(
-                    channel_id=channel_id,
-                    platform="instagram",
-                    content_format="feed_image",
-                    mode="auto",
+                    channel_id=channel_id, platform="instagram", content_format="feed_image"
                 )
             ],
             model=make_model(),

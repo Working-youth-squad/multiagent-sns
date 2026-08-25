@@ -59,7 +59,7 @@ class CycleStore(Protocol):
         quality_status: str,
         quality_report: Mapping[str, object] | None,
     ) -> str: ...
-    def create_publication(self, *, content_item_id: str, channel_id: str, mode: str) -> str: ...
+    def create_publication(self, *, content_item_id: str, channel_id: str) -> str: ...
     def complete_cycle(self, cycle_id: str, *, status: CycleStatus) -> None: ...
     def log_event(
         self, *, cycle_id: str, kind: EventKind, payload: Mapping[str, object]
@@ -153,13 +153,12 @@ class InMemoryCycleStore:
         }
         return maid
 
-    def create_publication(self, *, content_item_id: str, channel_id: str, mode: str) -> str:
+    def create_publication(self, *, content_item_id: str, channel_id: str) -> str:
         pid = self._id("pub")
         self.publications[pid] = {
             "content_item_id": content_item_id,
             "channel_id": channel_id,
             "status": "pending",
-            "mode": mode,
         }
         return pid
 
@@ -285,12 +284,10 @@ class PgCycleStore:
             ),
         )
 
-    def create_publication(self, *, content_item_id: str, channel_id: str, mode: str) -> str:
-        # mode = 발행 시점 모드 스냅샷(비교 리포트 증빙, 002 마이그레이션).
+    def create_publication(self, *, content_item_id: str, channel_id: str) -> str:
         return self._scalar(
-            "INSERT INTO publication (content_item_id, channel_id, mode) "
-            "VALUES (%s, %s, %s) RETURNING id",
-            (content_item_id, channel_id, mode),
+            "INSERT INTO publication (content_item_id, channel_id) VALUES (%s, %s) RETURNING id",
+            (content_item_id, channel_id),
         )
 
     def complete_cycle(self, cycle_id: str, *, status: CycleStatus) -> None:

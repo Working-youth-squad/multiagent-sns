@@ -56,8 +56,7 @@ def _passing(
 
 def _channel(db: psycopg.Connection) -> str:
     row = db.execute(
-        "INSERT INTO channel (platform, handle, mode) "
-        "VALUES ('instagram', 'h-cycle', 'auto') RETURNING id"
+        "INSERT INTO channel (platform, handle) VALUES ('instagram', 'h-cycle') RETURNING id"
     ).fetchone()
     assert row is not None
     return str(row[0])
@@ -69,12 +68,7 @@ def test_cycle_persists_and_publishes(db: psycopg.Connection) -> None:
         PgCycleStore(db),
         goal_ref="engagement_depth",
         targets=[
-            CycleTarget(
-                channel_id=channel_id,
-                platform="instagram",
-                content_format="feed_image",
-                mode="auto",
-            )
+            CycleTarget(channel_id=channel_id, platform="instagram", content_format="feed_image")
         ],
         model=ScriptedChatModel(messages=iter(_script())),
         research_trends=FakeResearchTrends(),
@@ -108,12 +102,7 @@ def test_cycle_started_and_completed_events(db: psycopg.Connection) -> None:
         PgCycleStore(db),
         goal_ref="reach",
         targets=[
-            CycleTarget(
-                channel_id=channel_id,
-                platform="instagram",
-                content_format="feed_image",
-                mode="auto",
-            )
+            CycleTarget(channel_id=channel_id, platform="instagram", content_format="feed_image")
         ],
         model=ScriptedChatModel(messages=iter(_script())),
         research_trends=FakeResearchTrends(),

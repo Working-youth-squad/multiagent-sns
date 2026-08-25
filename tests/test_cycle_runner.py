@@ -60,8 +60,8 @@ def _passing_quality(
     return QualityReport(status="passed", checks=())
 
 
-def _target(mode: str = "auto", fmt: ContentFormat = "feed_image", ch: str = "ch-1") -> CycleTarget:
-    return CycleTarget(channel_id=ch, platform="instagram", content_format=fmt, mode=mode)  # type: ignore[arg-type]
+def _target(fmt: ContentFormat = "feed_image", ch: str = "ch-1") -> CycleTarget:
+    return CycleTarget(channel_id=ch, platform="instagram", content_format=fmt)
 
 
 def _run(
@@ -115,49 +115,19 @@ def test_two_targets_share_one_topic() -> None:
     assert {ci["topic_id"] for ci in store.content_items.values()} == set(store.topics)
 
 
-def test_no_assessor_defaults_needs_review() -> None:
+def test_no_assessor_is_fail_closed() -> None:
+    # 게이트 미배선 → failed로 적재한다. 되살릴 승인 경로가 없으니 판정받지 않은
+    # 자산이 발행에 새어 나가지 않는 쪽으로 기운다.
     store, result = _run(_topic_script() + _content_script(), [_target()], assess=None)
     (asset,) = store.media_assets.values()
-    assert asset["quality_status"] == "needs_review"
+    assert asset["quality_status"] == "failed"
     assert asset["quality_report"] is None
 
 
-def test_hybrid_content_needs_review() -> None:
-    store, _ = _run(_topic_script() + _content_script(), [_target(mode="hybrid")])
-    (ci,) = store.content_items.values()
-    assert ci["status"] == "needs_review"
-
-
-def test_auto_content_approved() -> None:
-    store, _ = _run(_topic_script() + _content_script(), [_target(mode="auto")])
+def test_content_is_approved_without_human_gate() -> None:
+    store, _ = _run(_topic_script() + _content_script(), [_target()])
     (ci,) = store.content_items.values()
     assert ci["status"] == "approved"
-
-
-def test_manual_target_assigned_without_content() -> None:
-    # manual(수동) 대상: AI 초안·발행 대기를 만들지 않고 주제 배정 notice만 남긴다.
-    store, result = _run(_topic_script(), [_target(mode="manual")])
-    assert result.status == "completed"  # 주제 전달이 manual 대상의 이번 사이클 몫 전부
-    (t,) = result.targets
-    assert t.outcome == "manual_assigned"
-    assert t.content_item_id is None and t.publication_id is None
-    assert not store.content_items and not store.publications
-    (notice,) = [e for e in store.events if e["kind"] == "notice"]
-    assert notice["payload"]["reason"] == "manual_assignment"
-    assert notice["payload"]["topic_id"] in store.topics
-
-
-def test_manual_and_auto_share_same_topic() -> None:
-    # 3모드 비교의 전제: manual도 같은 사이클의 같은 주제(프롬프트)를 배정받는다.
-    script = _topic_script() + _content_script()
-    store, result = _run(
-        script, [_target(mode="manual", ch="ch-m"), _target(mode="auto", ch="ch-a")]
-    )
-    outcomes = {t.channel_id: t.outcome for t in result.targets}
-    assert outcomes == {"ch-m": "manual_assigned", "ch-a": "prepared"}
-    assert len(store.topics) == 1  # 주제는 사이클당 1건 — manual/auto 공유
-    (pub,) = store.publications.values()  # 기계 발행 대기는 auto 것 하나뿐
-    assert pub["mode"] == "auto"  # 발행 시점 모드 스냅샷(증빙)
 
 
 def test_topic_failure_fails_cycle() -> None:
@@ -355,12 +325,12 @@ def _spec_with(topic: str = "정상 주제") -> dict[str, object]:
     return {"topic": topic, "slides": [{"subtitle": "부제", "narration": "한 문장."}]}
 
 
-def _run_shorts(spec: dict[str, object], *, body: str = "본문", mode: str = "auto") -> Any:
+def _run_shorts(spec: dict[str, object], *, body: str = "본문") -> Any:
     store = InMemoryCycleStore()
     run_cycle(
         store,
         goal_ref="engagement_depth",
-        targets=[_target(mode=mode, fmt="shorts")],
+        targets=[_target(fmt="shorts")],
         model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(spec, body=body))),
         research_trends=FakeResearchTrends(),
         read_stats=FakeReadStats(),
@@ -375,10 +345,10 @@ def test_clean_content_still_auto_approves() -> None:
     assert item["status"] == "approved"
 
 
-def test_blocked_material_forces_human_review() -> None:
-    """auto 채널이어도 금지 소재가 있으면 자동 승인하지 않는다(FR-Q7: 발행 차단)."""
+def test_blocked_material_is_rejected() -> None:
+    """금지 소재는 승인하지 않는다(FR-Q7: 발행 차단). 되살릴 승인 경로가 없으니 종결."""
     (item,) = _run_shorts(_spec_with("대통령 연설 분석")).content_items.values()
-    assert item["status"] == "needs_review"
+    assert item["status"] == "rejected"
 
 
 def test_blocked_content_is_never_rendered() -> None:
@@ -392,11 +362,11 @@ def test_blocked_material_in_the_caption_too() -> None:
     """자막만 보면 뚫린다 — 캡션도 그대로 발행된다."""
     store = _run_shorts(_spec_with(), body="크랙 받는 법 알려드립니다")
     (item,) = store.content_items.values()
-    assert item["status"] == "needs_review"
+    assert item["status"] == "rejected"
 
 
 def test_findings_are_logged_with_location() -> None:
-    """왜 막혔는지 남지 않으면 사람이 승인 화면에서 판단할 수 없다."""
+    """왜 막혔는지 남지 않으면 나중에 원인을 되짚을 수 없다."""
     store = _run_shorts(_spec_with("대통령 연설 분석"))
     notices = [e for e in store.events if e["kind"] == "notice"]
     blob = json.dumps(notices, ensure_ascii=False)

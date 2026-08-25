@@ -98,7 +98,7 @@ def test_report_serializes_for_jsonb() -> None:
     assert set(first) == {"name", "passed", "detail"}
 
 
-def test_gate_never_emits_needs_review() -> None:
-    # 자동 게이트는 passed/failed만 — needs_review는 hybrid 사람 관문(FR-Q3).
+def test_gate_emits_only_passed_or_failed() -> None:
+    # 사람 승인 관문이 없으므로 게이트 판정이 발행 가부의 유일한 관문 — 제3의 상태 없음.
     assert _report().status in ("passed", "failed")
     assert MAX_CONTENT_SIMILARITY == 0.8  # 임계값 상수 고정 확인

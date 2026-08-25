@@ -34,8 +34,8 @@ EXPECTED_TABLES = {
 # channel~publication FK 체인을 한 번에 만들고 publication id를 돌려준다
 SEED_PUBLICATION_SQL = """
 WITH ch AS (
-    INSERT INTO channel (platform, handle, mode)
-    VALUES ('instagram', %(handle)s, 'auto') RETURNING id
+    INSERT INTO channel (platform, handle)
+    VALUES ('instagram', %(handle)s) RETURNING id
 ), cy AS (
     INSERT INTO cycle (goal_ref) VALUES ('test-goal') RETURNING id
 ), tp AS (
@@ -120,24 +120,53 @@ def test_metric_missing_xor_rejected(conn: psycopg.Connection) -> None:
         )
 
 
-def test_channel_manual_mode_accepted(conn: psycopg.Connection) -> None:
-    # 002: 발행 모드 3분류 — manual(수동) 채널 허용.
-    conn.execute(
-        "INSERT INTO channel (platform, handle, mode) VALUES ('instagram', %s, 'manual')",
-        (f"h-{uuid.uuid4().hex[:8]}",),
-    )
-    conn.commit()
+def test_publish_mode_columns_dropped(conn: psycopg.Connection) -> None:
+    # 003: 발행 모드 3분류(수동·반자동·자동)와 사람 개입 기록을 제거했다.
+    rows = conn.execute(
+        "SELECT table_name, column_name FROM information_schema.columns"
+        " WHERE table_schema = 'public' AND (table_name, column_name) IN"
+        " (('channel', 'mode'), ('publication', 'mode'), ('content_item', 'edited_by_human'))"
+    ).fetchall()
+    assert rows == []
 
 
-def test_publication_mode_check_rejected(conn: psycopg.Connection) -> None:
-    # publication.mode 스냅샷은 3모드만 허용(off는 발행 모드가 아님).
+def test_needs_review_status_rejected(conn: psycopg.Connection) -> None:
+    # 사람 승인 관문이 없으므로 needs_review는 어느 테이블에서도 허용되지 않는다.
     pub_id = _seed_publication(conn)
+    row = conn.execute(
+        "SELECT content_item_id FROM publication WHERE id = %s", (pub_id,)
+    ).fetchone()
+    assert row is not None
     with pytest.raises(errors.CheckViolation), conn.transaction():
-        conn.execute("UPDATE publication SET mode = 'off' WHERE id = %s", (pub_id,))
+        conn.execute("UPDATE content_item SET status = 'needs_review' WHERE id = %s", (row[0],))
+    with pytest.raises(errors.CheckViolation), conn.transaction():
+        conn.execute(
+            "INSERT INTO media_asset (content_item_id, kind, storage_url, checksum,"
+            " quality_status) VALUES (%s, 'image', 's3://x', 'abc', 'needs_review')",
+            (row[0],),
+        )
+
+
+def test_quality_status_defaults_to_failed(conn: psycopg.Connection) -> None:
+    # fail-closed: 게이트가 passed를 쓰기 전까지 발행에 진입하지 못한다.
+    pub_id = _seed_publication(conn)
+    row = conn.execute(
+        "SELECT content_item_id FROM publication WHERE id = %s", (pub_id,)
+    ).fetchone()
+    assert row is not None
+    asset = conn.execute(
+        "INSERT INTO media_asset (content_item_id, kind, storage_url, checksum)"
+        " VALUES (%s, 'image', 's3://x', 'abc') RETURNING quality_status",
+        (row[0],),
+    ).fetchone()
+    conn.commit()
+    assert asset is not None
+    assert asset[0] == "failed"
 
 
 def test_duplicate_external_post_per_channel_rejected(conn: psycopg.Connection) -> None:
-    # 002 부분 유니크 인덱스: 같은 채널에 같은 외부 게시물 id 이중 등록 차단(수동 멱등의 물리 강제).
+    # 002 부분 유니크 인덱스는 003 이후에도 남는다 — 같은 채널에 같은 외부 게시물
+    # id가 두 번 기록되는 것을 막는 방어는 기계 발행에도 유효하다.
     pub_id = _seed_publication(conn)
     conn.execute("UPDATE publication SET external_post_id = 'ext-dup' WHERE id = %s", (pub_id,))
     conn.commit()

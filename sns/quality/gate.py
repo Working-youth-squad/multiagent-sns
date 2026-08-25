@@ -5,8 +5,8 @@
 (FR-Q4) — 같은 자산·같은 기준 → 같은 판정(결정론 재검사).
 
 `QualityReport`는 media_asset의 `quality_status`(passed/failed) + `quality_report`
-(jsonb)에 그대로 실린다(FR-Q2). needs_review는 hybrid 사람 관문(FR-Q3)의 몫이라
-자동 게이트는 passed/failed만 낸다.
+(jsonb)에 그대로 실린다(FR-Q2). 사람 승인 관문이 없으므로 이 판정이 발행 가부의
+유일한 관문이다 — 게이트가 passed를 내기 전에는 어떤 자산도 발행에 진입하지 않는다.
 
 FR-A2의 해상도<1080×1920·음소거·안전영역 검사 중 음소거/영상 해상도는 영상(C4)
 소관이라 여기선 카드에 해당하는 항목만 — 해상도 하한·안전영역(overflow)·직전 N건
@@ -19,7 +19,7 @@ from typing import Literal
 from sns.render.card.renderer import CardRender
 from sns.render.card.spec import CardSpec
 
-QualityStatus = Literal["passed", "failed", "needs_review"]
+QualityStatus = Literal["passed", "failed"]
 
 # ── 임계값 (FR-Q4: 코드 상수로 외부화, 프롬프트 아님) ──────────────────
 # WCAG AA 본문 대비 하한.

@@ -25,20 +25,19 @@ _MUTABLE_TABLES = (
 )
 
 # channel~publication FK 체인 + (선택) media_asset을 한 번에 만들고 publication id 반환.
-# content_item.status는 명시 세팅(테이블 기본 'draft' 의존 금지) — 러너의 hybrid
-# 콘텐츠 승인 관문(FR-Q3)이 이 값을 보므로, 기본값 'approved'로 대부분 테스트가
-# 승인 완료 상태를 가정하게 하고 그 관문 자체를 검증하는 테스트만 오버라이드한다.
+# content_item.status는 명시 'approved'로 세팅(테이블 기본 'draft' 의존 금지).
+# channel_status는 러너가 발행 중지 채널을 거르는 조건이라 테스트가 오버라이드한다.
 _SEED_WITH_MEDIA = """
 WITH ch AS (
-    INSERT INTO channel (platform, handle, mode)
-    VALUES (%(platform)s, %(handle)s, %(mode)s) RETURNING id
+    INSERT INTO channel (platform, handle, status)
+    VALUES (%(platform)s, %(handle)s, %(channel_status)s) RETURNING id
 ), cy AS (
     INSERT INTO cycle (goal_ref) VALUES ('test-goal') RETURNING id
 ), tp AS (
     INSERT INTO topic (title) VALUES ('test-topic') RETURNING id
 ), ci AS (
     INSERT INTO content_item (cycle_id, topic_id, format, body, status)
-    SELECT cy.id, tp.id, %(fmt)s, %(body)s, %(content_status)s FROM cy, tp RETURNING id
+    SELECT cy.id, tp.id, %(fmt)s, %(body)s, 'approved' FROM cy, tp RETURNING id
 ), ma AS (
     INSERT INTO media_asset (content_item_id, kind, storage_url, checksum, quality_status)
     SELECT ci.id, %(kind)s, %(storage_url)s, %(checksum)s, %(qstatus)s FROM ci RETURNING id
@@ -50,15 +49,15 @@ SELECT ci.id, ch.id FROM ci, ch RETURNING id
 # media_asset 없이 발행 건만 (러너 no_media 경로).
 _SEED_NO_MEDIA = """
 WITH ch AS (
-    INSERT INTO channel (platform, handle, mode)
-    VALUES (%(platform)s, %(handle)s, %(mode)s) RETURNING id
+    INSERT INTO channel (platform, handle, status)
+    VALUES (%(platform)s, %(handle)s, %(channel_status)s) RETURNING id
 ), cy AS (
     INSERT INTO cycle (goal_ref) VALUES ('test-goal') RETURNING id
 ), tp AS (
     INSERT INTO topic (title) VALUES ('test-topic') RETURNING id
 ), ci AS (
     INSERT INTO content_item (cycle_id, topic_id, format, body, status)
-    SELECT cy.id, tp.id, %(fmt)s, %(body)s, %(content_status)s FROM cy, tp RETURNING id
+    SELECT cy.id, tp.id, %(fmt)s, %(body)s, 'approved' FROM cy, tp RETURNING id
 )
 INSERT INTO publication (content_item_id, channel_id)
 SELECT ci.id, ch.id FROM ci, ch RETURNING id
@@ -120,12 +119,11 @@ def seed(db: psycopg.Connection) -> SeedFn:
         platform: str = "instagram",
         checksum: str = "chk-seed",
         with_media: bool = True,
-        mode: str = "auto",
-        content_status: str = "approved",
+        channel_status: str = "active",
     ) -> str:
         params = {
             "platform": platform,
-            "mode": mode,
+            "channel_status": channel_status,
             "handle": f"h-{uuid.uuid4().hex[:8]}",
             "fmt": fmt,
             "body": body,
@@ -133,7 +131,6 @@ def seed(db: psycopg.Connection) -> SeedFn:
             "storage_url": f"mem://{checksum}",
             "checksum": checksum,
             "qstatus": quality_status,
-            "content_status": content_status,
         }
         sql = _SEED_WITH_MEDIA if with_media else _SEED_NO_MEDIA
         row = db.execute(sql, params).fetchone()

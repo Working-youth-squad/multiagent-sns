@@ -100,8 +100,7 @@ def ensure_channel(conn: psycopg.Connection, *, handle: str) -> str:
     row = conn.execute("SELECT id FROM channel WHERE handle = %s", (handle,)).fetchone()
     if row is None:
         row = conn.execute(
-            "INSERT INTO channel (platform, handle, mode) "
-            "VALUES ('youtube', %s, 'auto') RETURNING id",
+            "INSERT INTO channel (platform, handle) VALUES ('youtube', %s) RETURNING id",
             (handle,),
         ).fetchone()
     assert row is not None
@@ -237,14 +236,7 @@ def main() -> int:
     result = run_cycle(
         store,
         goal_ref="engagement_depth",
-        targets=[
-            CycleTarget(
-                channel_id=channel_id,
-                platform="youtube",
-                content_format="shorts",
-                mode="auto",
-            )
-        ],
+        targets=[CycleTarget(channel_id=channel_id, platform="youtube", content_format="shorts")],
         model=make_model(),
         research_trends=trends,
         read_stats=FakeReadStats(),

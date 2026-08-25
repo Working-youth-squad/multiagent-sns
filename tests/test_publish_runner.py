@@ -51,35 +51,16 @@ def test_quality_failed_skips_without_publishing(db: psycopg.Connection, seed: S
     assert _event_kinds(db) == ["notice"]
 
 
-def test_needs_review_stays_pending_for_human_approval(
-    db: psycopg.Connection, seed: SeedFn
-) -> None:
-    # needs_review는 hybrid 사람 관문(FR-Q3) 대기 — 자동 발행 진입은 막되 skipped로
-    # 종결하지 않는다(그러면 승인돼도 재선택 안 돼 영영 발행 안 됨).
-    pub_id = seed(quality_status="needs_review")
+def test_ungated_asset_is_fail_closed(db: psycopg.Connection, seed: SeedFn) -> None:
+    # 게이트 미판정 자산은 기본값 failed로 남아 발행에 진입하지 못한다 —
+    # 되살릴 사람 승인 경로가 없으므로 그 자리에서 skipped로 종결한다.
+    pub_id = seed(quality_status="failed")
     publish = FakePublish()
     results = run_pending_publications(db, publish)
 
-    assert _only(results, pub_id).outcome == "awaiting_review"
+    assert _only(results, pub_id).outcome == "skipped"
     assert publish.calls == []
-    assert _status(db, pub_id) == "pending"  # skipped 아님 — 승인 대기
-
-
-def test_needs_review_then_approved_publishes(db: psycopg.Connection, seed: SeedFn) -> None:
-    # 사람이 승인해 quality_status가 passed로 바뀌면 다음 구동에서 실제 발행된다.
-    pub_id = seed(quality_status="needs_review")
-    publish = FakePublish()
-    run_pending_publications(db, publish)
-    assert _status(db, pub_id) == "pending"
-
-    db.execute(
-        "UPDATE media_asset SET quality_status = 'passed' WHERE quality_status = 'needs_review'"
-    )
-    results = run_pending_publications(db, publish)
-
-    assert _only(results, pub_id).outcome == "published"
-    assert publish.calls == [pub_id]
-    assert _status(db, pub_id) == "published"
+    assert _status(db, pub_id) == "skipped"
 
 
 def test_no_matching_media_stays_pending(db: psycopg.Connection, seed: SeedFn) -> None:
@@ -174,73 +155,19 @@ class _SelectiveFail:
         return PublishResult(post_id=f"post-{idempotency_key[:6]}")
 
 
-def test_manual_channel_never_machine_published(db: psycopg.Connection, seed: SeedFn) -> None:
-    # 발행 모드 3분류: manual(수동) 채널의 발행 건은 기계 발행 경로에 절대 들어가지
-    # 않는다 — 사람이 직접 발행하고 sns.publish.manual로 등록만 한다(FR-E5).
-    pub_id = seed(quality_status="passed", mode="manual")
+def test_paused_channel_not_selected(db: psycopg.Connection, seed: SeedFn) -> None:
+    # 발행 중지는 channel.status로만 표현한다(구 mode='off'의 자리) — 대기 건이
+    # 있어도 기계 발행하지 않고, 채널을 다시 active로 돌리면 발행된다.
+    pub_id = seed(quality_status="passed", channel_status="paused")
     publish = FakePublish()
-    results = run_pending_publications(db, publish)
 
-    assert [r for r in results if r.publication_id == pub_id] == []
+    assert [r for r in run_pending_publications(db, publish) if r.publication_id == pub_id] == []
     assert publish.calls == []
     assert _status(db, pub_id) == "pending"
 
-
-def test_off_channel_not_selected(db: psycopg.Connection, seed: SeedFn) -> None:
-    # off = 발행 중지. 대기 건이 있어도 기계 발행하지 않는다.
-    pub_id = seed(quality_status="passed", mode="off")
-    results = run_pending_publications(db, FakePublish())
-    assert [r for r in results if r.publication_id == pub_id] == []
-    assert _status(db, pub_id) == "pending"
-
-
-def test_publish_event_records_mode(db: psycopg.Connection, seed: SeedFn) -> None:
-    # 증빙: publish_attempted 이벤트에 발행 모드가 남는다.
-    seed(quality_status="passed", mode="hybrid")
-    run_pending_publications(db, FakePublish())
-    row = db.execute(
-        "SELECT payload->>'mode' FROM run_event WHERE kind = 'publish_attempted'"
-    ).fetchone()
-    assert row is not None and row[0] == "hybrid"
-
-
-def test_hybrid_not_approved_stays_pending_even_when_quality_passed(
-    db: psycopg.Connection, seed: SeedFn
-) -> None:
-    # FR-Q3/C9: 품질 게이트가 passed를 내려도 hybrid는 content_item 승인이 없으면
-    # 발행 진입하지 않는다 — 승인 UI 없이 자동 발행되는 구멍을 막는다.
-    pub_id = seed(quality_status="passed", mode="hybrid", content_status="needs_review")
-    publish = FakePublish()
-    results = run_pending_publications(db, publish)
-
-    r = _only(results, pub_id)
-    assert r.outcome == "awaiting_review"
-    assert publish.calls == []
-    assert _status(db, pub_id) == "pending"
-
-
-def test_hybrid_approved_and_quality_passed_publishes(db: psycopg.Connection, seed: SeedFn) -> None:
-    pub_id = seed(quality_status="passed", mode="hybrid", content_status="approved")
-    publish = FakePublish()
-    results = run_pending_publications(db, publish)
-
-    assert _only(results, pub_id).outcome == "published"
-    assert publish.calls == [pub_id]
+    db.execute("UPDATE channel SET status = 'active'")
+    assert _only(run_pending_publications(db, publish), pub_id).outcome == "published"
     assert _status(db, pub_id) == "published"
-
-
-def test_hybrid_rejected_content_skips_regardless_of_quality(
-    db: psycopg.Connection, seed: SeedFn
-) -> None:
-    # 사람 반려([sns.web.approve])는 미디어 품질과 무관하게 즉시 종결한다.
-    pub_id = seed(quality_status="passed", mode="hybrid", content_status="rejected")
-    publish = FakePublish()
-    results = run_pending_publications(db, publish)
-
-    r = _only(results, pub_id)
-    assert r.outcome == "skipped"
-    assert publish.calls == []
-    assert _status(db, pub_id) == "skipped"
 
 
 def test_channel_isolation(db: psycopg.Connection, seed: SeedFn) -> None:
