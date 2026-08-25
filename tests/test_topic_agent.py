@@ -10,8 +10,8 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 
-from sns.agents.topic import TopicSelectionError, run_topic
-from sns.tools.fakes import FakeReadStats, FakeResearchTrends
+from sns.agents.topic import TopicSelectionError, _match_recent, run_topic
+from sns.tools.fakes import DEFAULT_SOURCES, FakeReadStats, FakeResearchTrends
 
 
 class ScriptedChatModel(GenericFakeChatModel):
@@ -117,3 +117,70 @@ def test_read_tools_do_not_error() -> None:
     ]
     result = _run(script)
     assert result.category == "개발자유머"
+
+
+# ── 발행 이력 중복 차단 ───────────────────────────────────────────
+#
+# 실제로 어제와 오늘 같은 영상이 나갔다. GitHub 트렌딩은 같은 저장소를 며칠씩 노출하는데
+# 주제 선정이 과거 발행 이력을 안 봤고, temperature=0이라 같은 입력 → 같은 대본이었다.
+# 프롬프트로 "겹치지 마라" 부탁하는 대신 **후보 목록에서 코드가 빼버린다**(통제=코드).
+
+
+def _run_excluding(script: list[AIMessage], exclude: Sequence[str]) -> Any:
+    return run_topic(
+        ScriptedChatModel(messages=iter(script)),
+        platform="youtube",
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        exclude_titles=exclude,
+    )
+
+
+def test_recent_topic_is_removed_from_candidates() -> None:
+    """제외된 주제가 빠지면 그 뒤 후보들의 index가 앞으로 당겨진다."""
+    result = _run_excluding(_choose(0, "꿀팁"), ["google_trends-topic-1"])
+    assert result.title == "google_trends-topic-2"
+
+
+def test_near_duplicate_is_also_removed() -> None:
+    """어제 'cursor/plugins'를 올렸으면 오늘 'Cursor plugins'도 같은 주제다."""
+    assert _match_recent("cursor/plugins", ("Cursor plugins",))
+    assert _match_recent("Cursor Plugins 모음", ("cursor/plugins",))
+
+
+def test_unrelated_topic_survives() -> None:
+    """조금 겹친다고 다 막으면 후보가 말라붙는다."""
+    assert not _match_recent("cursor/plugins", ("vercel/next.js",))
+    assert not _match_recent("파이썬 리스트 성능", ("파이썬 데코레이터 입문",))
+
+
+def test_agent_never_sees_excluded_candidates() -> None:
+    """프롬프트 부탁이 아니라 목록에서 사라져야 한다 — 보이면 언젠가 고른다."""
+    seen: list[str] = []
+
+    class Recording(ScriptedChatModel):
+        def bind_tools(self, tools: Sequence[Any], **kwargs: Any) -> Any:
+            for tool in tools:
+                if getattr(tool, "name", "") == "read_trends":
+                    seen.append(tool.invoke({}))
+            return self
+
+    run_topic(
+        Recording(messages=iter(_choose(0, "꿀팁"))),
+        platform="youtube",
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        exclude_titles=["google_trends-topic-1"],
+    )
+    assert seen and "google_trends-topic-1" not in seen[0]
+
+
+def test_all_candidates_excluded_fails_loudly() -> None:
+    """새 주제가 없으면 같은 걸 또 내보내느니 사이클을 실패시킨다."""
+    everything = [f"{s}-topic-{i}" for s in DEFAULT_SOURCES for i in range(1, 4)]
+    with pytest.raises(TopicSelectionError, match="최근 발행"):
+        _run_excluding(_choose(0, "꿀팁"), everything)
+
+
+def test_no_exclusions_behaves_as_before() -> None:
+    assert _run_excluding(_choose(0, "꿀팁"), []).title == "google_trends-topic-1"

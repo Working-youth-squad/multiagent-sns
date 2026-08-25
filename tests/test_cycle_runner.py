@@ -253,3 +253,199 @@ def test_deterministic_replay() -> None:
     a = _run(_topic_script() + _content_script(), [_target()])[1]
     b = _run(_topic_script() + _content_script(), [_target()])[1]
     assert a == b
+
+
+# ── 주제 이미지 해소 seam ─────────────────────────────────────────
+
+
+_VIDEO_SPEC: dict[str, object] = {
+    "topic": "주제 한 줄",
+    "slides": [{"subtitle": "부제", "narration": "한 문장.", "image_query": "server room"}],
+}
+
+
+def _resolving(spec: Mapping[str, object]) -> Any:
+    """image_query를 해소한 척하는 가짜 — 출처·촬영자를 spec에 남긴다."""
+    from sns.render.images.resolve import ImageResolution
+
+    slides = [
+        {
+            **s,
+            "image_ref": "mem://image/abc.png",
+            "image_source": "https://www.pexels.com/photo/42/",
+            "image_credit": "Christina Morillo",
+        }
+        for s in spec["slides"]  # type: ignore[union-attr]
+    ]
+    return ImageResolution({**spec, "slides": slides}, ("slides[9]: 후보 없음",))
+
+
+def _run_video(resolve: Any) -> Any:
+    store = InMemoryCycleStore()
+    run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target(fmt="shorts")],
+        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(_VIDEO_SPEC))),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+        resolve_media_spec=resolve,
+    )
+    return store
+
+
+def test_resolved_spec_is_what_gets_saved() -> None:
+    """해소 전 spec을 저장하면 렌더가 사진 없이 돌고 원장도 사실과 어긋난다."""
+    store = _run_video(_resolving)
+    (item,) = store.content_items.values()
+    slides = item["media_spec"]["slides"]
+    assert slides[0]["image_ref"] == "mem://image/abc.png"
+
+
+def test_credit_line_lands_in_the_body() -> None:
+    """Pexels API 가이드라인이 요구하는 출처 표기 — 캡션에 붙어 원장에 남아야 한다."""
+    store = _run_video(_resolving)
+    (item,) = store.content_items.values()
+    assert "Christina Morillo" in item["body"]
+    assert "https://www.pexels.com/photo/42/" in item["body"]
+
+
+def test_resolution_notes_are_logged() -> None:
+    """사진이 안 붙은 이유를 조용히 삼키면 나중에 물어볼 수 없다."""
+    store = _run_video(_resolving)
+    notices = [e for e in store.events if e["kind"] == "notice"]
+    assert any("후보 없음" in json.dumps(e["payload"], ensure_ascii=False) for e in notices)
+
+
+def test_without_resolver_spec_and_body_pass_through() -> None:
+    """seam 미배선이 기본값 — 이미지 트랙 없이도 사이클은 그대로 돈다."""
+    store = _run_video(None)
+    (item,) = store.content_items.values()
+    assert "image_ref" not in item["media_spec"]["slides"][0]
+    assert "Pexels" not in item["body"]
+
+
+# ── 주제 중복 차단 배선 ───────────────────────────────────────────
+
+
+def test_recent_topics_are_excluded_from_the_next_cycle() -> None:
+    """어제 쓴 주제가 오늘 후보에서 빠져야 한다 — 실제로 같은 영상이 두 번 나갔다."""
+    store = InMemoryCycleStore()
+    store.save_topic(title="google_trends-topic-1", summary="어제 쓴 주제", source="google_trends")
+    run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target()],
+        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script())),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+    )
+    used = [t["title"] for t in store.topics.values()]
+    assert used == ["google_trends-topic-1", "google_trends-topic-2"], used
+
+
+# ── FR-Q7 안전 검열 배선 ──────────────────────────────────────────
+
+
+def _spec_with(topic: str = "정상 주제") -> dict[str, object]:
+    return {"topic": topic, "slides": [{"subtitle": "부제", "narration": "한 문장."}]}
+
+
+def _run_shorts(spec: dict[str, object], *, body: str = "본문", mode: str = "auto") -> Any:
+    store = InMemoryCycleStore()
+    run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target(mode=mode, fmt="shorts")],
+        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(spec, body=body))),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+    )
+    return store
+
+
+def test_clean_content_still_auto_approves() -> None:
+    (item,) = _run_shorts(_spec_with()).content_items.values()
+    assert item["status"] == "approved"
+
+
+def test_blocked_material_forces_human_review() -> None:
+    """auto 채널이어도 금지 소재가 있으면 자동 승인하지 않는다(FR-Q7: 발행 차단)."""
+    (item,) = _run_shorts(_spec_with("대통령 연설 분석")).content_items.values()
+    assert item["status"] == "needs_review"
+
+
+def test_blocked_content_is_never_rendered() -> None:
+    """관문이 렌더 앞에 있다 — 막힐 콘텐츠에 TTS·이미지 비용을 쓰지 않는다."""
+    store = _run_shorts(_spec_with("대통령 연설 분석"))
+    assert store.media_assets == {}
+    assert store.publications == {}
+
+
+def test_blocked_material_in_the_caption_too() -> None:
+    """자막만 보면 뚫린다 — 캡션도 그대로 발행된다."""
+    store = _run_shorts(_spec_with(), body="크랙 받는 법 알려드립니다")
+    (item,) = store.content_items.values()
+    assert item["status"] == "needs_review"
+
+
+def test_findings_are_logged_with_location() -> None:
+    """왜 막혔는지 남지 않으면 사람이 승인 화면에서 판단할 수 없다."""
+    store = _run_shorts(_spec_with("대통령 연설 분석"))
+    notices = [e for e in store.events if e["kind"] == "notice"]
+    blob = json.dumps(notices, ensure_ascii=False)
+    assert "publish" in blob and "political" in blob and "topic" in blob
+
+
+# ── FR-A2 근접중복 배선 ───────────────────────────────────────────
+
+
+def test_near_duplicate_of_recent_content_is_blocked() -> None:
+    """어제 낸 대본을 살짝 바꿔 다시 낸 것 — 실제로 일어난 사고다."""
+    store = InMemoryCycleStore()
+    yesterday = _spec_with()
+    store.save_content_item(
+        cycle_id="c0", topic_id="t0", content_format="shorts",
+        body="본문", media_spec=yesterday, hook_pattern="curiosity", status="approved",
+    )  # fmt: skip
+    run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target(fmt="shorts")],
+        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(_spec_with()))),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+    )
+    blob = json.dumps(store.events, ensure_ascii=False)
+    assert "근접중복" in blob
+    assert store.media_assets == {}, "중복인데 렌더까지 했다"
+
+
+def test_different_content_passes_the_similarity_gate() -> None:
+    store = InMemoryCycleStore()
+    store.save_content_item(
+        cycle_id="c0", topic_id="t0", content_format="shorts",
+        body="본문",
+        media_spec={"topic": "ORM 쿼리 폭발", "slides": [
+            {"subtitle": "함정", "narration": "반복문마다 쿼리가 나갑니다."}]},
+        hook_pattern="curiosity", status="approved",
+    )  # fmt: skip
+    run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target(fmt="shorts")],
+        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(_spec_with()))),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+    )
+    assert len(store.media_assets) == 1

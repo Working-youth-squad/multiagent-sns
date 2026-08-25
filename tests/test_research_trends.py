@@ -94,12 +94,17 @@ def test_default_service_isolates_unimplemented_sources() -> None:
 
 def test_default_service_only_unauthed_without_keys() -> None:
     svc = default_service(env={})
-    assert set(svc._fetchers) == {"google_trends", "github_trending"}
+    assert set(svc.sources) == {
+        "google_trends",
+        "github_trending",
+        "hacker_news",
+        "lobsters",
+    }
 
 
 def test_default_service_registers_naver_pair_with_both_creds() -> None:
     svc = default_service(env={ENV_NAVER_CLIENT_ID: "i", ENV_NAVER_CLIENT_SECRET: "s"})
-    assert {"naver_search", "naver_datalab"} <= set(svc._fetchers)
+    assert {"naver_search", "naver_datalab"} <= set(svc.sources)
 
 
 def test_default_service_naver_needs_both_halves() -> None:

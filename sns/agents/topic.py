@@ -12,6 +12,7 @@
 """
 
 import json
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, get_args
@@ -59,19 +60,57 @@ class TopicResult:
     reason: str  # 선택 근거(관측·디버깅용)
 
 
+# 포함 관계로 같은 주제를 판정할 때 요구하는 최소 토큰 수. 한 단어짜리("python")가
+# 다른 제목을 통째로 삼키는 걸 막는다.
+MIN_SHARED_TOKENS = 2
+
+
 class TopicSelectionError(RuntimeError):
     """에이전트가 유효한 주제를 확정하지 못함 — 재시도 없이 즉시 실패."""
 
 
-def _candidates(digest_sources: Sequence[SourceResult]) -> tuple[TopicCandidate, ...]:
-    """트렌드 다이제스트의 성공 소스 아이템을 중복 제거해 인덱스 부여."""
+def _tokens(text: str) -> frozenset[str]:
+    """비교용 토큰 — 소문자, 구분자 제거. 'cursor/plugins'와 'Cursor plugins'가 같아진다."""
+    return frozenset(t for t in re.split(r"[^0-9a-z가-힣]+", text.lower()) if t)
+
+
+def _match_recent(candidate: str, recent: Sequence[str]) -> bool:
+    """최근 발행 주제와 사실상 같은가 — **같은 말이거나 한쪽이 다른 쪽을 통째로 포함**.
+
+    처음엔 자카드 유사도 임계값(0.6)을 썼는데 오히려 멀쩡한 후보를 죽였다. 짧고 정형화된
+    제목은 토큰을 대부분 공유하기 때문이다 — "python 3.13 릴리스"와 "python 3.14 릴리스"가
+    0.75로 같은 주제 취급됐다. 후보가 조용히 말라붙는 건 중복 발행보다 나쁘다(안 보인다).
+
+    포함 관계는 규칙이 분명하다: 'cursor/plugins' ⊆ 'Cursor plugins 모음'은 같은 주제고,
+    'topic-1'과 'topic-2'는 서로를 포함하지 않으니 다른 주제다.
+    """
+    tokens = _tokens(candidate)
+    if len(tokens) < MIN_SHARED_TOKENS:
+        return False
+    for title in recent:
+        other = _tokens(title)
+        if len(other) < MIN_SHARED_TOKENS:
+            continue
+        if tokens <= other or other <= tokens:
+            return True
+    return False
+
+
+def _candidates(
+    digest_sources: Sequence[SourceResult], exclude_titles: Sequence[str] = ()
+) -> tuple[TopicCandidate, ...]:
+    """트렌드 다이제스트의 성공 소스 아이템을 중복 제거해 인덱스 부여.
+
+    최근 발행한 주제는 **에이전트에게 보여주기 전에** 뺀다. 프롬프트로 "겹치지 마라"
+    부탁하는 방식이 아니다 — 목록에 있으면 언젠가 고른다(통제=코드, 판단=LLM).
+    """
     seen: set[str] = set()
     out: list[TopicCandidate] = []
     for sr in digest_sources:
         if not sr.ok:
             continue
         for item in sr.items:
-            if item in seen:
+            if item in seen or _match_recent(item, exclude_titles):
                 continue
             seen.add(item)
             out.append(TopicCandidate(index=len(out), text=item, source=sr.source))
@@ -85,12 +124,22 @@ def run_topic(
     research_trends: ResearchTrends,
     read_stats: ReadStats,
     limit: int = 10,
+    exclude_titles: Sequence[str] = (),
 ) -> TopicResult:
-    """트렌드 근거 + 과거 성과로 주제 1건을 선택. 유효 선택만 반환."""
+    """트렌드 근거 + 과거 성과로 주제 1건을 선택. 유효 선택만 반환.
+
+    `exclude_titles`는 최근 발행한 주제다. 트렌드 소스는 같은 항목을 며칠씩 노출하므로
+    이걸 안 빼면 어제와 같은 영상이 나간다(실제로 그랬다).
+    """
     digest = research_trends(limit=limit)
-    candidates = _candidates(digest.source_results)
+    candidates = _candidates(digest.source_results, exclude_titles)
     if not candidates:
         # 모든 소스 실패 = 콜드 스타트 주제 경로 없음. 조용히 지어내지 않고 실패.
+        if _candidates(digest.source_results):
+            raise TopicSelectionError(
+                "남은 후보 0건 — 트렌드 후보가 전부 최근 발행 주제와 겹친다. "
+                "같은 주제를 또 내보내느니 이 사이클을 실패시킨다."
+            )
         raise TopicSelectionError("트렌드 후보가 0건 — 모든 소스 실패로 주제 발굴 불가")
 
     chosen: dict[str, object] = {}

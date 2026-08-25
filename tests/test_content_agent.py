@@ -30,7 +30,16 @@ _CARD_SPEC = {
     "footer": "팔로우",
 }
 _VIDEO_SPEC = {
-    "slides": [{"title": "walrus", "body": "한 줄 대입", "narration": "왈러스 연산자입니다"}]
+    "topic": "왈러스 연산자",
+    "slides": [
+        {
+            "subtitle": "한 줄 대입",
+            "narration": "왈러스 연산자입니다.",
+            "code": "if (n := len(xs)) > 3:\n    warn(n)",
+            "lang": "python",
+            "focus_lines": [1],
+        }
+    ],
 }
 
 

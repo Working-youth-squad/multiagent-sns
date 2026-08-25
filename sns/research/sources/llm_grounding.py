@@ -8,7 +8,7 @@ import json
 import urllib.parse
 import urllib.request
 
-from sns.research.sources._http import DEFAULT_OPENER, MAX_RESPONSE_BYTES, Opener
+from sns.net.http import DEFAULT_OPENER, MAX_RESPONSE_BYTES, Opener
 
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"

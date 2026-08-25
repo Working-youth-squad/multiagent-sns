@@ -19,6 +19,18 @@ FONT_CANDIDATES: tuple[tuple[str, str], ...] = (
 )
 
 
+# 코드 렌더용 고정폭 후보. 한글 글리프가 없는 폰트(Cascadia·Consolas)가 섞여 있으므로
+# 한글은 위 FONT_CANDIDATES로 폴백해 그린다([sns.render.code_image.display_runs]).
+# Noto Sans Mono CJK처럼 한글까지 있는 폰트여도 같은 경로로 동작한다.
+MONO_CANDIDATES: tuple[tuple[str, str], ...] = (
+    ("/usr/share/fonts/opentype/noto/NotoSansMonoCJKkr-Regular.otf", "Noto Sans Mono CJK KR"),
+    ("/usr/share/fonts/truetype/jetbrains-mono/JetBrainsMono-Regular.ttf", "JetBrains Mono"),
+    ("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf", "DejaVu Sans Mono"),
+    (r"C:\Windows\Fonts\CascadiaMono.ttf", "Cascadia Mono"),
+    (r"C:\Windows\Fonts\consola.ttf", "Consolas"),
+)
+
+
 class FontNotFoundError(RuntimeError):
     """한글 렌더 가능한 폰트를 못 찾음 — 두부(□) 렌더로 이어지지 않도록 명시적 실패."""
 

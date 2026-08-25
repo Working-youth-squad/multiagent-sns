@@ -25,27 +25,31 @@ OUT_DIR = Path(__file__).parent / "out"
 SECRETS = Path(__file__).parent.parent / ".secrets"
 
 MEDIA_SPEC: dict[str, object] = {
+    "topic": "SNS 엔진이 영상을 만든다",
     "slides": [
         {
-            "title": "멀티에이전트가 SNS를 키운다면?",
-            "body": "사람 손 없이 굴러가는 성장 엔진",
+            "subtitle": "사람 손이 안 닿습니다",
             "narration": "멀티에이전트가 SNS 계정을 직접 키운다면 어떨까요?",
         },
         {
-            "title": "영상도 코드로 만든다",
-            "body": "자막 · 슬라이드 · TTS 합성",
+            "subtitle": "영상도 코드로",
             "narration": "이 영상도 사람이 편집한 게 아니라 코드가 합성했습니다.",
+            "code": "spec = parse_video_spec(media_spec)\nmp4 = render_video(spec)",
+            "lang": "python",
+            "focus_lines": [2],
         },
         {
-            "title": "업로드까지 전자동",
-            "body": "품질 게이트를 통과해야 발행",
+            "subtitle": "게이트를 통과해야 발행",
             "narration": "품질 검사를 통과한 영상만 자동으로 업로드됩니다.",
+            "code": "report = check_video(mp4)\nif not report.passed:\n    raise QualityGateFailed",
+            "lang": "python",
+            "focus_lines": [2, 3],
         },
     ],
 }
 CAPTION = (
-    "멀티에이전트 SNS 엔진 — 개선된 템플릿 쇼츠\n"
-    "그라데이션·타이포 계층·Ken Burns 모션·진행바가 적용된 자동 생성 파이프라인 테스트입니다."
+    "멀티에이전트 SNS 엔진 — 3단 레이아웃 쇼츠\n"
+    "주제 고정 · 컷별 코드 초점 · 진행바가 적용된 자동 생성 파이프라인 테스트입니다."
 )
 
 
@@ -60,6 +64,9 @@ class DirMediaStore:
         path = self.root / f"{kind}-{checksum[:16]}.{ext}"
         path.write_bytes(data)
         return str(path)
+
+    def get(self, url: str) -> bytes:
+        return Path(url).read_bytes()
 
 
 def main() -> None:

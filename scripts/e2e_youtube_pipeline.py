@@ -3,7 +3,9 @@
 기존 `e2e_youtube_shorts.py`와 다른 점: 대본이 **하드코딩이 아니라 에이전트 산출물**이다.
 실 트렌드 → 실 Gemini(주제·대본) → 실 TTS 영상 → 실 품질 게이트 → 실 업로드까지 간다.
 
-Postgres는 필요 없다 — `InMemoryCycleStore`로 사이클을 돌린다(원장 영속은 e2e_cycle.py가 검증).
+**원장(Postgres)이 기본이다.** 예전엔 InMemoryCycleStore로 돌렸는데, 그러면 매 실행이
+기억을 잃어 주제 중복 차단이 동작하지 않는다 — 실제로 2026-08-20/21 이틀 연속 같은
+Cursor 영상이 나갔다. --store memory로 끌 수 있지만 그때는 경고를 찍는다.
 
 전제:
   1. env GEMINI_API_KEY          — aistudio.google.com/apikey
@@ -30,6 +32,7 @@ import sys
 from collections.abc import Mapping
 from pathlib import Path
 
+import psycopg
 from dotenv import load_dotenv
 
 from sns.adapters.youtube.auth import build_youtube, load_credentials
@@ -38,12 +41,13 @@ from sns.agents.models import make_model
 from sns.publish.state_machine import run_publish
 from sns.publish.stores import InMemoryPublishAttemptStore
 from sns.quality.gate import QualityCheck, QualityReport
+from sns.render.images.resolve import resolve_images
 from sns.render.video.media import VideoRenderMedia
 from sns.render.video.quality import check_video
 from sns.render.video.tts import synthesize_google
 from sns.research.trends import default_service
 from sns.runner.cycle import AssessQuality, CycleTarget, run_cycle
-from sns.runner.store import InMemoryCycleStore
+from sns.runner.store import CycleStore, InMemoryCycleStore, PgCycleStore
 from sns.tools.contracts import ContentFormat, MediaAsset, MediaKind
 from sns.tools.fakes import FakeReadStats
 
@@ -68,6 +72,9 @@ class DirMediaStore:
         path.write_bytes(data)
         return str(path)
 
+    def get(self, url: str) -> bytes:
+        return Path(url).read_bytes()
+
 
 def make_gate(ffprobe: str, ffmpeg: str) -> AssessQuality:
     """영상 품질 게이트를 AssessQuality 형태로 조립."""
@@ -82,6 +89,23 @@ def make_gate(ffprobe: str, ffmpeg: str) -> AssessQuality:
         return QualityReport(status="passed" if report.passed else "failed", checks=checks)
 
     return assess
+
+
+def ensure_channel(conn: psycopg.Connection, *, handle: str) -> str:
+    """유튜브 채널 행 1개 확보(있으면 재사용) — publication의 FK 대상.
+
+    인메모리 저장소는 channel_id로 아무 문자열이나 받았지만 원장은 UUID FK다.
+    저장소를 Postgres로 바꾸면서 드러났다.
+    """
+    row = conn.execute("SELECT id FROM channel WHERE handle = %s", (handle,)).fetchone()
+    if row is None:
+        row = conn.execute(
+            "INSERT INTO channel (platform, handle, mode) "
+            "VALUES ('youtube', %s, 'auto') RETURNING id",
+            (handle,),
+        ).fetchone()
+    assert row is not None
+    return str(row[0])
 
 
 def sidecar(mp4: Path) -> Path:
@@ -162,6 +186,10 @@ def main() -> int:
     parser.add_argument("--file", default=None, help="기존 mp4 업로드 (렌더·에이전트 건너뜀)")
     parser.add_argument("--caption-file", default=None, help="--file과 함께 쓸 캡션 텍스트 파일")
     parser.add_argument("--font", default=None, help="한글 TTF 경로 (미지정 시 자동 탐색)")
+    parser.add_argument(
+        "--store", choices=("pg", "memory"), default="pg",
+        help="원장 저장소. pg(기본)라야 주제 중복 차단이 동작한다",
+    )  # fmt: skip
     args = parser.parse_args()
 
     load_dotenv(ROOT / ".env", override=False)
@@ -179,7 +207,24 @@ def main() -> int:
     renderer = VideoRenderMedia(
         media_store, synthesize=synthesize_google, font_path=args.font, ffmpeg=ffmpeg
     )
-    store = InMemoryCycleStore()
+    conn = None
+    store: CycleStore
+    channel_id = "yt-pipeline-test"  # 인메모리는 임의 문자열이면 된다
+    if args.store == "memory":
+        print("⚠ 원장 없이 실행 — 과거 발행 이력을 못 읽어 **주제 중복 차단이 꺼집니다**")
+        store = InMemoryCycleStore()
+    else:
+        try:
+            conn = psycopg.connect(os.environ["DATABASE_URL"], connect_timeout=10, autocommit=True)
+        except (KeyError, psycopg.OperationalError) as exc:
+            print("중단: 원장(PostgreSQL) 연결 실패 — docker compose up -d postgres")
+            print(f"      {exc}")
+            print("      원장 없이 돌리려면 --store memory (주제 중복 차단이 꺼집니다)")
+            return 1
+        store = PgCycleStore(conn)
+        channel_id = ensure_channel(conn, handle="yt-pipeline-test")
+        recent = store.recent_topic_titles(days=14)
+        print(f"      최근 14일 발행 주제 {len(recent)}건 — 후보에서 제외됩니다")
 
     print("[1/4] 실 트렌드 조회")
     trends = default_service()
@@ -194,7 +239,7 @@ def main() -> int:
         goal_ref="engagement_depth",
         targets=[
             CycleTarget(
-                channel_id="yt-pipeline-test",
+                channel_id=channel_id,
                 platform="youtube",
                 content_format="shorts",
                 mode="auto",
@@ -205,6 +250,9 @@ def main() -> int:
         read_stats=FakeReadStats(),
         render_media=renderer,
         assess_quality=make_gate(ffprobe, ffmpeg),
+        # 사진 해소 seam — PEXELS_API_KEY가 없으면 후보를 못 구해 notice만 남고
+        # 그라데이션/개념 그림으로 간다(영상은 그대로 나온다).
+        resolve_media_spec=lambda spec: resolve_images(spec, store=media_store),
     )
     if result.status != "completed" or not result.prepared:
         print(f"      사이클 실패: status={result.status}")
@@ -217,9 +265,9 @@ def main() -> int:
 
     target = result.prepared[0]
     assert target.content_item_id and target.media_asset_id
-    item = store.content_items[target.content_item_id]
-    asset_row = store.media_assets[target.media_asset_id]
-    topic = store.topics[str(result.topic_id)]
+    item = store.read_content_item(target.content_item_id)
+    asset_row = store.read_media_asset(target.media_asset_id)
+    topic = store.read_topic(str(result.topic_id))
 
     caption = str(item["body"])
     asset = MediaAsset(
@@ -238,10 +286,12 @@ def main() -> int:
     if isinstance(spec, Mapping):
         slides = spec.get("slides")
         if isinstance(slides, list):
+            print(f"      주제      : {spec.get('topic', '')}")
             print(f"      슬라이드  : {len(slides)}장")
             for i, s in enumerate(slides, 1):
                 if isinstance(s, Mapping):
-                    print(f"        {i}. {s.get('title', '')}")
+                    mark = " [코드]" if str(s.get("code", "")).strip() else ""
+                    print(f"        {i}. {s.get('subtitle', '')}{mark}")
     # 캡션을 mp4 옆에 남긴다 — 프로세스가 끝나도 "무엇을 올릴지"를 잃지 않게.
     # (InMemoryCycleStore는 프로세스와 함께 사라진다. 실제로 한 번 잃어봤다.)
     sidecar(mp4).write_text(
