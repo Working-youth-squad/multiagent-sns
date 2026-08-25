@@ -97,5 +97,8 @@ DEVELOPER = Domain(
     ),
     concept_kinds=("emphasis", "compare", "remember", "flow", "steps", "terminal"),
     concept_examples=_CONCEPT_EXAMPLES,
+    # 코드가 1순위다 — 우리가 그린 것이라 저작권·네트워크 리스크가 없고, 개발 콘텐츠의
+    # 핵심 컷이 대개 코드다. 실사 사진이 마지막인 건 추상 개념을 못 그리기 때문.
+    square_sources=("code", "concept", "image", "gradient"),
     square_guidance=_SQUARE_GUIDANCE,
 )

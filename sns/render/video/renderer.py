@@ -125,33 +125,41 @@ def _gradient(width: int, height: int, top: str, bottom: str) -> Image.Image:
 
 def _square(slide: Slide, side: int, spec: VideoSpec, mono_path: str | None,
             font_path: str, fetch_image: FetchImage | None) -> Image.Image:  # fmt: skip
-    """가운데 칸 — 코드 → 개념 그림 → 주제 사진 → 그라데이션 순.
+    """가운데 칸 — **팩이 정한 순서**대로 첫 번째로 채워지는 소스를 쓴다(`spec.square_sources`).
 
-    앞의 셋은 우리가 그리거나 못박은 것이라 저작권·네트워크 리스크가 없다. 실사 사진이
-    마지막인 건 추상 개념을 못 그리기 때문이다 — "list vs set"에 전선 사진이 왔다.
+    개발 도메인의 기본 순서는 코드 → 개념 그림 → 주제 사진 → 그라데이션이다. 앞의 셋은
+    우리가 그리거나 못박은 것이라 저작권·네트워크 리스크가 없고, 실사 사진이 마지막인 건
+    추상 개념을 못 그리기 때문이다 — "list vs set"에 전선 사진이 왔다.
+
+    순서를 팩에서 받는 이유: 코드가 없는 도메인은 그 칸이 아예 없고, 사진이 1순위인
+    도메인도 있을 수 있다. 렌더러가 팩을 직접 알지 않도록 파서가 spec에 실어 보낸다.
     """
-    if slide.code.strip():
-        png = render_code_square(
-            slide.code, lang=slide.lang or None, size=side,
-            focus_lines=slide.focus_lines, mono_path=mono_path, font_path=font_path,
-        )  # fmt: skip
-        return Image.open(io.BytesIO(png)).convert("RGB")
-    if slide.concept is not None:
-        png = render_concept_square(
-            slide.concept, size=side, font_path=font_path, mono_path=mono_path
-        )
-        return Image.open(io.BytesIO(png)).convert("RGB")
-    if slide.image_ref:
-        if fetch_image is None:
-            raise VideoSpecError(
-                f"'image_ref'({slide.image_ref})가 있는데 fetch_image seam이 없음 — "
-                "조용히 그라데이션으로 떨어지지 않는다"
+    for source in spec.square_sources:
+        if source == "code" and slide.code.strip():
+            png = render_code_square(
+                slide.code, lang=slide.lang or None, size=side,
+                focus_lines=slide.focus_lines, mono_path=mono_path, font_path=font_path,
+            )  # fmt: skip
+            return Image.open(io.BytesIO(png)).convert("RGB")
+        if source == "concept" and slide.concept is not None:
+            png = render_concept_square(
+                slide.concept, size=side, font_path=font_path, mono_path=mono_path
             )
-        photo = Image.open(io.BytesIO(fetch_image(slide.image_ref))).convert("RGB")
-        # 저장된 건 이미 정사각이지만, 해상도가 다른 spec에서도 슬롯을 정확히 채우게 맞춘다.
-        if photo.size != (side, side):
-            photo = photo.resize((side, side), Image.Resampling.LANCZOS)
-        return photo
+            return Image.open(io.BytesIO(png)).convert("RGB")
+        if source == "image" and slide.image_ref:
+            if fetch_image is None:
+                raise VideoSpecError(
+                    f"'image_ref'({slide.image_ref})가 있는데 fetch_image seam이 없음 — "
+                    "조용히 그라데이션으로 떨어지지 않는다"
+                )
+            photo = Image.open(io.BytesIO(fetch_image(slide.image_ref))).convert("RGB")
+            # 저장된 건 이미 정사각이지만, 해상도가 다른 spec에서도 슬롯을 정확히 채우게 맞춘다.
+            if photo.size != (side, side):
+                photo = photo.resize((side, side), Image.Resampling.LANCZOS)
+            return photo
+        if source == "gradient":
+            break
+    # 팩이 gradient를 안 적었어도 빈 칸으로 두지 않는다 — 화면에 구멍이 나는 것보다 낫다.
     return _gradient(side, side, spec.background, spec.background2)
 
 

@@ -90,6 +90,7 @@ FAKE = Domain(
     search_terms=("분갈이", "화분", "다육식물"),
     concept_kinds=("emphasis",),
     concept_examples={"emphasis": '       - 수치 한 방: {"kind":"emphasis",...} 화분 12개'},
+    square_sources=("code", "concept", "image", "gradient"),
     square_guidance=(
         "     * photo(선택): 화분 사진 한 장.\n     * concept(선택): 종류 «N»개.\n«EXAMPLES»\n"
     ),
@@ -201,6 +202,50 @@ def test_content_prompt_uses_pack_square_guidance() -> None:
     assert "화분 사진 한 장" in prompt
     assert "pygments" not in prompt, "팩 밖의 정사각 안내가 남아 있다"
     assert "focus_lines" not in prompt
+
+
+# ── 정사각 소스 (C) ─────────────────────────────────────────────────
+# 정사각을 무엇으로 채우는지가 도메인 결합의 마지막 뿌리다. 프롬프트에서 안내를 뺀 것만으로는
+# 파서가 여전히 받아준다 — 에이전트가 실수로 넣으면 정원 영상에 파이썬 코드가 렌더된다.
+
+_MINIMAL: dict[str, object] = {
+    "topic": "분갈이 이렇게 하세요",
+    "slides": [{"subtitle": "언제", "narration": "뿌리가 화분을 꽉 채우면 때가 된 겁니다."}],
+}
+NO_CODE = replace(FAKE, square_sources=("concept", "image", "gradient"))
+
+
+def test_parse_rejects_square_field_the_pack_does_not_use() -> None:
+    """코드를 안 쓰는 도메인에 code가 들어오면 렌더까지 가기 전에 끊는다."""
+    from sns.render.video.spec import VideoSpecError, parse_video_spec
+
+    spec = {**_MINIMAL, "slides": [{**_MINIMAL["slides"][0], "code": "print(1)"}]}  # type: ignore[index]
+    with pytest.raises(VideoSpecError, match="code"):
+        parse_video_spec(spec, domain=NO_CODE)
+
+
+def test_parse_still_accepts_square_fields_the_pack_uses() -> None:
+    from sns.render.video.spec import parse_video_spec
+
+    slide = {**_MINIMAL["slides"][0], "image_query": "potted plant"}  # type: ignore[index]
+    parsed = parse_video_spec({**_MINIMAL, "slides": [slide]}, domain=NO_CODE)
+    assert parsed.slides[0].image_query == "potted plant"
+
+
+def test_video_spec_carries_the_pack_square_order() -> None:
+    """렌더러는 팩을 모른다 — 순서를 spec에 실어 보내야 결정론이 유지된다."""
+    from sns.render.video.spec import parse_video_spec
+
+    assert parse_video_spec(_MINIMAL, domain=NO_CODE).square_sources == NO_CODE.square_sources
+
+
+def test_generated_image_rule_is_skipped_without_code() -> None:
+    """'코드 영상엔 생성 이미지 금지'는 코드를 쓰는 도메인에서만 의미가 있다."""
+    from sns.render.video.spec import parse_video_spec
+
+    slide = {**_MINIMAL["slides"][0], "image_prompt": "a small green plant on a desk"}  # type: ignore[index]
+    parsed = parse_video_spec({**_MINIMAL, "slides": [slide]}, domain=NO_CODE)
+    assert parsed.slides[0].image_prompt
 
 
 def test_run_cycle_passes_the_pack_to_the_agents() -> None:

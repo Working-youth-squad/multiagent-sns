@@ -44,6 +44,15 @@ MAX_SUBTITLE_WIDTH = 40
 # FR-A2의 화면 전환 주기(2~4초) 안에 들어온다. 한 컷 = 한 화면이라 이게 곧 정지 시간이다.
 MAX_NARRATION_WIDTH = 62
 # 스톡 검색어 상한 — 길수록 결과가 0건으로 수렴한다(검색은 짧아야 걸린다).
+# 정사각 소스 → 그 소스가 쓰는 슬라이드 필드. **파서와 렌더러의 단일 출처**다 —
+# 따로 두면 한쪽만 갱신돼 "프롬프트는 막았는데 파서는 받는" 상태가 다시 생긴다.
+SQUARE_FIELDS: dict[str, tuple[str, ...]] = {
+    "code": ("code", "lang", "focus_lines"),
+    "concept": ("concept",),
+    "image": ("image_query", "image_prompt", "image_ref"),
+    "gradient": (),  # 최후 폴백 — 슬라이드 필드가 없다
+}
+
 MAX_IMAGE_QUERY_LEN = 60
 # 생성 프롬프트 상한 — 근거가 반대다. 구도를 설명해야 하므로 문장 하나는 들어가야 하고,
 # 검색어 길이(60)를 물려 뒀더니 "무엇이 어떻게 놓였는지"를 쓸 수 없었다. 다만 무한정
@@ -88,6 +97,9 @@ class VideoSpec:
     background2: str
     foreground: str
     accent: str = DEFAULT_ACCENT
+    # 렌더러는 팩을 모른다 — 파서가 순서를 여기 실어 보낸다. 같은 media_spec + 같은 팩
+    # → 같은 VideoSpec → 같은 mp4(FR-M1 결정론).
+    square_sources: tuple[str, ...] = ("code", "concept", "image", "gradient")
     _unused: tuple[()] = field(default=(), repr=False, compare=False)
 
 
@@ -160,10 +172,33 @@ def _parse_concept(raw: Mapping[str, object], where: str, kinds: tuple[str, ...]
         raise VideoSpecError(f"{where}'concept'가 잘못됨 — {exc}") from exc
 
 
-def _parse_slide(raw: object, index: int, kinds: tuple[str, ...]) -> Slide:
+def _reject_unused_square_fields(
+    raw: Mapping[str, object], where: str, sources: tuple[str, ...]
+) -> None:
+    """팩이 안 쓰는 정사각 소스의 필드는 거부한다.
+
+    프롬프트에서 안내를 빼는 것만으로는 1차 방어선뿐이다. 에이전트가 안내를 무시하거나
+    옛 spec을 재사용하면 그 필드가 그대로 렌더까지 간다 — 코드를 안 쓰는 도메인의 영상에
+    파이썬 코드가 나온다. 사유에 어느 소스인지 적어 에이전트가 고칠 수 있게 한다.
+    """
+    for source, fields in SQUARE_FIELDS.items():
+        if source in sources:
+            continue
+        for key in fields:
+            if raw.get(key):
+                raise VideoSpecError(
+                    f"{where}'{key}'는 이 도메인이 쓰지 않는 정사각 소스({source})다 — "
+                    f"쓸 수 있는 소스: {list(sources)}"
+                )
+
+
+def _parse_slide(
+    raw: object, index: int, kinds: tuple[str, ...], sources: tuple[str, ...]
+) -> Slide:
     where = f"'slides[{index}]'의 "
     if not isinstance(raw, Mapping):
         raise VideoSpecError(f"'slides[{index}]'는 매핑이어야 함: {raw!r}")
+    _reject_unused_square_fields(raw, where, sources)
     code = _optional_str(raw, "code", where)
     if code.strip() and len(code.rstrip().split("\n")) > MAX_CODE_LINES:
         raise VideoSpecError(
@@ -207,14 +242,18 @@ def _reject_generated_images_in_code_videos(slides: tuple[Slide, ...]) -> None:
         )
 
 
-def _parse_slides(spec: Mapping[str, object], kinds: tuple[str, ...]) -> tuple[Slide, ...]:
+def _parse_slides(
+    spec: Mapping[str, object], kinds: tuple[str, ...], sources: tuple[str, ...]
+) -> tuple[Slide, ...]:
     value = spec.get("slides")
     if not isinstance(value, list) or not value:
         raise VideoSpecError(f"'slides'는 비지 않은 리스트여야 함: {value!r}")
     if len(value) > MAX_SLIDES:
         raise VideoSpecError(f"'slides'는 {MAX_SLIDES}장 이하여야 함: {len(value)}장")
-    slides = tuple(_parse_slide(raw, i, kinds) for i, raw in enumerate(value))
-    _reject_generated_images_in_code_videos(slides)
+    slides = tuple(_parse_slide(raw, i, kinds, sources) for i, raw in enumerate(value))
+    if "code" in sources:
+        # 코드를 안 쓰는 도메인엔 "코드 영상"이라는 개념 자체가 없다.
+        _reject_generated_images_in_code_videos(slides)
     return slides
 
 
@@ -263,10 +302,11 @@ def parse_video_spec(
         width=width,
         height=height,
         topic=_require_text(media_spec, "topic", "", MAX_TOPIC_WIDTH),
-        slides=_parse_slides(media_spec, domain.concept_kinds),
+        slides=_parse_slides(media_spec, domain.concept_kinds, domain.square_sources),
         voice=_parse_voice(media_spec),
         background=_parse_color(media_spec, "background", DEFAULT_BACKGROUND),
         background2=_parse_color(media_spec, "background2", DEFAULT_BACKGROUND2),
         foreground=_parse_color(media_spec, "foreground", DEFAULT_FOREGROUND),
         accent=_parse_color(media_spec, "accent", DEFAULT_ACCENT),
+        square_sources=domain.square_sources,
     )

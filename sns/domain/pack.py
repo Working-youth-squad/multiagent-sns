@@ -50,6 +50,14 @@ class Domain:
     concept_examples: Mapping[str, str]
     """kind → 프롬프트에 넣을 예시 블록. 키는 `concept_kinds`와 정확히 일치해야 한다."""
 
+    square_sources: tuple[str, ...]
+    """정사각을 채울 소스와 **우선순위**. [sns.render.video.spec.SQUARE_FIELDS]의 이름을 쓴다.
+
+    개발 도메인은 코드가 1순위지만, 코드가 없는 도메인은 그 소스 자체가 없다. 목록에 없는
+    소스의 슬라이드 필드는 파서가 거부한다 — 프롬프트에서 안내를 뺀 것만으로는 부족하다.
+    에이전트가 안내를 무시하고 넣으면 정원 영상에 파이썬 코드가 렌더된다.
+    """
+
     square_guidance: str
     """정사각을 무엇으로 채울지 에이전트에게 주는 안내(프롬프트 조각).
 
