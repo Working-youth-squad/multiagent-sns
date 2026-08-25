@@ -1,0 +1,393 @@
+"""온보딩 인터뷰 화면 HTML 렌더 — 순수 함수 ([sns.web.approve.render] 규율 동형).
+
+플로우: 시작 분기(기존 계정 연동 vs 새로 만들기) → 인터뷰(1~5) → 컨셉 확정
+화면에서 **그때** 계정을 등록한다 — 채널 없이 인터뷰가 먼저다. 연동 경로는
+계정 정보(platform·handle)를 state에 실어 나를 뿐 등록 시점은 같다.
+위저드는 stateless: 각 화면 폼이 이전 답을 hidden input으로
+다음 화면에 넘긴다(세션 스토어 없음). 화면당 결정 1개 + 진행바(n/5).
+`escape`로 사용자 입력을 이스케이프해 반영형 XSS를 막는다.
+"""
+
+import json
+from collections.abc import Mapping
+from html import escape
+
+from sns.goals import GOAL_PRESETS
+from sns.onboarding.profile import (
+    CHARACTER_STYLES,
+    MAX_TOPIC_SUBS,
+    TONES,
+    TOPIC_MAJORS,
+    ChannelProfile,
+)
+from sns.onboarding.store import ChannelRow
+
+TOTAL_STEPS = 5
+SUBS_SEP = "|"  # hidden input에서 세부 주제를 잇는 구분자(쉼표는 직접 입력에 쓰인다)
+
+_STYLE = """<style>
+body{font-family:system-ui,-apple-system,"Malgun Gothic",sans-serif;max-width:640px;
+  margin:2rem auto;padding:0 1rem;color:#1a1a1a;line-height:1.5}
+.progress{height:6px;background:#eee;border-radius:3px;margin-bottom:1.5rem}
+.progress>div{height:100%;background:#2e7d32;border-radius:3px}
+.step-label{color:#666;font-size:.85rem;margin-bottom:.25rem}
+.choice{display:block;border:1px solid #ddd;border-radius:8px;padding:.8rem 1rem;
+  margin-bottom:.6rem;cursor:pointer}
+.choice:hover{border-color:#2e7d32}
+.choice input{margin-right:.6rem}
+.choice .desc{color:#666;font-size:.85rem;margin:.2rem 0 0 1.6rem}
+input[type=text]{width:100%;padding:.5rem;box-sizing:border-box;border:1px solid #ccc;
+  border-radius:6px;font-size:.95rem}
+textarea{width:100%;min-height:6rem;font-family:inherit;font-size:1rem;padding:.6rem;
+  box-sizing:border-box;border:1px solid #ccc;border-radius:6px}
+button{padding:.55rem 1.4rem;border:none;border-radius:6px;cursor:pointer;
+  font-size:.95rem;background:#2e7d32;color:#fff;margin-top:1rem}
+.secondary{background:#eee;color:#1a1a1a}
+.chip{background:#eef4ee;color:#1a1a1a;border:1px solid #cfe0cf;padding:.3rem .8rem;
+  font-size:.85rem;margin:.2rem .3rem .2rem 0;border-radius:999px}
+.chip:hover{border-color:#2e7d32}
+.error{color:#c62828;margin-bottom:1rem}
+.card{border:1px solid #ddd;border-radius:8px;padding:1rem;margin-bottom:1rem}
+.card h3{margin:0 0 .5rem}
+.meta{color:#666;font-size:.85rem}
+.item{border:1px solid #ddd;border-radius:8px;padding:1rem;margin-bottom:1rem}
+.empty{color:#666;text-align:center;padding:2rem 0}
+a{color:#2e7d32}
+</style>"""
+
+
+def _page(title: str, body: str) -> str:
+    return (
+        f"<!doctype html><html><head><meta charset='utf-8'>"
+        f"<title>{escape(title)}</title>{_STYLE}</head><body>{body}</body></html>"
+    )
+
+
+def render_entry() -> str:
+    """시작 분기 — 이미 운영 중인 계정이 있는지부터 묻는다."""
+    body = (
+        '<div class="card"><h3>이미 운영 중인 계정이 있어요</h3>'
+        "<p class='meta'>기존 SNS 계정을 등록하고, 인터뷰로 계정 컨셉을 잡아요.</p>"
+        '<a href="/link"><button type="button">계정 연동하기</button></a></div>'
+        '<div class="card"><h3>처음부터 새로 만들래요</h3>'
+        "<p class='meta'>인터뷰로 컨셉을 먼저 잡고, 마지막에 계정을 만들어요.</p>"
+        '<a href="/interview"><button type="button">새로 만들기</button></a></div>'
+        '<p><a href="/channels">내 채널 목록 보기</a></p>'
+    )
+    return _page("온보딩 — 시작", f"<h1>SNS 계정이 이미 있으신가요?</h1>{body}")
+
+
+def render_link(*, error: str | None = None) -> str:
+    """연동할 기존 계정 정보 입력 — 여기서 채널을 만들지 않고 인터뷰로 넘긴다.
+
+    실제 플랫폼 토큰 연동(OAuth, FR-W1)은 별도 단계 — 여기서는 계정 식별 정보만 받는다.
+    """
+    err = f'<p class="error">{escape(error)}</p>' if error else ""
+    body = (
+        f"{err}"
+        '<form method="post" action="/link">'
+        '<label class="choice"><input type="radio" name="platform" value="youtube" checked>'
+        "유튜브 (쇼츠)</label>"
+        '<label class="choice"><input type="radio" name="platform" value="instagram">'
+        "인스타그램 (릴스)</label>"
+        '<input type="text" name="handle" placeholder="계정 핸들 (예: my-channel)" required>'
+        "<p class='meta'>등록은 인터뷰로 컨셉을 확정한 뒤에 완료됩니다.</p>"
+        '<button type="submit">인터뷰 시작</button></form>'
+        '<p><a href="/">← 처음으로</a></p>'
+    )
+    return _page("온보딩 — 계정 연동", f"<h1>어떤 계정을 연동할까요?</h1>{body}")
+
+
+def render_channels(channels: tuple[ChannelRow, ...]) -> str:
+    """만들어진 채널 목록 — 생성은 여기가 아니라 인터뷰 완료 화면에서 한다."""
+    if not channels:
+        rows = '<p class="empty">아직 만든 계정이 없습니다.</p>'
+    else:
+        rows = "".join(
+            f'<div class="item"><a href="/channels/{c.channel_id}">'
+            f"{escape(c.handle)}</a>"
+            f'<div class="meta">{escape(c.platform)} · {escape(c.mode)}</div></div>'
+            for c in channels
+        )
+    start = '<a href="/"><button type="button">새 계정 인터뷰 시작</button></a>'
+    return _page("내 채널", f"<h1>내 채널</h1>{rows}{start}")
+
+
+def render_step(step: int, state: Mapping[str, str], *, error: str | None = None) -> str:
+    builders = {
+        1: _step_major,
+        2: _step_subs,
+        3: _step_tone,
+        4: _step_goal,
+        5: _step_character,
+    }
+    title, body = builders[step](state)
+    pct = int((step - 1) / TOTAL_STEPS * 100)
+    err = f'<p class="error">{escape(error)}</p>' if error else ""
+    header = (
+        f'<div class="step-label">{step} / {TOTAL_STEPS}</div>'
+        f'<div class="progress"><div style="width:{pct}%"></div></div>'
+    )
+    return _page(f"온보딩 {step}/{TOTAL_STEPS}", f"{header}<h1>{title}</h1>{err}{body}")
+
+
+def _hidden(state: Mapping[str, str], keys: tuple[str, ...]) -> str:
+    return "".join(
+        f'<input type="hidden" name="{k}" value="{escape(state[k], quote=True)}">'
+        for k in keys
+        if k in state
+    )
+
+
+# 추천안이 없거나 tune_ideas가 비었을 때의 미세조정 예시 기본값.
+DEFAULT_TUNE_IDEAS: tuple[str, ...] = (
+    "좀 더 초보자 눈높이로 설명해줘",
+    "이모지를 많이 써줘",
+    "세부 주제를 하나로 좁혀줘",
+    "톤을 더 전문적으로 바꿔줘",
+)
+
+
+def _chips(values: tuple[str, ...], target_field: str) -> str:
+    """누르면 같은 폼의 입력란(target_field)에 그 문구가 채워지는 제안 칩.
+
+    값 자체를 textContent에서 읽으므로 JS 문자열 이스케이프 문제가 없다.
+    """
+    return "".join(
+        f'<button type="button" class="chip" '
+        f'onclick="this.form.{target_field}.value=this.textContent">{escape(v)}</button>'
+        for v in values
+    )
+
+
+def _list_of_str(raw: object) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        return ()
+    return tuple(str(v).strip() for v in raw if str(v).strip())
+
+
+def _tune_ideas(recommendation: Mapping[str, object] | None) -> tuple[str, ...]:
+    if recommendation:
+        ideas = _list_of_str(recommendation.get("tune_ideas"))
+        if ideas:
+            return ideas
+    return DEFAULT_TUNE_IDEAS
+
+
+def _tune_block(recommendation: Mapping[str, object] | None) -> str:
+    return (
+        "<p class='meta'>이런 걸 조정해볼 수 있어요 — 눌러서 채우기</p>"
+        f"{_chips(_tune_ideas(recommendation), 'note')}"
+    )
+
+
+def _back_button(to_step: int) -> str:
+    """같은 폼의 답(hidden 포함)을 실은 채 이전 화면을 다시 그린다 — 입력 유실 없음.
+
+    `formnovalidate`: 현재 화면의 필수 입력을 건너뛰고 뒤로 갈 수 있게.
+    """
+    return (
+        f'<button class="secondary" type="submit" formaction="/interview/back/{to_step}" '
+        f"formnovalidate>← 이전</button> "
+    )
+
+
+def _radio(name: str, value: str, label: str, desc: str = "") -> str:
+    d = f'<div class="desc">{escape(desc)}</div>' if desc else ""
+    return (
+        f'<label class="choice"><input type="radio" name="{name}" '
+        f'value="{escape(value, quote=True)}">{escape(label)}{d}</label>'
+    )
+
+
+def _step_major(state: Mapping[str, str]) -> tuple[str, str]:
+    choices = "".join(_radio("major", m, m) for m in TOPIC_MAJORS)
+    body = (
+        '<form method="post" action="/interview/step/2">'
+        f"{_hidden(state, ('platform', 'handle'))}{choices}"
+        '<input type="text" name="major_custom" placeholder="다른 주제 직접 입력">'
+        '<button type="submit">다음</button></form>'
+        '<p><a href="/">← 처음으로</a></p>'
+    )
+    return "어떤 주제로 계정을 만드시겠어요?", body
+
+
+def _step_subs(state: Mapping[str, str]) -> tuple[str, str]:
+    major = state.get("major", "")
+    boxes = "".join(
+        f'<label class="choice"><input type="checkbox" name="subs" '
+        f'value="{escape(s, quote=True)}">{escape(s)}</label>'
+        for s in TOPIC_MAJORS.get(major, ())
+    )
+    body = (
+        '<form method="post" action="/interview/step/3">'
+        f"{_hidden(state, ('platform', 'handle', 'major'))}{boxes}"
+        '<input type="text" name="subs_custom" placeholder="직접 입력 (쉼표로 구분)">'
+        f'<p class="meta">최대 {MAX_TOPIC_SUBS}개까지 고를 수 있어요.</p>'
+        f'{_back_button(1)}<button type="submit">다음</button></form>'
+    )
+    return f"{major} 중에서 어떤 세부 주제를 다룰까요?", body
+
+
+def _step_tone(state: Mapping[str, str]) -> tuple[str, str]:
+    choices = "".join(_radio("tone", key, label) for key, label in TONES.items())
+    body = (
+        '<form method="post" action="/interview/step/4">'
+        f"{_hidden(state, ('platform', 'handle', 'major', 'subs'))}{choices}"
+        f'{_back_button(2)}<button type="submit">다음</button></form>'
+    )
+    return "계정의 전체적인 컨셉은요?", body
+
+
+def _step_goal(state: Mapping[str, str]) -> tuple[str, str]:
+    choices = "".join(
+        _radio("goal_ref", ref, preset.label, preset.description)
+        for ref, preset in GOAL_PRESETS.items()
+    )
+    body = (
+        '<form method="post" action="/interview/step/5">'
+        f"{_hidden(state, ('platform', 'handle', 'major', 'subs', 'tone'))}{choices}"
+        f'{_back_button(3)}<button type="submit">다음</button></form>'
+    )
+    return "계정에서 가장 키우고 싶은 것은요?", body
+
+
+def _step_character(state: Mapping[str, str]) -> tuple[str, str]:
+    choices = "".join(_radio("style", key, label) for key, label in CHARACTER_STYLES.items())
+    body = (
+        '<form method="post" action="/interview/finish">'
+        f"{_hidden(state, ('platform', 'handle', 'major', 'subs', 'tone', 'goal_ref'))}{choices}"
+        '<p class="meta">영상에 등장할 캐릭터의 그림 스타일이에요.</p>'
+        f'{_back_button(4)}<button type="submit">컨셉 확정</button></form>'
+    )
+    return "쇼츠·릴스에 캐릭터를 넣을까요?", body
+
+
+def _summary_card(profile: ChannelProfile) -> str:
+    goal_label = (
+        GOAL_PRESETS[profile.goal_ref].label
+        if profile.goal_ref in GOAL_PRESETS
+        else profile.goal_ref
+    )
+    return (
+        '<div class="card"><h3>계정 컨셉</h3>'
+        f"<p>주제: {escape(profile.topic_major)} — {escape(', '.join(profile.topic_subs))}<br>"
+        f"톤: {escape(TONES[profile.tone])}<br>"
+        f"목표: {escape(goal_label)}<br>"
+        f"캐릭터: {escape(CHARACTER_STYLES[profile.character_style])}</p>"
+        f"{_character_block(profile)}</div>"
+    )
+
+
+def render_create(
+    profile: ChannelProfile,
+    recommendation: Mapping[str, object] | None,
+    *,
+    platform: str | None = None,
+    handle: str | None = None,
+) -> str:
+    """인터뷰 완료 → 컨셉·추천 확인 + **여기서** 계정을 만들거나(신규) 연동을 완료한다.
+
+    연동 경로(`platform`·`handle` 전달)는 시작 시 받은 계정 정보를 hidden으로 실어
+    보낼 뿐, 실제 채널 등록은 두 경로 모두 이 화면의 버튼(POST /channels)에서 일어난다.
+    """
+    state = {
+        "major": profile.topic_major,
+        "subs": SUBS_SEP.join(profile.topic_subs),
+        "tone": profile.tone,
+        "goal_ref": profile.goal_ref,
+        "style": profile.character_style,
+    }
+    if recommendation is not None:
+        state["recommendation"] = json.dumps(recommendation, ensure_ascii=False)
+
+    linked = platform is not None and handle is not None
+    if linked:
+        state["platform"] = platform or ""
+        state["handle"] = handle or ""
+        account_fields = (
+            f"<p>연동할 계정: <b>{escape(platform or '')}</b> · <b>{escape(handle or '')}</b></p>"
+        )
+        title = "이 컨셉으로 계정 연동하기"
+        button = "계정 연동하고 시작하기"
+    else:
+        name_ideas = _list_of_str(recommendation.get("name_ideas")) if recommendation else ()
+        name_block = (
+            "<p class='meta'>이런 채널 이름은 어때요? — 눌러서 채우기</p>"
+            f"{_chips(name_ideas, 'handle')}"
+            if name_ideas
+            else ""
+        )
+        account_fields = (
+            '<label class="choice"><input type="radio" name="platform" value="youtube" checked>'
+            "유튜브 (쇼츠)</label>"
+            '<label class="choice"><input type="radio" name="platform" value="instagram">'
+            "인스타그램 (릴스)</label>"
+            f"{name_block}"
+            '<input type="text" name="handle" placeholder="채널 이름 (예: my-channel)" required>'
+        )
+        title = "이 컨셉으로 계정 만들기"
+        button = "계정 만들기"
+
+    body = (
+        f"{_summary_card(profile)}{_recommendation_block(recommendation)}"
+        f'<div class="card"><h3>{title}</h3>'
+        f'<form method="post" action="/channels">{_hidden(state, tuple(state))}'
+        f"{account_fields}"
+        "<p class='meta'>바꾸고 싶은 점이 있으면 한 줄로 적어주세요(선택). "
+        "컨셉에 반영됩니다.</p>"
+        f"{_tune_block(recommendation)}"
+        '<textarea name="note" placeholder="예: 좀 더 초보자 눈높이로, 이모지를 많이"></textarea>'
+        f'{_back_button(5)}<button type="submit">{button}</button></form></div>'
+        '<a href="/">← 처음부터 다시 하기</a>'
+    )
+    return _page("온보딩 — 컨셉 확정", f"<h1>이렇게 계정을 시작할게요</h1>{body}")
+
+
+def render_channel(channel: ChannelRow, profile: ChannelProfile) -> str:
+    """만들어진 계정의 프로필 화면 — 이후 미세조정은 여기서."""
+    note = f"<p>운영자 지침: {escape(profile.note)}</p>" if profile.note else ""
+    body = (
+        f'<p class="meta">{escape(channel.platform)} · {escape(channel.handle)} · '
+        f"{escape(channel.mode)}</p>"
+        f"{_summary_card(profile)}{_recommendation_block(profile.recommendation)}{note}"
+        '<div class="card"><h3>미세 조정</h3>'
+        "<p class='meta'>바꾸고 싶은 점을 한 줄로 적어주세요. 프로필에 반영됩니다.</p>"
+        f'<form method="post" action="/channels/{channel.channel_id}/refine">'
+        f"{_tune_block(profile.recommendation)}"
+        '<textarea name="note" placeholder="예: 좀 더 초보자 눈높이로, 이모지를 많이"></textarea>'
+        '<button type="submit">반영하기</button></form></div>'
+        '<a href="/channels"><button class="secondary" type="button">내 채널 목록</button></a>'
+    )
+    return _page(f"계정 — {channel.handle}", f"<h1>계정이 만들어졌어요</h1>{body}")
+
+
+def _character_block(profile: ChannelProfile) -> str:
+    if profile.character_image_url is None:
+        return ""
+    return f'<p class="meta">캐릭터 이미지: {escape(profile.character_image_url)}</p>'
+
+
+def _recommendation_block(recommendation: Mapping[str, object] | None) -> str:
+    if not recommendation:
+        return ""
+    parts = ['<div class="card"><h3>트렌드 기반 추천</h3>']
+    direction = recommendation.get("direction")
+    if isinstance(direction, str):
+        parts.append(f"<p>{escape(direction)}</p>")
+    focus = recommendation.get("focus_subs")
+    if isinstance(focus, list) and focus:
+        parts.append(f"<p>우선 세부 주제: {escape(', '.join(str(s) for s in focus))}</p>")
+    trends = recommendation.get("hot_trends")
+    if isinstance(trends, list) and trends:
+        items = "".join(f"<li>{escape(str(t))}</li>" for t in trends)
+        parts.append(f'<p class="meta">근거 트렌드</p><ul>{items}</ul>')
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def render_not_found() -> str:
+    body = (
+        '<p class="empty">채널 또는 프로필을 찾을 수 없습니다.</p><p><a href="/">← 처음으로</a></p>'
+    )
+    return _page("대상 없음", body)

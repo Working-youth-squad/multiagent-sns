@@ -21,7 +21,8 @@ from tests.dbguard import admin_dsn_for, database_name, derive_test_dsn, require
 DSN = derive_test_dsn(os.environ.get("DATABASE_URL", "postgresql://sns:sns@localhost:5432/sns"))
 
 _MUTABLE_TABLES = (
-    "channel, cycle, topic, content_item, media_asset, publication, publish_attempt, run_event"
+    "channel, channel_profile, cycle, topic, content_item, media_asset, publication, "
+    "publish_attempt, run_event"
 )
 
 # channel~publication FK 체인 + (선택) media_asset을 한 번에 만들고 publication id 반환.

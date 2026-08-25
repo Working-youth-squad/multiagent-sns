@@ -65,9 +65,13 @@ class ImageGenerationError(RuntimeError):
     """이미지 생성 실패 — 설정 누락·모델 지정 오류·할당량·응답 이상 포함."""
 
 
-def build_prompt(subject: str) -> str:
-    """주제 한 줄 + 고정 화풍. 화풍이 코드에 있는 게 이 함수의 요점이다."""
-    return f"{subject.strip()}. " + ", ".join(STYLE_RULES) + "."
+def build_prompt(subject: str, style_rules: Sequence[str] = STYLE_RULES) -> str:
+    """주제 한 줄 + 고정 화풍. 화풍이 코드에 있는 게 이 함수의 요점이다.
+
+    기본 화풍은 영상 정사각용. 캐릭터 생성([sns.onboarding.character])처럼 화풍
+    자체가 선택지인 호출자만 `style_rules`를 넘긴다.
+    """
+    return f"{subject.strip()}. " + ", ".join(style_rules) + "."
 
 
 def _decode_image(encoded: str) -> bytes:
@@ -211,7 +215,11 @@ def resolve_model(model: str | None) -> tuple[Provider, str]:
 
 
 def generate_image(
-    subject: str, *, model: str | None = None, opener: Opener = DEFAULT_OPENER
+    subject: str,
+    *,
+    model: str | None = None,
+    opener: Opener = DEFAULT_OPENER,
+    style_rules: Sequence[str] = STYLE_RULES,
 ) -> bytes:
     """주제 → 이미지 바이트. 게이트를 **요청 전에** 통과해야 한다(FR-Q7, 유료 호출 방어)."""
     provider, model_name = resolve_model(model)
@@ -222,7 +230,7 @@ def generate_image(
     if not api_key:
         raise ImageGenerationError(f"env {provider.env_key}가 없습니다 — {provider.signup_hint}")
 
-    request = provider.build_request(model_name, build_prompt(subject), api_key)
+    request = provider.build_request(model_name, build_prompt(subject, style_rules), api_key)
     try:
         payload = fetch_bytes(
             request, timeout_s=TIMEOUT_S, opener=opener, max_bytes=MAX_IMAGE_BYTES * 2
