@@ -23,9 +23,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import cast
 
-from sns.domain import DEFAULT_DOMAIN, Domain
 from sns.render.concept_image import Concept, ConceptError, parse_concept
 from sns.render.text import display_width
+from sns.topic_policy import concept_kinds_for, square_sources_for
 
 # 쇼츠/릴스 세로 규격 9:16 (FR-M2). spec이 명시하면 덮어쓰되 비율은 강제.
 DEFAULT_WIDTH = 1080
@@ -99,10 +99,12 @@ class VideoSpec:
     background: str
     background2: str
     foreground: str
+    # 렌더러는 주제 대분류를 모른다 — 파서가 채우기 우선순위를 여기 실어 보낸다
+    # ([sns.render.video.renderer]가 이 순서대로 첫 번째로 채워지는 소스를 쓴다).
+    # 같은 media_spec + 같은 topic_major → 같은 VideoSpec → 같은 mp4(FR-M1 결정론).
+    # **기본값을 두지 않는다** — 빠뜨리면 요리 채널에 개발 순서가 조용히 적용된다.
+    square_sources: tuple[str, ...]
     accent: str = DEFAULT_ACCENT
-    # 렌더러는 팩을 모른다 — 파서가 순서를 여기 실어 보낸다. 같은 media_spec + 같은 팩
-    # → 같은 VideoSpec → 같은 mp4(FR-M1 결정론).
-    square_sources: tuple[str, ...] = ("code", "concept", "image", "gradient")
     _unused: tuple[()] = field(default=(), repr=False, compare=False)
 
 
@@ -293,23 +295,27 @@ def _parse_voice(spec: Mapping[str, object]) -> str:
     return value
 
 
-def parse_video_spec(
-    media_spec: Mapping[str, object], *, domain: Domain = DEFAULT_DOMAIN
-) -> VideoSpec:
-    """`media_spec` → `VideoSpec`. 누락·형식 오류는 `VideoSpecError`."""
+def parse_video_spec(media_spec: Mapping[str, object], *, topic_major: str) -> VideoSpec:
+    """`media_spec` → `VideoSpec`. 누락·형식 오류는 `VideoSpecError`.
+
+    `topic_major`는 **필수다.** 기본값을 두면 새 호출부가 인자를 빠뜨렸을 때 요리 채널에
+    개발 규칙(코드 정사각·terminal 그림)이 조용히 적용된다 — 그 사고는 렌더가 끝난 뒤에야
+    드러난다. 하위 호환은 호출부가 `DEV_MAJOR`를 명시해서 얻는다([sns.topic_policy]).
+    """
     width = _parse_dimension(media_spec, "width", DEFAULT_WIDTH)
     height = _parse_dimension(media_spec, "height", DEFAULT_HEIGHT)
     if width * 16 != height * 9:
         raise VideoSpecError(f"쇼츠/릴스는 세로 9:16이어야 함: {width}×{height}")
+    sources = square_sources_for(topic_major)
     return VideoSpec(
         width=width,
         height=height,
         topic=_require_text(media_spec, "topic", "", MAX_TOPIC_WIDTH),
-        slides=_parse_slides(media_spec, domain.concept_kinds, domain.square_sources),
+        slides=_parse_slides(media_spec, concept_kinds_for(topic_major), sources),
         voice=_parse_voice(media_spec),
         background=_parse_color(media_spec, "background", DEFAULT_BACKGROUND),
         background2=_parse_color(media_spec, "background2", DEFAULT_BACKGROUND2),
         foreground=_parse_color(media_spec, "foreground", DEFAULT_FOREGROUND),
         accent=_parse_color(media_spec, "accent", DEFAULT_ACCENT),
-        square_sources=domain.square_sources,
+        square_sources=sources,
     )

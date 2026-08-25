@@ -23,10 +23,15 @@ from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
 from sns.agents.topic import TopicResult
-from sns.domain import DEFAULT_DOMAIN, Domain
 from sns.render.card.spec import CardSpecError, parse_card_spec
 from sns.render.video.spec import VideoSpecError, parse_video_spec
 from sns.tools.contracts import ContentFormat
+from sns.topic_policy import (
+    concept_examples_for,
+    concept_kinds_for,
+    square_guidance_for,
+    subject_label_for,
+)
 
 # 훅 패턴 5종 (FR-G5 · content_item.hook_pattern CHECK).
 HookPattern = Literal["bold_claim", "curiosity", "story", "shock", "question"]
@@ -69,22 +74,27 @@ _PROMPT_TAIL = """4. **근거를 댈 수 없는 구체 수치를 쓰지 않는�
 set_hook과 set_media_spec을 모두 호출한 뒤 마지막 메시지로 본문을 마무리한다."""
 
 
-def _system_prompt(domain: Domain) -> str:
-    """도메인 팩 → Content 시스템 프롬프트.
+def _system_prompt(topic_major: str) -> str:
+    """주제 대분류 → Content 시스템 프롬프트.
 
-    팩에서 오는 건 셋이다 — 주제 범위 문구, **정사각 섹션 전체**, 개념 그림 예시.
-    정사각을 무엇으로 채우는지가 도메인마다 가장 크게 갈린다(개발은 코드 스니펫이
-    1순위지만 코드가 없는 도메인엔 그 안내가 잡음이다). 그림꼴의 *구조*는
+    대분류에서 오는 건 셋이다 — 주제 범위 문구, **정사각 섹션 전체**, 개념 그림 예시.
+    정사각을 무엇으로 채우는지가 주제마다 가장 크게 갈린다(개발은 코드 스니펫이
+    1순위지만 코드가 없는 주제엔 그 안내가 잡음이다). 그림꼴의 *구조*는
     [sns.render.concept_image]에 남고 여기엔 **무엇을 넣으라고 말할지**만 온다.
+    파생은 [sns.topic_policy]가 한다.
 
     프롬프트에 JSON 중괄호가 많아 f-string을 쓰지 않는다 — 전부 이스케이프해야 해서
     읽기 어려워진다. 마커 치환이 원문을 그대로 두므로 프롬프트를 고칠 때 안전하다.
     """
-    examples = "\n".join(domain.concept_examples[k] for k in domain.concept_kinds)
-    square = domain.square_guidance.replace("«EXAMPLES»", examples).replace(
-        "«N»", str(len(domain.concept_kinds))
+    kinds = concept_kinds_for(topic_major)
+    examples_by_kind = concept_examples_for(topic_major)
+    examples = "\n".join(examples_by_kind[k] for k in kinds)
+    square = (
+        square_guidance_for(topic_major)
+        .replace("«EXAMPLES»", examples)
+        .replace("«N»", str(len(kinds)))
     )
-    head = _PROMPT_HEAD.replace("«DOMAIN»", domain.topic_domain)
+    head = _PROMPT_HEAD.replace("«DOMAIN»", subject_label_for(topic_major))
     return head + square + "\n" + _PROMPT_TAIL
 
 
@@ -119,18 +129,18 @@ def _message_text(content: object) -> str:
     return str(content)
 
 
-def _validate_spec(spec: object, fmt: ContentFormat, domain: Domain) -> dict[str, object]:
+def _validate_spec(spec: object, fmt: ContentFormat, topic_major: str) -> dict[str, object]:
     """포맷별 기존 파서로 media_spec 검증. 통과한 dict를 그대로 반환(jsonb 저장용).
 
-    영상 파서에는 팩을 넘긴다 — 프롬프트가 열어준 개념 그림과 파서가 받는 종류가
-    어긋나면 에이전트가 고칠 수 없는 오류를 반복한다.
+    영상 파서에는 주제 대분류를 넘긴다 — 프롬프트가 열어준 개념 그림과 파서가 받는
+    종류가 어긋나면 에이전트가 고칠 수 없는 오류를 반복한다.
     """
     if not isinstance(spec, dict):
         raise ValueError("media_spec은 객체여야 함")
     if fmt == "feed_image":
         parse_card_spec(spec)  # 던지면 CardSpecError
     elif fmt in ("reels", "shorts"):
-        parse_video_spec(spec, domain=domain)  # 던지면 VideoSpecError
+        parse_video_spec(spec, topic_major=topic_major)  # 던지면 VideoSpecError
     else:
         raise ValueError(f"미지원 포맷: {fmt}")
     return spec
@@ -142,11 +152,13 @@ def run_content(
     topic: TopicResult,
     content_format: ContentFormat,
     playbook_guidance: str | None = None,
-    domain: Domain = DEFAULT_DOMAIN,
+    topic_major: str,
 ) -> ContentResult:
     """주제 → 포맷별 콘텐츠. 훅·검증된 media_spec·본문 모두 확보돼야 반환.
 
-    `domain`은 주제 범위와 쓸 수 있는 개념 그림을 정하는 팩([sns.domain])이다.
+    `topic_major`는 주제 범위와 쓸 수 있는 개념 그림을 정한다([sns.topic_policy]).
+    **기본값이 없다** — 빠뜨리면 요리 채널에 개발 규칙이 조용히 적용되고, 그 사고는
+    렌더가 끝난 뒤에야 드러난다.
     """
     captured: dict[str, object] = {}
 
@@ -166,7 +178,7 @@ def run_content(
         except (TypeError, ValueError) as exc:
             return f"오류: JSON 파싱 실패 — {exc}"
         try:
-            captured["spec"] = _validate_spec(spec, content_format, domain)
+            captured["spec"] = _validate_spec(spec, content_format, topic_major)
         except (CardSpecError, VideoSpecError, ValueError) as exc:
             return f"오류: media_spec 검증 실패 — {exc}"
         return "media_spec 검증 통과"
@@ -175,7 +187,7 @@ def run_content(
     agent = create_deep_agent(
         model=model,
         tools=[set_hook, set_media_spec],
-        system_prompt=_system_prompt(domain),
+        system_prompt=_system_prompt(topic_major),
     )
     state = agent.invoke(
         {

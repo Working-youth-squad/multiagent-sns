@@ -148,6 +148,7 @@ def main() -> int:
         result = run_cycle(
             PgCycleStore(conn),
             goal_ref=profile.goal_ref,
+            topic_major=profile.topic_major,
             targets=[
                 CycleTarget(
                     channel_id=channel.channel_id,

@@ -21,6 +21,7 @@ from sns.runner.cycle import CycleTarget, run_cycle
 from sns.runner.store import PgCycleStore
 from sns.tools.contracts import ContentFormat, MediaAsset
 from sns.tools.fakes import FakePublish, FakeReadStats, FakeRenderMedia, FakeResearchTrends
+from sns.topic_policy import DEV_MAJOR
 
 _CARD_SPEC = {"hook": "3초컷", "title": "walrus", "body": ["a := 10"], "footer": "팔로우"}
 
@@ -68,6 +69,7 @@ def test_cycle_persists_and_publishes(db: psycopg.Connection) -> None:
     result = run_cycle(
         PgCycleStore(db),
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[
             CycleTarget(
                 channel_id=channel_id,
@@ -107,6 +109,7 @@ def test_cycle_started_and_completed_events(db: psycopg.Connection) -> None:
     result = run_cycle(
         PgCycleStore(db),
         goal_ref="reach",
+        topic_major=DEV_MAJOR,
         targets=[
             CycleTarget(
                 channel_id=channel_id,

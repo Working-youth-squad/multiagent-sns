@@ -11,9 +11,10 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 
-from sns.agents.content import ContentRejected, run_content
+from sns.agents.content import ContentRejected, _system_prompt, run_content
 from sns.agents.topic import TopicResult
 from sns.tools.contracts import ContentFormat
+from sns.topic_policy import DEV_MAJOR
 
 _TOPIC = TopicResult(
     title="파이썬 walrus 연산자",
@@ -74,7 +75,38 @@ def _run(
         topic=_TOPIC,
         content_format=fmt,
         playbook_guidance=guidance,
+        topic_major=DEV_MAJOR,
     )
+
+
+def test_prompt_drops_code_guidance_for_non_dev_major() -> None:
+    """요리 채널 프롬프트가 코드를 안내하면 정사각에 파이썬이 렌더된다."""
+    dev = _system_prompt(DEV_MAJOR)
+    cooking = _system_prompt("요리")
+
+    assert "pygments" in dev
+    assert "pygments" not in cooking
+    assert "list vs set" in dev
+    assert "list vs set" not in cooking
+
+
+def test_generic_majors_share_policy_but_keep_their_label() -> None:
+    """모르는 주제도 범용 정책을 받되, 프롬프트에는 자기 이름이 들어가야 한다."""
+    cooking = _system_prompt("요리")
+    knitting = _system_prompt("뜨개질")
+
+    for prompt in (cooking, knitting):  # 정책은 같다
+        assert "terminal" not in prompt, "terminal은 개발 전용이다"
+        assert "pygments" not in prompt
+        assert "compare" in prompt  # 범용 개념 그림은 남는다
+
+    assert "요리" in cooking and "뜨개질" not in cooking  # 라벨은 각자다
+    assert "뜨개질" in knitting and "요리" not in knitting
+
+
+def test_prompt_reflects_each_major() -> None:
+    """팩 시절 test_topic_prompt_is_built_from_the_pack이 지키던 계약."""
+    assert "개발자" in _system_prompt(DEV_MAJOR)
 
 
 def test_card_content_ok() -> None:

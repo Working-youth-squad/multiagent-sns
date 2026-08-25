@@ -13,6 +13,7 @@ from sns.render.video.renderer import VideoRender, render_video
 from sns.render.video.spec import parse_video_spec
 from sns.render.video.tts import Synthesize, synthesize_google
 from sns.tools.contracts import MediaAsset, MediaKind, RenderMedia
+from sns.topic_policy import DEV_MAJOR
 
 
 class VideoRenderMedia:
@@ -23,18 +24,20 @@ class VideoRenderMedia:
         store: MediaStore,
         *,
         synthesize: Synthesize,
+        topic_major: str,
         font_path: str | None = None,
         ffmpeg: str = "ffmpeg",
     ) -> None:
         self._store = store
         self._synthesize = synthesize
+        self._topic_major = topic_major
         self._font_path = font_path
         self._ffmpeg = ffmpeg
 
     def render(self, media_spec: Mapping[str, object]) -> VideoRender:
         """렌더 결과를 그대로 반환 — 품질 검사가 mp4 바이트를 참조한다."""
         return render_video(
-            parse_video_spec(media_spec),
+            parse_video_spec(media_spec, topic_major=self._topic_major),
             synthesize=self._synthesize,
             font_path=self._font_path,
             fetch_image=self._store.get,
@@ -52,5 +55,5 @@ class VideoRenderMedia:
 
 # 계약 적합성을 mypy가 강제 (fakes.py의 _check_* 패턴과 동일).
 _check_video_render: RenderMedia = VideoRenderMedia(
-    InMemoryMediaStore(), synthesize=synthesize_google
+    InMemoryMediaStore(), synthesize=synthesize_google, topic_major=DEV_MAJOR
 )

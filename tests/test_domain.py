@@ -97,22 +97,6 @@ FAKE = Domain(
 )
 
 
-def test_content_prompt_documents_only_pack_concept_kinds() -> None:
-    from sns.agents.content import _system_prompt
-
-    prompt = _system_prompt(FAKE)
-    assert "화분 12개" in prompt, "팩이 준 예시가 프롬프트에 없다"
-    assert "terminal" not in prompt, "팩이 안 쓰는 종류를 프롬프트가 열어줬다"
-
-
-def test_parse_concept_rejects_kind_outside_the_pack() -> None:
-    from sns.render.concept_image import ConceptError, parse_concept
-
-    raw = {"kind": "terminal", "commands": ["pip install foo"], "note": "설명"}
-    with pytest.raises(ConceptError):
-        parse_concept(raw, kinds=FAKE.concept_kinds)
-
-
 def test_parse_concept_still_accepts_kinds_the_pack_allows() -> None:
     from sns.render.concept_image import parse_concept
 
@@ -185,16 +169,6 @@ def test_default_service_binds_pack_search_terms_to_naver(
     assert seen["keywords"] == ("분갈이", "화분")
 
 
-def test_content_prompt_uses_pack_square_guidance() -> None:
-    """정사각 안내는 도메인마다 다르다 — 코드가 없는 도메인에 code 안내는 잡음이다."""
-    from sns.agents.content import _system_prompt
-
-    prompt = _system_prompt(FAKE)
-    assert "화분 사진 한 장" in prompt
-    assert "pygments" not in prompt, "팩 밖의 정사각 안내가 남아 있다"
-    assert "focus_lines" not in prompt
-
-
 # ── 정사각 소스 (C) ─────────────────────────────────────────────────
 # 정사각을 무엇으로 채우는지가 도메인 결합의 마지막 뿌리다. 프롬프트에서 안내를 뺀 것만으로는
 # 파서가 여전히 받아준다 — 에이전트가 실수로 넣으면 정원 영상에 파이썬 코드가 렌더된다.
@@ -204,39 +178,6 @@ _MINIMAL: dict[str, object] = {
     "slides": [{"subtitle": "언제", "narration": "뿌리가 화분을 꽉 채우면 때가 된 겁니다."}],
 }
 NO_CODE = replace(FAKE, square_sources=("concept", "image", "gradient"))
-
-
-def test_parse_rejects_square_field_the_pack_does_not_use() -> None:
-    """코드를 안 쓰는 도메인에 code가 들어오면 렌더까지 가기 전에 끊는다."""
-    from sns.render.video.spec import VideoSpecError, parse_video_spec
-
-    spec = {**_MINIMAL, "slides": [{**_MINIMAL["slides"][0], "code": "print(1)"}]}  # type: ignore[index]
-    with pytest.raises(VideoSpecError, match="code"):
-        parse_video_spec(spec, domain=NO_CODE)
-
-
-def test_parse_still_accepts_square_fields_the_pack_uses() -> None:
-    from sns.render.video.spec import parse_video_spec
-
-    slide = {**_MINIMAL["slides"][0], "image_query": "potted plant"}  # type: ignore[index]
-    parsed = parse_video_spec({**_MINIMAL, "slides": [slide]}, domain=NO_CODE)
-    assert parsed.slides[0].image_query == "potted plant"
-
-
-def test_video_spec_carries_the_pack_square_order() -> None:
-    """렌더러는 팩을 모른다 — 순서를 spec에 실어 보내야 결정론이 유지된다."""
-    from sns.render.video.spec import parse_video_spec
-
-    assert parse_video_spec(_MINIMAL, domain=NO_CODE).square_sources == NO_CODE.square_sources
-
-
-def test_generated_image_rule_is_skipped_without_code() -> None:
-    """'코드 영상엔 생성 이미지 금지'는 코드를 쓰는 도메인에서만 의미가 있다."""
-    from sns.render.video.spec import parse_video_spec
-
-    slide = {**_MINIMAL["slides"][0], "image_prompt": "a small green plant on a desk"}  # type: ignore[index]
-    parsed = parse_video_spec({**_MINIMAL, "slides": [slide]}, domain=NO_CODE)
-    assert parsed.slides[0].image_prompt
 
 
 def test_llm_grounding_sends_the_pack_prompt() -> None:

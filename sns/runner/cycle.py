@@ -121,6 +121,7 @@ def run_cycle(
     assess_quality: AssessQuality | None = None,
     resolve_media_spec: ResolveMediaSpec | None = None,
     playbook_guidance: str | None = None,
+    topic_major: str,
     channel_brief: str | None = None,
     topic_categories: Sequence[str] | None = None,
 ) -> CycleResult:
@@ -214,6 +215,7 @@ def run_cycle(
                         resolve_media_spec=resolve_media_spec,
                         recent_signatures=recent_signatures,
                         playbook_guidance=playbook_guidance,
+                        topic_major=topic_major,
                     )
                 )
             except (ContentRejected, CardSpecError, VideoSpecError) as exc:
@@ -277,11 +279,16 @@ def _prepare_target(
     resolve_media_spec: ResolveMediaSpec | None,
     recent_signatures: tuple[frozenset[str], ...],
     playbook_guidance: str | None,
+    topic_major: str,
 ) -> TargetResult:
     fmt = target.content_format
 
     content = run_content(
-        model, topic=topic, content_format=fmt, playbook_guidance=playbook_guidance
+        model,
+        topic=topic,
+        content_format=fmt,
+        playbook_guidance=playbook_guidance,
+        topic_major=topic_major,
     )
     store.log_event(
         cycle_id=cycle_id,

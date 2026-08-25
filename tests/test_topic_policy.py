@@ -10,7 +10,8 @@
 
 import pytest
 
-from sns.render.concept_image import CONCEPT_FIELDS
+from sns.render.concept_image import CONCEPT_FIELDS, ConceptError, parse_concept
+from sns.render.video.spec import VideoSpecError, parse_video_spec
 from sns.topic_policy import (
     DEV_MAJOR,
     categories_for,
@@ -83,3 +84,58 @@ def test_examples_are_read_only() -> None:
     examples = concept_examples_for(DEV_MAJOR)
     with pytest.raises(TypeError):
         examples["emphasis"] = "오염"  # type: ignore[index]
+
+
+# ── 정사각 소스가 파서에 실제로 걸리는가 (옛 tests/test_domain.py에서 이관) ──────
+# 프롬프트에서 안내를 뺀 것만으로는 파서가 여전히 받아준다 — 에이전트가 실수로 넣으면
+# 요리 영상에 파이썬 코드가 렌더된다.
+
+_MINIMAL: dict[str, object] = {
+    "topic": "분갈이 이렇게 하세요",
+    "slides": [{"subtitle": "언제", "narration": "뿌리가 화분을 꽉 채우면 때가 된 겁니다."}],
+}
+_SLIDE: dict[str, object] = dict(_MINIMAL["slides"][0])  # type: ignore[index,arg-type]
+
+
+def test_parse_rejects_square_field_the_major_does_not_use() -> None:
+    """코드를 안 쓰는 주제에 code가 들어오면 렌더까지 가기 전에 끊는다."""
+    spec = {**_MINIMAL, "slides": [{**_SLIDE, "code": "print(1)"}]}
+    with pytest.raises(VideoSpecError, match="code"):
+        parse_video_spec(spec, topic_major="요리")
+
+
+def test_parse_still_accepts_square_fields_the_major_uses() -> None:
+    slide = {**_SLIDE, "image_query": "potted plant"}
+    parsed = parse_video_spec({**_MINIMAL, "slides": [slide]}, topic_major="요리")
+    assert parsed.slides[0].image_query == "potted plant"
+
+
+def test_dev_major_accepts_code_field() -> None:
+    slide = {**_SLIDE, "code": "print(1)"}
+    parsed = parse_video_spec({**_MINIMAL, "slides": [slide]}, topic_major=DEV_MAJOR)
+    assert parsed.slides[0].code == "print(1)"
+
+
+def test_video_spec_carries_the_major_square_order() -> None:
+    """렌더러는 주제를 모른다 — 순서를 spec에 실어 보내야 결정론이 유지된다."""
+    parsed = parse_video_spec(_MINIMAL, topic_major="요리")
+    assert parsed.square_sources == square_sources_for("요리")
+
+
+def test_generated_image_rule_is_skipped_without_code() -> None:
+    """'코드 영상엔 생성 이미지 금지'는 코드를 쓰는 주제에서만 의미가 있다."""
+    slide = {**_SLIDE, "image_prompt": "a small green plant on a desk"}
+    parsed = parse_video_spec({**_MINIMAL, "slides": [slide]}, topic_major="요리")
+    assert parsed.slides[0].image_prompt
+
+
+def test_parse_concept_rejects_kind_outside_the_major() -> None:
+    raw = {"kind": "terminal", "commands": ["pip install foo"], "note": "설명"}
+    with pytest.raises(ConceptError):
+        parse_concept(raw, kinds=concept_kinds_for("요리"))
+
+
+def test_topic_major_is_required() -> None:
+    """silent default가 있으면 새 호출부가 요리 채널에 개발 규칙을 조용히 적용한다."""
+    with pytest.raises(TypeError):
+        parse_video_spec(_MINIMAL)  # type: ignore[call-arg]

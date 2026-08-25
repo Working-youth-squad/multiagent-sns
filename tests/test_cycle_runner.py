@@ -20,6 +20,7 @@ from sns.runner.cycle import CycleTarget, run_cycle
 from sns.runner.store import InMemoryCycleStore
 from sns.tools.contracts import ContentFormat, MediaAsset
 from sns.tools.fakes import FakeReadStats, FakeRenderMedia, FakeResearchTrends
+from sns.topic_policy import DEV_MAJOR
 
 _CARD_SPEC = {"hook": "3초컷", "title": "walrus", "body": ["a := 10"], "footer": "팔로우"}
 
@@ -71,6 +72,7 @@ def _run(
     result = run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=targets,
         model=ScriptedChatModel(messages=iter(script)),
         research_trends=FakeResearchTrends(),
@@ -97,6 +99,7 @@ def test_channel_brief_and_categories_thread_to_topic(monkeypatch: pytest.Monkey
     result = run_cycle(
         store,
         goal_ref="reach_growth",
+        topic_major=DEV_MAJOR,
         targets=[_target()],
         model=ScriptedChatModel(
             messages=iter(_topic_script(category="레시피") + _content_script())
@@ -206,6 +209,7 @@ def test_topic_failure_fails_cycle() -> None:
     result = run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target()],
         model=ScriptedChatModel(messages=iter(_topic_script())),
         research_trends=failing,
@@ -263,6 +267,7 @@ def test_infra_failure_marks_failed_and_propagates() -> None:
         run_cycle(
             store,
             goal_ref="engagement_depth",
+            topic_major=DEV_MAJOR,
             targets=[_target()],
             model=ScriptedChatModel(messages=iter(_topic_script() + _content_script())),
             research_trends=FakeResearchTrends(),
@@ -317,6 +322,7 @@ def _run_video(resolve: Any) -> Any:
     run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target(fmt="shorts")],
         model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(_VIDEO_SPEC))),
         research_trends=FakeResearchTrends(),
@@ -369,6 +375,7 @@ def test_recent_topics_are_excluded_from_the_next_cycle() -> None:
     run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target()],
         model=ScriptedChatModel(messages=iter(_topic_script() + _content_script())),
         research_trends=FakeResearchTrends(),
@@ -392,6 +399,7 @@ def _run_shorts(spec: dict[str, object], *, body: str = "본문", mode: str = "a
     run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target(mode=mode, fmt="shorts")],
         model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(spec, body=body))),
         research_trends=FakeResearchTrends(),
@@ -449,6 +457,7 @@ def test_near_duplicate_of_recent_content_is_blocked() -> None:
     run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target(fmt="shorts")],
         model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(_spec_with()))),
         research_trends=FakeResearchTrends(),
@@ -473,6 +482,7 @@ def test_different_content_passes_the_similarity_gate() -> None:
     run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target(fmt="shorts")],
         model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(_spec_with()))),
         research_trends=FakeResearchTrends(),

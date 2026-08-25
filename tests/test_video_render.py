@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import tempfile
 import wave
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -27,7 +28,15 @@ from sns.render.video import renderer as renderer_mod
 from sns.render.video.media import VideoRenderMedia
 from sns.render.video.quality import check_video
 from sns.render.video.renderer import _BAR_RATIO, render_video
-from sns.render.video.spec import MAX_SLIDES, VideoSpecError, parse_video_spec
+from sns.render.video.spec import MAX_SLIDES, VideoSpec, VideoSpecError
+from sns.render.video.spec import parse_video_spec as _parse_video_spec
+from sns.topic_policy import DEV_MAJOR
+
+
+def parse_video_spec(media_spec: Mapping[str, object]) -> VideoSpec:
+    """개발 기준으로 고정한 파서 — 이 파일은 렌더 동작을 보지 주제 분기를 보지 않는다."""
+    return _parse_video_spec(media_spec, topic_major=DEV_MAJOR)
+
 
 pytestmark = pytest.mark.skipif(
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
@@ -194,7 +203,7 @@ def test_topic_band_is_black_ground() -> None:
 
 def test_media_binding_stores_mp4() -> None:
     store = InMemoryMediaStore()
-    render_media = VideoRenderMedia(store, synthesize=tone_wav)
+    render_media = VideoRenderMedia(store, synthesize=tone_wav, topic_major=DEV_MAJOR)
     asset = render_media(SPEC_DICT, "video")
     assert asset.kind == "video"
     assert asset.storage_url.endswith(".mp4")
@@ -203,7 +212,9 @@ def test_media_binding_stores_mp4() -> None:
 
 def test_media_binding_rejects_non_video_kind() -> None:
     with pytest.raises(ValueError, match="kind"):
-        VideoRenderMedia(InMemoryMediaStore(), synthesize=tone_wav)(SPEC_DICT, "image")
+        VideoRenderMedia(InMemoryMediaStore(), synthesize=tone_wav, topic_major=DEV_MAJOR)(
+            SPEC_DICT, "image"
+        )
 
 
 def test_missing_cjk_font_raises_instead_of_tofu(monkeypatch: pytest.MonkeyPatch) -> None:

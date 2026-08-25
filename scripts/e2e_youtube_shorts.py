@@ -20,6 +20,7 @@ from sns.render.video.media import VideoRenderMedia
 from sns.render.video.quality import check_video
 from sns.render.video.tts import synthesize_google
 from sns.tools.contracts import MediaKind
+from sns.topic_policy import DEV_MAJOR
 
 OUT_DIR = Path(__file__).parent / "out"
 SECRETS = Path(__file__).parent.parent / ".secrets"
@@ -75,7 +76,9 @@ def main() -> None:
 
     print("1/4 영상 렌더 (TTS: Chirp 3 HD)…")
     store = DirMediaStore(OUT_DIR)
-    render_media = VideoRenderMedia(store, synthesize=synthesize_google, ffmpeg=ffmpeg)
+    render_media = VideoRenderMedia(
+        store, synthesize=synthesize_google, topic_major=DEV_MAJOR, ffmpeg=ffmpeg
+    )
     asset = render_media(MEDIA_SPEC, "video")
     mp4_path = Path(asset.storage_url)
     print(f"    → {mp4_path} ({mp4_path.stat().st_size // 1024}KiB)")

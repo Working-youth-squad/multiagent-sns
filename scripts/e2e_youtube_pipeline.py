@@ -50,6 +50,7 @@ from sns.runner.cycle import AssessQuality, CycleTarget, run_cycle
 from sns.runner.store import CycleStore, InMemoryCycleStore, PgCycleStore
 from sns.tools.contracts import ContentFormat, MediaAsset, MediaKind
 from sns.tools.fakes import FakeReadStats
+from sns.topic_policy import DEV_MAJOR
 
 ROOT = Path(__file__).parent.parent
 OUT = ROOT / "scripts" / "out" / "yt"
@@ -205,7 +206,11 @@ def main() -> int:
 
     media_store = DirMediaStore(OUT)
     renderer = VideoRenderMedia(
-        media_store, synthesize=synthesize_google, font_path=args.font, ffmpeg=ffmpeg
+        media_store,
+        synthesize=synthesize_google,
+        topic_major=DEV_MAJOR,
+        font_path=args.font,
+        ffmpeg=ffmpeg,
     )
     conn = None
     store: CycleStore
@@ -237,6 +242,7 @@ def main() -> int:
     result = run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[
             CycleTarget(
                 channel_id=channel_id,
