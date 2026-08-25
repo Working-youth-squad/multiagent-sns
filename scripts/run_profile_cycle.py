@@ -36,7 +36,7 @@ from sns.quality.gate import QualityReport, check_card
 from sns.render.card.media import CardRenderMedia
 from sns.render.card.spec import parse_card_spec
 from sns.research.trends import default_service
-from sns.runner.cycle import CycleTarget, run_cycle
+from sns.runner.cycle import ChannelMode, CycleTarget, run_cycle
 from sns.runner.store import PgCycleStore
 from sns.tools.contracts import ContentFormat, MediaAsset, MediaKind
 from sns.tools.fakes import FakePublish, FakeReadStats
@@ -50,6 +50,21 @@ FONT_CANDIDATES = (
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/System/Library/Fonts/AppleSDGothicNeo.ttc",
 )
+
+_CHANNEL_MODES: dict[str, ChannelMode] = {"auto": "auto", "hybrid": "hybrid", "manual": "manual"}
+
+
+def channel_mode_of(mode: str) -> ChannelMode:
+    """채널 mode를 그대로 통과시키되 모르는 값은 거부한다.
+
+    예전에는 `"hybrid" if mode == "hybrid" else "auto"`였다 — **manual 채널이 auto로
+    승격돼 자동 발행 경로로 들어갔다.** manual은 기계 발행 대상이 아니다
+    ([sns.publish.modes.MACHINE_MODES]). 조용한 폴백은 오타 하나로 발행 모드를 바꾼다.
+    """
+    try:
+        return _CHANNEL_MODES[mode]
+    except KeyError:
+        raise SystemExit(f"모르는 채널 mode: {mode!r} (허용: {sorted(_CHANNEL_MODES)})") from None
 
 
 class DirMediaStore:
@@ -138,7 +153,7 @@ def main() -> int:
                     channel_id=channel.channel_id,
                     platform="instagram" if channel.platform == "instagram" else "youtube",
                     content_format="feed_image",
-                    mode="hybrid" if channel.mode == "hybrid" else "auto",
+                    mode=channel_mode_of(channel.mode),
                 )
             ],
             model=make_model(),
