@@ -130,7 +130,13 @@ def test_image_square_carries_query_prompt_ref() -> None:
 
 def test_concept_square_delegates_validation() -> None:
     got = parse_square(
-        {"source": "concept", "kind": "emphasis", "tag": "태그", "headline": "100억", "sub": "부연"},
+        {
+            "source": "concept",
+            "kind": "emphasis",
+            "tag": "태그",
+            "headline": "100억",
+            "sub": "부연",
+        },
         "'slides[0]'의 ",
         sources=ALL,
         kinds=KINDS,
@@ -250,9 +256,7 @@ def _reject_unknown(raw: Mapping[str, object], allowed: tuple[str, ...], where: 
     """모르는 키는 거부한다 — 오타를 삼키면 에이전트가 같은 실수를 반복한다."""
     for key in raw:
         if key != "source" and key not in allowed:
-            raise SquareSpecError(
-                f"{where}square가 모르는 필드: {key!r} (허용: {list(allowed)})"
-            )
+            raise SquareSpecError(f"{where}square가 모르는 필드: {key!r} (허용: {list(allowed)})")
 
 
 def _parse_code(raw: Mapping[str, object], where: str) -> CodeSquare:
@@ -316,7 +320,9 @@ def parse_square(
     if source == "image":
         return _parse_image(raw, where)
     try:
-        return ConceptSquare(concept=parse_concept({k: v for k, v in raw.items() if k != "source"}, kinds=kinds))
+        return ConceptSquare(
+            concept=parse_concept({k: v for k, v in raw.items() if k != "source"}, kinds=kinds)
+        )
     except ConceptError as exc:
         raise SquareSpecError(f"{where}square(concept)가 잘못됨 — {exc}") from exc
 ```
@@ -533,8 +539,14 @@ def _parse_slide(
 ```python
 def _reject_generated_images_in_code_videos(slides: tuple[Slide, ...]) -> None:
     """코드가 한 컷이라도 있으면 생성 이미지를 영상 전체에서 거부한다(근거는 §1.4)."""
-    code_cuts = [i for i, s in enumerate(slides) if isinstance(s.square, CodeSquare) and s.square.text.strip()]
-    prompt_cuts = [i for i, s in enumerate(slides) if isinstance(s.square, ImageSquare) and s.square.prompt]
+    code_cuts = [
+        i
+        for i, s in enumerate(slides)
+        if isinstance(s.square, CodeSquare) and s.square.text.strip()
+    ]
+    prompt_cuts = [
+        i for i, s in enumerate(slides) if isinstance(s.square, ImageSquare) and s.square.prompt
+    ]
     if code_cuts and prompt_cuts:
         raise VideoSpecError(
             "코드가 있는 영상에서는 생성 이미지를 쓸 수 없음 — 개념 그림(concept)을 쓰세요. "
