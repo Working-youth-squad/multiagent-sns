@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 
 from sns.goals import resolve_goal
+from sns.topic_policy import DEV_CATEGORIES, GENERIC_CATEGORIES, categories_for
 
 PROFILE_VERSION = 1
 MAX_TOPIC_SUBS = 3
@@ -42,14 +43,24 @@ TOPIC_MAJORS: dict[str, tuple[str, ...]] = {
     "춤": ("K-POP 안무", "스트릿댄스", "발레", "튜토리얼", "챌린지"),
 }
 
-# topic 카테고리 5종: 개발은 기존 규율(04 §4, [sns.agents.topic])을 그대로,
-# 비개발 대분류는 동형 5종으로 파생한다.
-DEV_CATEGORIES: tuple[str, ...] = ("신기술", "기초지식", "꿀팁", "현직자일상", "개발자유머")
-GENERIC_CATEGORIES: tuple[str, ...] = ("트렌드", "기초지식", "꿀팁", "일상", "유머")
-
-
-def categories_for(topic_major: str) -> tuple[str, ...]:
-    return DEV_CATEGORIES if topic_major == "개발" else GENERIC_CATEGORIES
+# topic 카테고리 5종은 [sns.topic_policy]로 옮겼다 — 렌더·에이전트도 같은 분기를 읽어야
+# 하는데, 온보딩 쪽에 두면 렌더가 온보딩에 의존하게 되어 방향이 거꾸로 선다.
+# 기존 import 경로(`from sns.onboarding.profile import categories_for`)를 위해 재수출한다.
+__all__ = [
+    "CHARACTER_STYLES",
+    "DEV_CATEGORIES",
+    "GENERIC_CATEGORIES",
+    "MAX_TOPIC_SUBS",
+    "PROFILE_VERSION",
+    "TONES",
+    "TOPIC_MAJORS",
+    "ChannelProfile",
+    "ProfileError",
+    "build_channel_brief",
+    "categories_for",
+    "parse_profile",
+    "profile_to_json",
+]
 
 
 class ProfileError(ValueError):
