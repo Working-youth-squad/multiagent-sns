@@ -37,8 +37,23 @@ class Domain:
     trend_sources: tuple[str, ...]
     """이 도메인이 쓸 트렌드 소스 키. `default_service`의 등록 이름과 같아야 한다."""
 
+    search_terms: tuple[str, ...]
+    """검색형 소스(네이버 검색·데이터랩)에 넣을 질의어.
+
+    소스 **목록**만 팩에서 오고 질의어가 하드코딩이면 도메인을 바꿔도 같은 걸 검색한다 —
+    실제로 그랬다. 첫 항목이 대표 질의어(네이버 검색), 전체가 추이 비교 키워드(데이터랩)다.
+    """
+
     concept_kinds: tuple[str, ...]
     """이 도메인이 허용할 개념 그림 종류. [sns.render.concept_image]의 이름을 쓴다."""
 
     concept_examples: Mapping[str, str]
     """kind → 프롬프트에 넣을 예시 블록. 키는 `concept_kinds`와 정확히 일치해야 한다."""
+
+    square_guidance: str
+    """정사각을 무엇으로 채울지 에이전트에게 주는 안내(프롬프트 조각).
+
+    개발 도메인은 코드 스니펫이 1순위라 `code`/`lang`/`focus_lines`를 설명하지만,
+    코드가 없는 도메인에 그 안내는 잡음이다. 그림꼴의 구조는 렌더러에 남고 **무엇을
+    넣으라고 말할지**만 여기 있다.
+    """

@@ -130,11 +130,18 @@ def default_service(
     naver_id = env_map.get(ENV_NAVER_CLIENT_ID)
     naver_secret = env_map.get(ENV_NAVER_CLIENT_SECRET)
     if naver_id and naver_secret:
+        # 질의어도 팩에서 온다 — 소스 목록만 갈아끼우면 도메인을 바꿔도 같은 걸 검색한다.
         fetchers["naver_search"] = _bind(
-            fetch_naver_search, client_id=naver_id, client_secret=naver_secret
+            fetch_naver_search,
+            client_id=naver_id,
+            client_secret=naver_secret,
+            query=domain.search_terms[0],
         )
         fetchers["naver_datalab"] = _bind(
-            fetch_naver_datalab, client_id=naver_id, client_secret=naver_secret
+            fetch_naver_datalab,
+            client_id=naver_id,
+            client_secret=naver_secret,
+            keywords=domain.search_terms,
         )
 
     youtube_key = env_map.get(ENV_YOUTUBE_API_KEY)

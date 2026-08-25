@@ -5,6 +5,8 @@
 **팩이 가리키는 이름이 전부 실재하는지**를 여기서 강제한다.
 """
 
+from dataclasses import replace
+
 import pytest
 
 from sns.domain import DEVELOPER, Domain, UnknownDomainError, resolve_domain
@@ -50,6 +52,13 @@ def test_trend_sources_are_wired(domain: Domain) -> None:
 
 
 @pytest.mark.parametrize("domain", ALL_DOMAINS, ids=lambda d: d.ref)
+def test_search_terms_are_present(domain: Domain) -> None:
+    """질의어가 비면 네이버 소스가 무엇을 검색할지 알 수 없다."""
+    assert domain.search_terms
+    assert all(t.strip() for t in domain.search_terms)
+
+
+@pytest.mark.parametrize("domain", ALL_DOMAINS, ids=lambda d: d.ref)
 def test_categories_and_audience_are_present(domain: Domain) -> None:
     """카테고리가 비면 Topic 에이전트가 고를 축이 사라진다."""
     assert domain.categories
@@ -78,8 +87,12 @@ FAKE = Domain(
     categories=("흙", "물주기"),
     grounding_prompt="정원 관련 주제를 나열해줘.",
     trend_sources=("google_trends",),
+    search_terms=("분갈이", "화분", "다육식물"),
     concept_kinds=("emphasis",),
     concept_examples={"emphasis": '       - 수치 한 방: {"kind":"emphasis",...} 화분 12개'},
+    square_guidance=(
+        "     * photo(선택): 화분 사진 한 장.\n     * concept(선택): 종류 «N»개.\n«EXAMPLES»\n"
+    ),
 )
 
 
@@ -118,6 +131,76 @@ def test_parse_concept_still_accepts_kinds_the_pack_allows() -> None:
 def test_default_service_wires_only_pack_sources() -> None:
     """키가 다 있어도 팩이 안 쓰는 소스는 배선하지 않는다."""
     assert set(default_service(env=FULL_ENV, domain=FAKE).sources) == {"google_trends"}
+
+
+def test_naver_sources_search_the_pack_terms() -> None:
+    """소스 목록만 팩에서 오고 질의어가 하드코딩이면, 도메인을 바꿔도 "개발자"를 검색한다."""
+    import json
+    import urllib.parse
+
+    from sns.research.sources.naver_datalab import fetch_naver_datalab
+    from sns.research.sources.naver_search import fetch_naver_search
+    from tests.test_research_sources import _DATALAB, _NAVER_NEWS, _opener
+
+    news: dict[str, object] = {}
+    fetch_naver_search(
+        2,
+        client_id="i",
+        client_secret="s",
+        query=FAKE.search_terms[0],
+        opener=_opener(_NAVER_NEWS, news),
+    )
+    sent = urllib.parse.unquote(news["target"].full_url)  # type: ignore[attr-defined]
+    assert FAKE.search_terms[0] in sent
+
+    lab: dict[str, object] = {}
+    fetch_naver_datalab(
+        2,
+        client_id="i",
+        client_secret="s",
+        keywords=FAKE.search_terms,
+        opener=_opener(_DATALAB, lab),
+    )
+    body = json.loads(lab["target"].data)  # type: ignore[attr-defined]
+    groups = [g["groupName"] for g in body["keywordGroups"]]
+    assert set(groups) == set(FAKE.search_terms)
+
+
+def test_default_service_binds_pack_search_terms_to_naver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """배선 지점에서 팩 질의어가 실제로 묶이는지 — 여기가 안 되면 팩 필드가 장식이다."""
+    import sns.research.sources.naver_datalab as datalab
+    import sns.research.sources.naver_search as search
+
+    seen: dict[str, object] = {}
+
+    def spy_search(limit: int, **kw: object) -> tuple[str, ...]:
+        seen["query"] = kw.get("query")
+        return ()
+
+    def spy_datalab(limit: int, **kw: object) -> tuple[str, ...]:
+        seen["keywords"] = kw.get("keywords")
+        return ()
+
+    monkeypatch.setattr(search, "fetch_naver_search", spy_search)
+    monkeypatch.setattr(datalab, "fetch_naver_datalab", spy_datalab)
+
+    pack = replace(DEVELOPER, search_terms=("분갈이", "화분"))
+    default_service(env=FULL_ENV, domain=pack)(sources=("naver_search", "naver_datalab"))
+
+    assert seen["query"] == "분갈이"
+    assert seen["keywords"] == ("분갈이", "화분")
+
+
+def test_content_prompt_uses_pack_square_guidance() -> None:
+    """정사각 안내는 도메인마다 다르다 — 코드가 없는 도메인에 code 안내는 잡음이다."""
+    from sns.agents.content import _system_prompt
+
+    prompt = _system_prompt(FAKE)
+    assert "화분 사진 한 장" in prompt
+    assert "pygments" not in prompt, "팩 밖의 정사각 안내가 남아 있다"
+    assert "focus_lines" not in prompt
 
 
 def test_run_cycle_passes_the_pack_to_the_agents() -> None:
