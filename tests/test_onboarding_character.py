@@ -71,3 +71,38 @@ def test_style_rules_passed_to_generate() -> None:
     rules = seen["style_rules"]
     assert isinstance(rules, tuple) and any("pixel art" in r for r in rules)
     assert any("no text" in r for r in rules)  # 글자 금지 규칙 유지
+
+
+def test_scene_rules_cover_every_character_style() -> None:
+    """스타일이 늘었는데 장면 규칙이 없으면 렌더가 KeyError로 죽는다."""
+    from sns.onboarding.character import scene_rules_for
+    from sns.onboarding.profile import CHARACTER_STYLES
+
+    for style in CHARACTER_STYLES:
+        assert scene_rules_for(style), style
+
+
+def test_scene_rules_are_vertical_and_textless() -> None:
+    """장면은 9:16 풀블리드이고 글자는 우리가 그린다(생성 모델의 글자는 뭉개진다)."""
+    from sns.onboarding.character import scene_rules_for
+
+    rules = " ".join(scene_rules_for("flat_vector"))
+    assert "9:16" in rules
+    assert "no text" in rules
+    assert "square" not in rules, "캐릭터용 1:1 규칙이 새어 들어왔다"
+
+
+def test_scene_rules_share_the_style_vocabulary() -> None:
+    """같은 스타일이면 캐릭터와 장면이 같은 화풍 낱말을 쓴다 — 따로 놀지 않게."""
+    from sns.onboarding.character import scene_rules_for
+
+    assert "pixel art" in " ".join(scene_rules_for("pixel_art"))
+    assert "watercolor" in " ".join(scene_rules_for("watercolor"))
+
+
+def test_unknown_style_falls_back() -> None:
+    """'캐릭터 없음'을 고른 채널도 장면 화풍은 있어야 한다."""
+    from sns.onboarding.character import scene_rules_for
+
+    assert scene_rules_for("none")
+    assert scene_rules_for("존재하지않는스타일") == scene_rules_for("none")

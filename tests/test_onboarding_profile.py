@@ -108,3 +108,10 @@ def test_dataclass_direct_construction() -> None:
         categories=categories_for("요리"),
     )
     assert parse_profile(profile_to_json(profile)) == profile
+
+
+def test_note_carries_an_isolation_sentence() -> None:
+    """운영자 줄글이 제작 방식·구조를 지시하면 코드가 건 자물쇠와 싸운다."""
+    brief = build_channel_brief(parse_profile(_raw(note="코드도 보여줘")))
+    assert "톤" in brief and "화풍" in brief
+    assert brief.index("무시") < brief.index("코드도 보여줘")
