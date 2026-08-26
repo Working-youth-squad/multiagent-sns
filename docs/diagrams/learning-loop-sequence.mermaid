@@ -1,44 +1,61 @@
-%% multiagent-sns — 반응 학습 루프 (지표 폴링 → reward → 정책/분석글)
+%% multiagent-sns — 반응 학습 루프 (코드 기준 · main 19f1466 · 2026-08-26 동기화)
+%% **이 루프는 아직 닫혀 있지 않다.** 구현된 조각과 빈 칸을 구분해 그린다.
+%%   구현: youtube.metrics(Analytics v2) · signals.scoreboard · agents.analyst · learning.validator
+%%   미구현: 폴링 러너/스케줄러 · metric_observation/value 적재 · reward 산식
+%%           · topic_stats 집계 · playbook 쓰기 · analysis_note 저장 · Growth(밴딧)
+%%   미구현: Instagram Insights 폴러 — IG 지표를 가져오는 경로 자체가 없다
 sequenceDiagram
     autonumber
-    participant SCH as 폴링 스케줄러
-    participant AN as Analyst Agent
-    participant API as 채널 API(IG/YouTube)
-    participant LLM as Claude
+    participant OP as 운영자 · scripts/e2e_analyst.py
+    participant POLL as 폴링 러너
+    participant YT as youtube.metrics · Analytics v2
+    participant IG as Instagram Insights
     participant DB as PostgreSQL
-    participant GROW as Growth Agent(밴딧)
+    participant AN as Analyst 에이전트 deepagents
+    participant SC as signals.scoreboard
+    participant VAL as learning.validator
+    participant GR as Growth · 밴딧
 
-    SCH->>AN: 폴링 슬롯(발행 후 T시간·복수 시점)
-    AN->>DB: 폴링 대상 publication 조회(관측 창 미완)
-    loop 각 publication
-        AN->>API: 인사이트 조회(조회수·좋아요·저장·댓글·시청유지 등)
-        alt 값 존재
-            API-->>AN: 지표 맵
-            AN->>DB: metric_observation + metric_value(실측)
-        else 값 없음/미노출
-            API-->>AN: 결측
-            AN->>DB: metric_value = NULL (0으로 채우지 않음)
-        end
+    Note over OP,POLL: 지금은 사람이 스크립트를 1회 부른다. 상시 폴링 러너는 없다
+    OP->>YT: 영상 1건 지표 조회 (window_index는 조회 범위에 반영 안 함)
+    alt 값 존재
+        YT-->>OP: metric_key → value
+    else 신선 영상 24-48h 지연 · 비공개
+        YT-->>OP: missing=True (0으로 채우지 않음, NFR-3)
+    else API 오류
+        YT-->>OP: raise — 결측으로 뭉개지 않고 호출자에게 전파
     end
 
-    AN->>DB: 관측 창 완료분 → RewardFn(관측)→reward
-    alt reward 산식 확정 & 데이터 충분
-        AN->>DB: reward 저장(reward_value, reward_version)
-    else 산식 미확정/데이터 부족
-        AN->>DB: reward = NULL (학습에서 제외)
+    rect rgb(250,245,245)
+    Note over POLL,DB: 미구현 구간 — 관측을 원장에 남기는 코드가 없다
+    IG--)POLL: Instagram Insights 폴러 미구현 — IG 지표는 한 건도 들어오지 않는다
+    POLL-->>DB: metric_observation + metric_value 적재
+    POLL-->>DB: 관측 창 완료분 → reward 산식 → reward 행
+    POLL-->>DB: topic_stats 갱신 (주제 x 포맷 x 플랫폼)
+    Note over POLL,DB: 테이블·CHECK 제약은 001에 있고 쓰기 경로만 비어 있다
     end
 
-    AN->>DB: topic_stats 갱신(주제×포맷×채널별 성과 집계)
-    AN->>DB: playbook 갱신(성과 요약 — 다음 사이클 지침)
-
-    AN->>LLM: 성과 분석글 생성(입력=DB 시계열/게시물/이벤트)
-    LLM-->>AN: 분석글 초안
-    AN->>AN: 출력 검증기(인용 없는 인과단정·실재하지 않는 post_id → 거부)
-    alt 근거 인용 가능
-        AN->>DB: analysis_note 저장(evidence_json)
-    else 근거 불가
-        AN->>DB: analysis_note(insufficient_evidence=1, "근거 부족" 표기)
+    OP->>AN: run_analysis(platform, publication 지표 목록)
+    AN->>SC: 스코어보드 도구 호출 — 수치 계산은 전부 코드
+    SC-->>AN: 신호별 판정 (계정 자체 중앙값 대비, 절대 임계값 없음)
+    Note over SC: 표본 5건 미만 = 전 신호 판정 불가 · 30건 미만 = small_sample(회귀 금지)
+    AN->>AN: LLM은 도구 선택과 서술만 — 수치 재계산 금지
+    AN->>VAL: 산출 body 검증
+    alt 인용 가능한 근거 있음
+        VAL-->>AN: 통과
+        AN-->>OP: AnalysisResult(body, insufficient_evidence=False)
+    else 근거 없는 인과단정 · 실재하지 않는 게시물 참조
+        VAL-->>AN: 거부 (AnalysisRejected)
+        AN-->>OP: 판정 불가 표기 — insufficient_evidence는 코드가 결정한다
     end
 
-    GROW->>DB: 갱신된 topic_stats·playbook 반영 → 다음 사이클 선택 개선
-    Note over GROW,DB: 자기 채널 베이스라인 대비 성장(기울기)만 측정 · 절대 순위/타 계정 비교 없음
+    rect rgb(250,245,245)
+    Note over AN,GR: 미구현 구간 — 분석 결과가 다음 사이클로 돌아가지 않는다
+    AN-->>DB: analysis_note 저장 (WritePlaybook·저장 배선 없음)
+    AN-->>DB: playbook 갱신 → 다음 사이클 guidance
+    DB-->>GR: topic_stats · playbook 조회
+    GR-->>DB: 변형 선택 결정 기록 (cycle.decision)
+    Note over GR: 밴딧은 표본 50건 이후 계획. 현재 변형은 호출자가 targets로 지정한다
+    end
+
+    Note over OP,GR: 상시 문구 — 동일 품질의 콘텐츠도 조회수가 10배 차이 날 수 있다(분산 연구 근거)

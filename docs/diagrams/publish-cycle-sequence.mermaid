@@ -1,54 +1,108 @@
-%% multiagent-sns — 발행 사이클 시퀀스 (기획→제작→발행, 멱등 원장)
+%% multiagent-sns — 발행 사이클 시퀀스 (코드 기준 · main 19f1466 · 2026-08-26 동기화)
+%% 실체는 **두 개의 독립 실행**이다. 기획서의 단일 루프가 아니다.
+%%   ① sns.runner.cycle.run_cycle              — 기획→제작→publication(pending)까지만
+%%   ② sns.publish.runner.run_pending_publications — pending 원장을 종결까지 전진
+%% 둘을 잇는 상시 스케줄러는 아직 없다. 사람이 scripts/를 순서대로 부른다.
 sequenceDiagram
     autonumber
-    participant SCH as 슬롯 스케줄러
-    participant ORCH as Orchestrator(deepagents)
-    participant GROW as Growth Agent(밴딧)
-    participant TOP as Topic/Content Agent
-    participant LLM as Claude
-    participant MED as Media Agent + 렌더러
-    participant PUB as Publisher Agent
-    participant API as 채널 API(IG/YouTube)
-    participant DB as PostgreSQL
+    participant OP as 운영자 · scripts/e2e_cycle.py
+    participant RUN as run_cycle
+    participant TOP as Topic 에이전트
+    participant TR as ResearchTrendsService
+    participant CON as Content 에이전트
+    participant GATE as screen_content + signature
+    participant RES as resolve_media_spec
+    participant MED as render_media + assess_quality
+    participant ST as CycleStore · PostgreSQL
+    participant WEB as 승인 웹 web.approve
+    participant PR as run_pending_publications
+    participant SM as run_publish 상태머신
+    participant API as IG Graph / YouTube API
+    participant NT as dispatch_alert · Discord
 
-    SCH->>ORCH: 발행 슬롯 도래 → 사이클 시작
-    ORCH->>DB: cycle 행 생성(planned)
-    ORCH->>GROW: 다음 콘텐츠 변형 선택 요청
-    GROW->>DB: topic_stats·playbook 조회(파생 쿼리)
-    GROW-->>ORCH: 결정(topic, format=feed/reels/shorts, channel, slot)
-    Note over GROW: 밴딧 선택은 루프 밖 결정론(시드 고정)
-
-    ORCH->>TOP: 주제→콘텐츠 초안 생성
-    TOP->>LLM: 대본/카피/카드 문안 생성(프롬프트)
-    LLM-->>TOP: 콘텐츠 텍스트
-    TOP->>DB: content_item 저장(status=drafted, body=LLM 착지점)
-
-    ORCH->>MED: media_spec → 렌더
-    alt format = feed_image
-        MED->>MED: Pillow 카드 렌더(결정론 PNG)
-    else format = reels / shorts
-        MED->>MED: ffmpeg/moviepy 합성(자막+슬라이드+TTS)
+    rect rgb(245,245,250)
+    Note over OP,ST: ① run_cycle — 발행하지 않는다. publication(pending)까지 만든다
+    OP->>RUN: run_cycle(goal_ref, targets, model, 계약 주입)
+    RUN->>ST: create_cycle → run_event(cycle_started)
+    RUN->>ST: recent_media_specs(14일, 최대 50건) → 근접중복 지문
+    RUN->>TOP: run_topic(exclude_titles=최근 14일 제목, categories, guidance)
+    TOP->>TR: research_trends 툴 — 소스 병렬 조회
+    TR-->>TOP: 다이제스트 + 소스별 ok/실패 (실패 소스만 격리)
+    Note over TOP,TR: 사이클이 쓰는 것은 고정 피드 갈래다. 질의어 기반 키워드 랭킹은<br/>같은 서비스를 재사용하는 별도 갈래이고 사이클에 배선돼 있지 않다 (keyword-ranking-sequence)
+    TOP->>ST: read_stats 툴 (운영 구현 없음 — 현재 Fake 주입)
+    alt 근거 있는 후보에서 선택 성공
+        TOP-->>RUN: TopicResult(title, category, source)
+        RUN->>ST: save_topic + run_event(agent_called)
+    else TopicSelectionError
+        TOP-->>RUN: 근거 밖 제목 · 카테고리 무효
+        RUN->>ST: run_event(error) + complete_cycle(failed)
+        RUN-->>OP: CycleResult(status=failed, targets=빈 튜플)
     end
-    MED->>MED: 품질 게이트 검사(규격·가독성 하한, FR-Q)
-    MED->>DB: media_asset 저장(checksum, storage_url, quality_status/report)
-    alt quality_status = failed
-        MED-->>ORCH: 발행 차단(품질 하한 미달) → 재생성/스킵
     end
 
-    ORCH->>PUB: 발행 요청(content_item, channel) — quality_status=passed만
-    PUB->>DB: publish_attempt(pending) — 멱등 + 품질 게이트 확인
-    alt 이미 published 존재
-        DB-->>PUB: 중복 → 재발행 스킵
-    else 신규
-        PUB->>API: 미디어 컨테이너 생성 → 게시(2단계)
-        API-->>PUB: platform_post_id | 오류코드
-        alt 성공
-            PUB->>DB: publish_attempt=published + publication 행
-        else transient 오류
-            PUB->>PUB: RetryPolicy 재시도(지수 백오프)
-        else 영구 오류(토큰만료/한도)
-            PUB->>DB: publish_attempt=failed + run_event(오류원문)
-            PUB-->>ORCH: 실패 알림(채널 격리)
+    rect rgb(248,248,240)
+    Note over RUN,ST: 대상(채널)별 반복 — 도메인 오류는 그 대상만 격리
+    loop targets 각각
+        alt mode = manual (수동)
+            RUN->>ST: run_event(notice, manual_assignment) — 주제만 배정
+            Note over RUN: AI 초안·렌더·기계 발행 없음. 사람이 직접 쓰고 발행한다
+        else mode = auto 또는 hybrid
+            RUN->>CON: run_content(topic, format, playbook_guidance)
+            CON-->>RUN: body + media_spec + hook_pattern
+            RUN->>GATE: 금지 소재 + 직전 50건 유사도 — 렌더보다 앞이다
+            alt 관문 차단
+                GATE-->>RUN: 사유 목록 (유사도 상한 0.8 초과 포함)
+                RUN->>ST: run_event(notice) + content_item(status=needs_review)
+                Note over RUN,ST: 렌더 비용을 쓰지 않는다. 원고만 남겨 사람에게 넘긴다
+            else 통과
+                RUN->>RES: image_query → image_ref 못박기 (주입 없으면 생략)
+                RES-->>RUN: 확정된 media_spec + 크레딧 붙은 body + notes
+                RUN->>MED: render_media(media_spec, kind) → checksum
+                MED->>MED: assess_quality — 미주입이면 needs_review로 보류
+                RUN->>ST: content_item(auto=approved / hybrid=needs_review)
+                RUN->>ST: media_asset(checksum, quality_status, quality_report)
+                RUN->>ST: publication(status=pending, mode 스냅샷)
+            end
         end
     end
-    ORCH->>DB: cycle=published/aborted + run_event(비용·소요)
+    RUN->>ST: complete_cycle — prepared 또는 manual_assigned가 0이면 failed
+    RUN-->>OP: CycleResult(targets별 prepared/blocked/manual_assigned/failed)
+    Note over RUN,NT: 인프라·영속화 예외는 격리하지 않는다 — failed 표기 후 호출자로 전파
+    end
+
+    rect rgb(240,248,245)
+    Note over WEB,ST: hybrid 사람 관문 — 승인 전엔 아래 러너가 발행하지 않는다
+    WEB->>ST: 승인 = content_item.status=approved + media_asset.quality_status=passed
+    Note over WEB,ST: 본문 수정 시 edited_by_human=true. 반려는 publication=skipped로 즉시 종결
+    end
+
+    rect rgb(245,245,250)
+    Note over OP,API: ② run_pending_publications — 별도 구동. 기계 발행은 auto·hybrid만
+    OP->>PR: run_pending_publications(conn, publish)
+    PR->>ST: pending + COALESCE(publication.mode, channel.mode) IN (auto, hybrid)
+    loop 대기 건 각각
+        alt 자산 없음
+            PR->>ST: run_event(notice, no_media) — pending 유지
+        else 첫 진입인데 게이트 미통과
+            alt quality_status=failed 또는 content=rejected
+                PR->>ST: publication=skipped + notice(quality_failed)
+            else needs_review 또는 hybrid 미승인
+                PR->>ST: notice(awaiting_review) — pending 유지 (영구 종결 금지)
+            end
+        else 발행 진입
+            PR->>SM: run_publish(idempotency_key=publication_id, quality_passed)
+            SM->>API: IG는 컨테이너 생성 → 폴링 → 게시 / YT는 resumable 업로드
+            alt 성공
+                API-->>SM: external_post_id
+                SM->>ST: publish_attempt=published + publication=published
+            else transient
+                API-->>SM: 일시 오류 → container_id 보존하고 다음 구동에서 이어감
+            else 영구 오류
+                API-->>SM: auth · quota · spam_block · permanent_unknown
+                SM->>ST: publish_attempt=failed + error_raw 원문
+                SM->>NT: dispatch_alert — 적재 먼저, 전송 실패는 삼킴
+            end
+            PR->>ST: run_event(publish_attempted, mode 포함)
+        end
+    end
+    end

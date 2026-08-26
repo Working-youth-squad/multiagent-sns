@@ -1,132 +1,151 @@
-%% multiagent-sns — 데이터 모델 ERD (v2 · 2026-08-11 개정 기획서 기준)
-%% v2 변경: channel.mode(실험 변수) · content_item.hook_pattern/edited_by_human · 관측 시점 확정(6/24/72h) · 메트릭 표준 확장
+%% multiagent-sns — 데이터 모델 ERD (코드 기준 · main 19f1466 · 2026-08-26 동기화)
+%% 출처는 기획서가 아니라 실제 마이그레이션이다:
+%%   001_initial.sql          — 14 테이블 (+ 러너가 만드는 schema_version)
+%%   002_publish_mode_triad   — channel.mode에 manual 추가 · publication.mode 스냅샷 · 수동등록 멱등 인덱스
+%%   003_channel_profile      — channel_profile (온보딩 인터뷰 산출, append-only)
+%% 표기: mermaid 타입은 공백/괄호를 못 써서 double_precision = SQL double precision,
+%%       numeric = SQL numeric(10,4)로 적었다.
+%% [미적재] 표시 = 테이블은 있으나 프로덕션 쓰기 경로가 아직 없음
+%%          (topic_stats · metric_observation · metric_value · reward · playbook · analysis_note)
 erDiagram
+    channel ||--o{ channel_profile : "프로필 revision (최신 1건 = 현재)"
     channel ||--o{ publication : "발행"
-    content_item ||--o{ media_asset : "렌더 산출"
-    content_item ||--o{ publication : "게시"
     cycle ||--o{ content_item : "사이클 산출"
+    cycle ||--o{ run_event : "실행 이벤트 append-only"
+    cycle ||--o{ analysis_note : "분석글 (cycle_id NULL 허용)"
     topic ||--o{ content_item : "주제"
     topic ||--o{ topic_stats : "성과 집계"
-    publication ||--|| publish_attempt : "멱등 시도"
-    publication ||--o{ metric_observation : "관측"
+    content_item ||--o{ media_asset : "렌더 산출"
+    content_item ||--o{ publication : "게시"
+    publication ||--o| publish_attempt : "1-1 UNIQUE 멱등 시도"
+    publication ||--o{ metric_observation : "관측 창"
     metric_observation ||--o{ metric_value : "지표값"
     publication ||--o| reward : "보상"
-    channel ||--o{ analysis_note : "분석 대상"
-    cycle ||--o{ run_event : "실행 이벤트"
 
     channel {
         uuid id PK
-        text platform "instagram|youtube (CHECK)"
-        text mode "v2: auto|hybrid|off (CHECK) - 실험 변수 FR-E1"
-        text handle
-        text account_ref "ig_user_id | yt_channel_id"
-        bytea token_ciphertext "앱레벨 암호화"
-        int key_version
-        text status "active|warming|blocked|revoked (CHECK)"
-        timestamptz created_ts
+        text platform "CHECK instagram|youtube"
+        text handle "UNIQUE platform+handle"
+        text status "CHECK active|paused|revoked"
+        text mode "002 CHECK auto|hybrid|manual|off — 실험 변수 FR-E1"
+        bytea token_encrypted "앱레벨 Fernet 암호화 NFR-7"
+        integer token_key_version "키 회전 대비"
+        timestamptz created_at
+    }
+    channel_profile {
+        uuid id PK
+        uuid channel_id FK
+        jsonb profile "003 — 인터뷰 산출 전체. 구조 정본 = sns.onboarding.profile"
+        timestamptz created_at "개정=UPDATE 아닌 새 행. INDEX channel_id+created_at DESC"
     }
     cycle {
         uuid id PK
-        text status "planned|published|aborted (CHECK)"
-        text goal_ref "goal 프리셋 키"
-        jsonb decision "선택된 topic/format/channel/slot"
-        timestamptz slot_ts
-        timestamptz created_ts
+        text goal_ref "goal 프리셋 키 — sns.goals 4종"
+        text status "CHECK planned|running|completed|failed"
+        jsonb decision "변형 선택 기록 — 현재 미기입 (Growth 미구현)"
+        timestamptz started_at
+        timestamptz completed_at
+        timestamptz created_at
     }
     topic {
         uuid id PK
-        text domain "개발자 주제 도메인"
-        text title
-        text status "active|retired (CHECK)"
+        text title "Topic 에이전트가 트렌드 근거에서 고른 제목"
+        text summary
+        text source "근거 소스명"
+        text status "CHECK proposed|approved|rejected|used"
+        timestamptz created_at
     }
     topic_stats {
+        uuid id PK "[미적재] ReadStats 운영 구현 없음 — 사이클은 FakeReadStats"
         uuid topic_id FK
-        text format "feed_image|reels|shorts (CHECK)"
-        text platform "instagram|youtube (CHECK)"
-        int trials
-        double reward_sum "NULL 제외 집계"
-        timestamptz updated_ts
+        text format "CHECK feed_image|reels|shorts"
+        text platform "CHECK instagram|youtube"
+        integer trials
+        double_precision reward_sum
+        timestamptz updated_at "UNIQUE topic+format+platform"
     }
     content_item {
         uuid id PK
         uuid cycle_id FK
         uuid topic_id FK
-        text format "feed_image|reels|shorts (CHECK)"
-        text hook_pattern "v2: bold_claim|curiosity|story|shock|question (CHECK) FR-G5"
-        boolean edited_by_human "v2: hybrid 사람 개입 기록 FR-E3"
-        text body "LLM 착지점: 대본/카피/문안"
-        jsonb media_spec "렌더 스펙(결정론 입력)"
-        text status "drafted|rendered|published|discarded (CHECK)"
-        timestamptz created_ts
+        text format "CHECK feed_image|reels|shorts"
+        text status "CHECK draft|needs_review|approved|rejected — auto=approved, hybrid=needs_review"
+        text hook_pattern "CHECK bold_claim|curiosity|story|shock|question FR-G5"
+        text body "LLM 착지점 1/3 — 사이클의 유일한 LLM 산출 텍스트"
+        jsonb media_spec "렌더 결정론 입력. image_query는 렌더 전 image_ref로 못박힘"
+        boolean edited_by_human "승인 화면에서 본문 수정 시 true FR-E3"
+        timestamptz created_at
     }
     media_asset {
         uuid id PK
         uuid content_item_id FK
-        text kind "image|video|thumbnail (CHECK)"
-        text storage_url
-        text checksum "결정론 렌더 검증"
-        text quality_status "passed|failed|needs_review (CHECK) FR-Q2"
-        jsonb quality_report "규격·안전영역·유사도 검사 결과 FR-Q1+A2"
-        timestamptz created_ts
+        text kind "CHECK image|video|thumbnail|audio"
+        text storage_url "MediaStore seam FR-M3 — 운영 구현 없음, 스크립트의 DirMediaStore"
+        text checksum "산출 바이트 sha256 = 결정론 검증"
+        text quality_status "CHECK passed|failed|needs_review — 게이트 미주입 시 needs_review"
+        jsonb quality_report "check_card 판정 결과"
+        timestamptz created_at
     }
     publication {
         uuid id PK
         uuid content_item_id FK
         uuid channel_id FK
-        text platform_post_id "발행 성공 시"
-        text status "pending|published|failed (CHECK)"
-        timestamptz published_ts
+        text status "CHECK pending|published|failed|skipped"
+        text mode "002 CHECK auto|hybrid|manual — 발행 시점 스냅샷 = 비교 단일 출처"
+        text external_post_id "002 부분 UNIQUE channel_id+external_post_id"
+        timestamptz published_at
+        timestamptz created_at "UNIQUE content_item+channel"
     }
     publish_attempt {
         uuid id PK
-        uuid publication_id FK
-        text state "pending|container_created|published|failed (CHECK)"
-        int attempt_no
-        text error_code "v2 분류: auth|quota|spam_block|transient|render"
-        text error_raw "미분류 원문 보존"
-        timestamptz updated_ts
+        uuid publication_id FK "UNIQUE — publication과 1-1"
+        text state "CHECK pending|container_created|published|failed"
+        text container_id "IG 2단계 컨테이너 보존 → 재시작 시 재사용"
+        text error_class "CHECK auth|quota|spam_block|transient|permanent_unknown"
+        text error_raw "미분류 원문 보존 FR-P4"
+        timestamptz created_at
+        timestamptz updated_at
     }
     metric_observation {
-        uuid id PK
+        uuid id PK "[미적재] 폴링 러너 없음 — YouTubeMetrics는 스크립트에서만 호출"
         uuid publication_id FK
-        timestamptz observed_ts
-        int window_index "v2 확정: 0=6h 1=24h 2=72h 이후 일1회 FR-L1"
+        integer window_index "0=6h 1=24h 2=72h 3+=일1회. UNIQUE publication+window"
+        timestamptz observed_at
     }
     metric_value {
+        uuid id PK "[미적재]"
         uuid observation_id FK
-        text metric_key "v2 표준: IG reach|shares|saved|avg_watch_time_ms|skip_rate|views / YT views|engaged_views|avg_view_duration_s|avg_view_pct|subscribers_gained (plan/11 §4)"
-        double value "missing=NULL (CHECK: missing XOR value)"
-        boolean missing
+        text metric_key "표준 키 — docs/plan/11-데이터모델.md 4절"
+        double_precision value "결측이면 NULL — 0으로 채우지 않음 NFR-3"
+        boolean missing "CHECK missing XOR value. UNIQUE observation+metric_key"
     }
     reward {
-        uuid publication_id FK
-        double reward_value "NULL=학습 제외. v2 방향: 완주·공유율·engagedViews 가중합 FR-L2"
-        text reward_version
-        timestamptz computed_ts
+        uuid id PK "[미적재] 산식 코드 없음"
+        uuid publication_id FK "UNIQUE — publication과 1-0..1"
+        double_precision reward_value "NULL = 학습 제외 FR-L2"
+        text formula_version
+        timestamptz computed_at
     }
     playbook {
-        uuid id PK
-        text scope "domain|format|channel"
-        text scope_key
-        jsonb guidance "성과 요약·다음 사이클 지침"
-        int version
-        timestamptz updated_ts
+        uuid id PK "[미적재] WritePlaybook 운영 구현 없음 — FakeWritePlaybook만"
+        text scope "CHECK global|platform|format|topic"
+        text scope_ref
+        integer version "UNIQUE scope+scope_ref+version"
+        text guidance "LLM 착지점 2/3"
+        timestamptz created_at
     }
     analysis_note {
-        uuid id PK
-        uuid channel_id FK
-        daterange period
-        text body "LLM 착지점: 서술만. v2 소표본 규칙 FR-A4"
-        jsonb evidence_json "인용 post_id/이벤트"
-        boolean insufficient_evidence
-        text llm_version
-        timestamptz created_ts
+        uuid id PK "[미적재] Analyst 산출 body의 저장 경로 미배선"
+        uuid cycle_id FK "NULL 허용"
+        text body "LLM 착지점 3/3 — 수치 재계산 금지, validator 통과분만"
+        boolean insufficient_evidence "코드가 결정 (LLM 아님)"
+        timestamptz created_at
     }
     run_event {
         uuid id PK
-        uuid cycle_id FK
-        text kind "publish|poll|render|error|cost|notify (CHECK)"
-        jsonb payload
-        double cost_units "LLM/렌더/API 비용 - FR-P6 상한 원장"
-        timestamptz ts "append-only"
+        uuid cycle_id FK "NULL 허용"
+        text kind "CHECK cycle_started|cycle_completed|agent_called|tool_called|publish_attempted|metric_polled|error|cost|notice"
+        jsonb payload "manual 배정·관문 차단·발행 시도·알림 적재가 전부 여기"
+        numeric cost_usd "numeric(10,4) FR-P6 비용 원장 — 현재 미기입"
+        timestamptz created_at "append-only (코드 규율)"
     }

@@ -1,70 +1,117 @@
-%% multiagent-sns — 시스템 아키텍처 (v2 · 2026-08-11 개정 기획서 기준)
-%% 계정 4개(auto vs hybrid) 실험 · 무료 트렌드 소스 · 알고리즘 신호 최적화 · Discord 알림 반영
+%% multiagent-sns — 시스템 아키텍처 (코드 기준 · main 19f1466 · 2026-08-26 동기화)
+%% 기획서(v2 2026-08-11)의 예정도가 아니라 레포에 **실재하는 모듈**을 그린다.
+%% 점선 테두리 = 아직 코드가 없는 계획 항목. 실선 = 구현·테스트됨.
+%% 척추는 둘: ① run_cycle(기획→제작→pending) ② run_pending_publications(발행 종결).
+%% 둘을 잇는 상시 스케줄러가 없어서 사람이 scripts/를 순서대로 부른다.
 flowchart TB
-    subgraph SCHED["스케줄 실행 — 1주차 확정: 상주 러너(무료 VM) or GitHub Actions cron"]
-        CRON["슬롯 스케줄러<br/>(발행 사이클 트리거 · 계정 4개 × 일 1건)"]
+    subgraph ENTRY["실행 진입점 — scripts/"]
+        direction LR
+        S_CYCLE["e2e_cycle.py<br/>run_profile_cycle.py"]
+        S_WEB["run_approve_web.py :8001<br/>run_onboarding_web.py :8002"]
+        S_MAN["manual_register.py<br/>manual_notify_assignments.py"]
+        S_AN["e2e_analyst.py<br/>e2e_youtube_pipeline.py"]
+        S_KW["rank_keywords.py<br/>질의어 → 키워드 랭킹 (무인증)"]
+        SCHED["슬롯 스케줄러 · 발행 러너 상시 구동<br/>미구현"]
     end
 
-    subgraph TREND["무료 트렌드 소스 (FR-G4)"]
-        SRC["Google Trends RSS · 네이버 검색/데이터랩<br/>YouTube 인기영상 · GitHub 트렌딩/GeekNews"]
+    subgraph PIPE["① sns.runner.cycle.run_cycle — 결정론 코드 오케스트레이션 (에이전트 아님)"]
+        direction TB
+        A_TOPIC["Topic 에이전트 deepagents<br/>근거 밖 제목 거부 · 카테고리 5종 · 최근 14일 주제 제외"]
+        A_CONTENT["Content 에이전트 deepagents<br/>body + media_spec + hook_pattern 5종"]
+        G_TEXT["관문 (렌더 전) — LLM 0<br/>quality.safety 금지소재 + quality.signature 유사도 0.8"]
+        R_RES["render.images.resolve<br/>image_query → image_ref 못박기 · 실패는 그라데이션 폴백"]
+        R_MEDIA["render_media 계약 구현<br/>card: Pillow PNG · video: 3단 ffmpeg + classic + TTS"]
+        G_MEDIA["품질 게이트<br/>quality.gate.check_card · render.video.quality · render.images.gate"]
+        STORE["CycleStore<br/>content_item · media_asset · publication(pending, mode) · run_event"]
+        A_TOPIC --> A_CONTENT --> G_TEXT
+        G_TEXT -->|"통과분만 렌더"| R_RES --> R_MEDIA --> G_MEDIA --> STORE
+        G_TEXT -.차단 = 렌더 안 함.-> STORE
     end
 
-    subgraph CORE["에이전트 코어 — deepagents Orchestrator"]
-        ORCH["Orchestrator<br/>(사이클 계획/위임 · run_event 기록)"]
-        A_TOPIC["Topic Agent<br/>(research_trends 툴 + topic_stats + playbook)"]
-        A_CONTENT["Content Agent<br/>(훅 분리 생성 · hook_pattern 5종 기록)"]
-        A_MEDIA["Media Agent<br/>(카드/영상 결정론 렌더)"]
-        A_PUB["Publisher Agent<br/>(채널별 발행 어댑터 · 멱등)"]
-        A_ANALYST["Analyst Agent<br/>(6·24·72h 폴링 → reward → 분석글)"]
-        A_GROWTH["Growth Agent<br/>(균등 탐색+플레이북 · 밴딧은 표본 50건 후)"]
-        ORCH --> A_TOPIC --> A_CONTENT --> A_MEDIA --> A_PUB
-        A_PUB --> A_ANALYST --> A_GROWTH --> ORCH
+    subgraph SIDE["에이전트가 읽는 바깥"]
+        direction TB
+        TREND["research.trends — 고정 피드 갈래<br/>ResearchTrendsService(default_service 배선)<br/>무인증 4: google_trends·github_trending·hacker_news·lobsters<br/>키 필요 4: naver_search·naver_datalab·youtube_popular·llm_grounding<br/>소스별 10s 타임아웃 · 실패는 그 소스만 ok=false"]
+        STATS["read_stats — 운영 구현 없음<br/>스크립트가 FakeReadStats 주입"]
+        MODELS["agents.models — BaseChatModel 주입 seam<br/>실물 = Gemini (GEMINI_API_KEY · GEMINI_MODEL)"]
+        CONTRACT["동결 계약 6종 sns.tools.contracts<br/>ResearchTrends·RenderMedia·Publish<br/>PollMetrics·ReadStats·WritePlaybook<br/>가짜 = sns.tools.fakes"]
     end
 
-    subgraph LLM["판단 계층 — 저비용 혼합 (FR-C3)"]
-        CLAUDE["Claude claude-sonnet-5<br/>(주제 선정·대본·분석글)"]
-        GEMINI["Gemini Flash free tier<br/>(트렌드 요약·자막 분절·해시태그)"]
+    subgraph KEYWORD["research.keywords — 질의어 갈래 (챗봇 경로 · 사이클 미배선)"]
+        direction TB
+        KW_SRC["자동완성 3소스 — 전부 무인증<br/>naver_autocomplete · google_suggest · youtube_suggest<br/>고정 피드와 달리 질의어를 받는다"]
+        KW_RANK["research.ranking — 순수 계산<br/>백분위 등수(등수 ÷ 길이+1) · 결측은 분산에서 제외<br/>rank_std=None은 0.0이 아니다 (관측 1건 = 잴 수 없음)"]
+        KW_API["rank_keywords(query) — 유일한 진입점<br/>토글 5종 · ranking_to_dict = 프로세스 경계 JSON"]
+        KW_SRC --> KW_RANK --> KW_API
     end
 
-    subgraph RENDER["미디어 렌더 (결정론 · FR-M)"]
-        IMG["Pillow 카드 렌더러"]
-        VID["영상 합성 — Phase 0 스파이크 확정<br/>(ffmpeg+ASS vs Remotion)"]
-        TTS["TTS: Google Cloud Chirp 3 HD 권장<br/>(단어별 타임스탬프 → 자막 싱크)"]
-        QG["품질 게이트 (FR-Q + FR-A2)<br/>규격·안전영역 900×1400·구조 유사도"]
-        IMG --> QG
-        VID --> QG
-        TTS --> VID
+    DB[("PostgreSQL — 마이그 001·002·003<br/>channel·channel_profile·cycle·topic·content_item<br/>media_asset·publication·publish_attempt·run_event<br/>topic_stats·metric_*·reward·playbook·analysis_note = 쓰기 경로 없음")]
+
+    subgraph PUBRUN["② sns.publish.runner.run_pending_publications — 기계 발행은 auto·hybrid만"]
+        direction TB
+        P_RUN["게이트 배선<br/>quality_status=passed + hybrid는 content_item=approved까지"]
+        P_SM["publish.state_machine.run_publish<br/>멱등(key=publication_id) · IG container_id 보존"]
+        P_RUN --> P_SM
     end
 
-    subgraph PUBAPI["발행 어댑터 — 공식 API만 (FR-P)"]
-        IGAPI["Instagram Graph API<br/>IG-auto · IG-hybrid 2계정<br/>(피드 이미지 · 릴스)"]
-        YTAPI["YouTube Data API v3<br/>YT-auto · YT-hybrid 2계정<br/>(쇼츠)"]
+    subgraph ADAPT["채널 어댑터 — 공식 API"]
+        direction LR
+        IG_PUB["instagram.publisher<br/>Graph 2단계 · 실계정 검증 전"]
+        YT_PUB["youtube.publisher<br/>resumable · 1회 1600 units"]
+        FAKEP["사이클 스크립트는 FakePublish 배선<br/>원장 종결까지만 확인"]
     end
 
-    subgraph DATA["PostgreSQL (단일 DB)"]
-        DB[("channel(mode)·cycle·topic·topic_stats<br/>content_item(hook_pattern·edited_by_human)<br/>media_asset·publication·publish_attempt<br/>metric_*·reward·playbook·analysis_note·run_event")]
+    subgraph HUMAN["사람이 끼는 자리"]
+        direction TB
+        W_ON["web.onboarding — 인터뷰 5단계 + 컨셉 확정<br/>onboarding: profile·recommend·character·store"]
+        W_AP["web.approve — hybrid 승인/반려<br/>승인 = content_item approved + media_asset passed"]
+        P_MAN["publish.manual — 수동 발행 후 external_post_id 등록<br/>manual 채널에만 · 재등록 멱등"]
+        W_IN["인사이트 탭 FR-W3 — auto/hybrid/manual 비교 화면<br/>미구현"]
     end
 
-    subgraph WEB["웹 (FastAPI + 경량 프론트)"]
-        UI_IN["인사이트 탭 [필수 FR-W3]<br/>추이·기울기 · auto vs hybrid 비교<br/>신호 스코어보드 · 분석글"]
-        UI_HY["hybrid 승인 화면 [필수 FR-E1/Q3]<br/>주제 선택 → 초안 수정 → 승인"]
-        UI_OPT["온보딩·설정 (선택 FR-W1/W2)"]
+    subgraph OBS["관측·학습·알림"]
+        direction TB
+        YT_MET["youtube.metrics — Analytics v2<br/>결측=missing · 오류는 raise"]
+        IG_MET["Instagram Insights 폴러<br/>미구현"]
+        A_AN["Analyst 에이전트 + signals.scoreboard<br/>수치는 코드가 계산 · 계정 자체 중앙값 대비"]
+        VAL["learning.validator<br/>insufficient_evidence는 코드가 결정"]
+        LEARN["reward 산식 · topic_stats 집계 · playbook 쓰기<br/>analysis_note 저장 · Growth 밴딧<br/>미구현 — 루프가 닫히지 않았다"]
+        NOTIFY["notify.dispatch → cause(LLM 1줄) → Discord<br/>적재 먼저 · 어떤 실패도 호출자로 전파 안 함"]
+        A_AN --> VAL --> LEARN
+        YT_MET --> A_AN
+        IG_MET -.미배선.-> A_AN
     end
 
-    DISCORD["Discord 웹훅 [필수 FR-W4]<br/>발행 성공/실패 + 오류 분류<br/>+ LLM 원인 분석 1줄"]
+    S_CYCLE --> PIPE
+    S_WEB --> HUMAN
+    S_MAN --> P_MAN
+    S_MAN --> NOTIFY
+    S_AN --> OBS
+    SCHED -.구동 예정.-> PUBRUN
 
-    CRON --> ORCH
-    A_TOPIC -.조회.-> TREND
-    CORE -.판단 호출.-> LLM
-    A_MEDIA --> RENDER
-    QG -->|passed만| A_PUB
-    A_PUB --> PUBAPI
-    PUBAPI -.지표 폴링.-> A_ANALYST
-    A_ANALYST -.신호 스코어보드·조기판정<br/>FR-A1·A3.-> DB
-    CORE <--> DB
-    RENDER --> DB
-    UI_HY -->|승인/수정| DB
-    UI_IN <--> DB
-    UI_OPT <--> DB
-    A_PUB -.성공/실패.-> DISCORD
-    ORCH -.사이클 오류.-> DISCORD
+    A_TOPIC -->|"research_trends"| TREND
+    S_KW --> KW_API
+    KEYWORD -.오케스트레이션 재사용<br/>동시 실행·타임아웃·실패 격리.-> TREND
+    KW_API -.DB 저장 없음 · 사이클 주제 선정과 미연결.-> DB
+    A_TOPIC -->|"read_stats"| STATS
+    PIPE -.모델 주입.-> MODELS
+    PIPE -.계약 위에서만.-> CONTRACT
+
+    STORE --> DB
+    DB --> P_RUN
+    P_SM --> IG_PUB
+    P_SM --> YT_PUB
+    P_SM --> FAKEP
+    P_SM -.실패 분류.-> NOTIFY
+    PIPE -.사이클 오류 · manual 배정.-> NOTIFY
+    NOTIFY --> DB
+
+    W_ON -->|"channel_profile 새 revision"| DB
+    DB -.최신 프로필 주입.-> PIPE
+    W_AP -->|"발행 게이트 반전"| DB
+    P_MAN --> DB
+    YT_PUB -.발행 후 지표.-> YT_MET
+    LEARN -.계획: 다음 사이클 지침.-> PIPE
+    W_IN -.계획.-> DB
+
+    classDef planned stroke-dasharray: 6 4,stroke-width:1px,color:#888
+    class SCHED,IG_MET,LEARN,W_IN,STATS planned

@@ -48,7 +48,11 @@ class ResearchTrendsService:
         return tuple(self._fetchers)
 
     def __call__(self, sources: tuple[str, ...] | None = None, limit: int = 10) -> TrendDigest:
-        selected = sources if sources is not None else tuple(self._fetchers)
+        # 중복 소스명은 순서를 지키며 접는다. 접지 않으면 같은 엔드포인트에 요청이 두 번
+        # 나가고, 결과에도 같은 소스가 두 번 실려 후보 하나가 "2개 소스가 봤다"로 집계된다
+        # (등수 통계의 정렬 1순위가 present_count다). 호출자가 `--source x --source x`를
+        # 줄 수 있는 이상 여기서 막는 게 맞다.
+        selected = tuple(dict.fromkeys(sources if sources is not None else self._fetchers))
         if not selected:
             return TrendDigest(digest_markdown=_render_digest(()), source_results=())
 

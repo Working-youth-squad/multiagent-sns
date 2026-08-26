@@ -1,25 +1,61 @@
-%% multiagent-sns — 운영자 유저 플로우 (온보딩 → 운영 → 리포트)
+%% multiagent-sns — 운영자 유저 플로우 (코드 기준 · main 19f1466 · 2026-08-26 동기화)
+%% 실제 화면은 둘뿐이다: 온보딩 인터뷰 웹(:8002)과 hybrid 승인 웹(:8001).
+%% 나머지 운영 동작은 CLI(scripts/)와 Discord 알림으로 이뤄진다.
+%% 점선(planned) = 아직 코드가 없는 계획 항목.
 flowchart TD
-    START([운영자 진입]) --> AUTH{채널 연동됨?}
-    AUTH -- 아니오 --> ONBOARD[채널 온보딩<br/>IG 프로 계정·YouTube 채널 OAuth]
-    ONBOARD --> TOKEN[토큰 암호화 저장<br/>검증 핑]
-    TOKEN --> VERIFY{검증 성공?}
-    VERIFY -- 실패 --> ONBOARD
-    VERIFY -- 성공 --> CONFIG
-    AUTH -- 예 --> CONFIG[운영 설정<br/>goal 선택·발행 슬롯·주제 도메인·채널/포맷 on-off]
+    START(["운영자 진입 — run_onboarding_web.py :8002"]) --> ENTRY{"GET / — 무엇부터?"}
+    ENTRY -->|"기존 계정 연동"| LINK["POST /link<br/>플랫폼 + 핸들만 먼저 받아 위저드 state로 운반"]
+    ENTRY -->|"새로 만들기"| STEP1
+    LINK --> STEP1["1. 주제 대분류<br/>개발·요리·음악·춤 또는 직접 입력"]
 
-    CONFIG --> RUN{자율 운영 시작}
-    RUN --> BASELINE[베이스라인 수집<br/>초기 발행·지표 축적]
-    BASELINE --> LOOP[자율 사이클 반복<br/>기획→제작→발행→학습]
+    STEP1 --> STEP2["2. 세부 주제 최대 3개"]
+    STEP2 --> STEP3["3. 톤<br/>전문적·가벼운·유머·스토리"]
+    STEP3 --> STEP4["4. 목표 = goal 프리셋<br/>reach·follower·engagement·watch_through"]
+    STEP4 --> STEP5["5. 캐릭터 스타일<br/>3D·플랫벡터·픽셀·수채화·없음"]
+    STEP5 --> FINISH["POST /interview/finish<br/>parse_profile 검증"]
+    FINISH -->|"ProfileError"| STEP5
+    FINISH --> REC["추천안 조회 recommend_fn<br/>트렌드 근거 위 이름·미세조정 제안"]
+    REC -->|"실패해도 온보딩을 막지 않는다"| CONFIRM["컨셉 확정 화면<br/>추천안 확인 + 줄글로 미세조정 입력"]
 
-    LOOP --> MONITOR[대시보드 모니터링]
-    MONITOR --> REPORT[성장 리포트 열람<br/>추이·기울기·LLM 분석글]
-    MONITOR --> ALERT{알림 발생?}
-    ALERT -- 토큰만료/한도/발행실패 --> FIX[운영자 조치<br/>토큰 갱신·한도 대기]
-    FIX --> LOOP
-    ALERT -- 없음 --> LOOP
+    CONFIRM --> CREATE["POST /channels — 여기서 처음 계정이 생긴다"]
+    Note1["중도 이탈해도 빈 채널이 남지 않고<br/>유료 캐릭터 생성 비용도 발생하지 않는다"] -.- CREATE
+    CREATE --> REFINE["refine_fn: 줄글로 프로필 개정<br/>실패 시 원문을 note로 보존"]
+    REFINE --> CHAR["ensure_character_fn: 캐릭터 1회 생성 (유료)<br/>실패해도 온보딩 계속 — 캐릭터 없음으로 진행"]
+    CHAR --> SAVE["create_channel(mode 기본 hybrid) + save_profile<br/>channel_profile 새 행"]
+    SAVE --> DETAIL["GET /channels/:id 채널 상세"]
+    DETAIL -->|"줄글 개정"| REV["POST /channels/:id/refine<br/>UPDATE 아님 — 새 revision (FR-W2 이력 보존)"]
+    REV --> DETAIL
 
-    CONFIG -. goal/도메인 변경 .-> RESET[설정 변경 = 새 국면<br/>이력 보존·기저 재수집]
-    RESET --> BASELINE
+    DETAIL --> OPS{"운영 — 상시 스케줄러 없음, CLI로 사이클을 부른다"}
+    OPS --> CYCLE["uv run python scripts/run_profile_cycle.py 핸들<br/>최신 프로필 → goal_ref·categories·brief를 사이클에 주입"]
+    CYCLE --> MODE{"채널 mode"}
 
-    REPORT --> END([운영 지속])
+    MODE -->|"auto"| AUTORUN["초안 자동 approved → 발행 러너가 종결까지"]
+    MODE -->|"hybrid"| APPROVE["승인 웹 :8001 — run_approve_web.py<br/>목록 → 상세 → 본문 수정"]
+    MODE -->|"manual"| ASSIGN["run_event(manual_assignment)<br/>manual_notify_assignments.py → Discord 배정 알림"]
+
+    APPROVE -->|"승인"| APPROVED["content_item=approved + media_asset=passed<br/>본문 수정 시 edited_by_human=true"]
+    APPROVE -->|"반려"| REJECTED["content_item=rejected + publication=skipped<br/>즉시 종결"]
+    APPROVED --> RUNNER
+    AUTORUN --> RUNNER["run_pending_publications — auto·hybrid만"]
+
+    ASSIGN --> HUMAN["사람이 직접 작성 → 플랫폼 앱에서 직접 발행"]
+    HUMAN --> REGISTER["manual_register.py --external-post-id<br/>manual 채널에만 등록 · 같은 post id 재등록은 멱등"]
+
+    RUNNER --> RESULT{"발행 결과"}
+    RESULT -->|"성공"| LEDGER["publication=published + external_post_id"]
+    RESULT -->|"게이트 미통과"| WAIT["pending 유지 — 승인되면 다음 구동에서 발행"]
+    RESULT -->|"실패"| ALERT["Discord 알림 — 오류 분류 + LLM 원인 1줄<br/>적재 먼저, 전송 실패해도 원장은 남는다"]
+    ALERT --> FIX["운영자 조치 — 토큰 갱신 · 쿼터 대기 · 원문 확인"]
+    FIX --> OPS
+    WAIT --> APPROVE
+    REGISTER --> LEDGER
+
+    LEDGER --> LOOK{"성과 확인"}
+    LOOK --> SQL["현재는 DB 직접 조회 · run_event 덤프 · e2e_analyst.py 수동 실행"]
+    LOOK -.계획.-> INSIGHT["인사이트 탭 FR-W3<br/>추이·기울기 · auto vs hybrid vs manual 비교<br/>미구현"]
+
+    classDef planned stroke-dasharray: 6 4,stroke-width:1px,color:#888
+    classDef note fill:#f7f7f7,stroke:#ccc,color:#555
+    class INSIGHT planned
+    class Note1 note
