@@ -72,11 +72,23 @@ class KeywordStat:
     observed_mean: float
     rank_std: float | None
     per_source: tuple[SourceRank, ...]
+    variants: tuple[str, ...] = ()
+    """소스들에서 실제로 관측된 **모든 표기 변종**(등장 순). `text`는 그 첫 번째다.
+
+    공백만 다른 표기("리콜대상"/"리콜 대상")는 한 후보로 병합되는데, 병합 뒤 대표 표기
+    하나에만 제외 판정을 걸면 **어느 소스가 먼저 나열되느냐에 따라 제외 여부가 뒤집힌다**.
+    변종을 전부 남겨 판정이 소스 순서에 의존하지 않게 한다.
+    """
 
     @property
     def key(self) -> str:
         """소스 간 조인·중복 판정에 쓰는 비교용 표기."""
         return squeezed(self.text)
+
+    @property
+    def surface_forms(self) -> tuple[str, ...]:
+        """관측된 표기 전부. 변종 기록이 없는 옛 객체는 대표 표기 하나로 본다."""
+        return self.variants or (self.text,)
 
 
 @dataclass(frozen=True)
@@ -174,14 +186,18 @@ def rank_stats(results: Sequence[SourceResult]) -> tuple[KeywordStat, ...]:
 
     per_source = {r.source: _ranked(r.items) for r in live}
 
-    # 표시 문자열은 요청한 소스 순서상 처음 등장한 표기를 쓴다(결정론).
-    display: dict[str, str] = {}
+    # 관측된 표기를 전부 등장 순으로 모은다. 대표 표기(text)는 그 첫 번째 —
+    # 요청한 소스 순서상 처음 등장한 표기다(결정론).
+    variants: dict[str, list[str]] = {}
     for result in live:
         for key, (text, _) in per_source[result.source].items():
-            display.setdefault(key, text)
+            forms = variants.setdefault(key, [])
+            if text not in forms:
+                forms.append(text)
 
     stats: list[KeywordStat] = []
-    for key, text in display.items():
+    for key, forms in variants.items():
+        text = forms[0]
         ranks: list[SourceRank] = []
         for result in live:
             hit = per_source[result.source].get(key)
@@ -198,6 +214,7 @@ def rank_stats(results: Sequence[SourceResult]) -> tuple[KeywordStat, ...]:
                 # 대입값은 분산에 넣지 않는다(모듈 docstring 3번).
                 rank_std=pstdev(observed) if len(observed) > 1 else None,
                 per_source=tuple(ranks),
+                variants=tuple(forms),
             )
         )
 
@@ -213,15 +230,36 @@ def band_bounds(values: Sequence[float], percentiles: tuple[float, float]) -> tu
     return percentile(values, low_p), percentile(values, high_p)
 
 
-def excluded_by(text: str, keywords: Sequence[str]) -> str | None:
+def excluded_by(text: str, keywords: Sequence[str], *, ignore_spaces: bool = False) -> str | None:
     """text에 걸린 첫 제외 키워드. 없으면 None.
 
-    대소문자·공백 **양**은 무시하되 공백의 **존재**는 존중한다(`keytext.collapsed`) —
-    "리콜  대상"은 걸리고 "최고 장점"은 걸리지 않는다. 공백을 지우면 '고장'이 생겨 오탐.
+    기본은 대소문자·공백 **양**은 무시하되 공백의 **존재**는 존중한다
+    (`keytext.collapsed`) — "리콜  대상"은 걸리고 "최고 장점"은 걸리지 않는다.
+    공백을 지우면 '고장'이 생겨 오탐이다.
+
+    `ignore_spaces=True`면 공백을 아예 지우고(`keytext.squeezed`) 부분 일치를 본다.
+    한국어에는 단어 경계가 없어, 이 선택은 **"리콜 대상"으로 "리콜대상"을 잡는 것**과
+    **"최고 장점"에서 "고장"을 오탐하는 것**을 맞바꾼다. 도메인이 부정 키워드를 좁게
+    통제할 수 있을 때만 켠다(핸드오프 §2.1).
     """
-    haystack = collapsed(text)
+    normalize = squeezed if ignore_spaces else collapsed
+    haystack = normalize(text)
     for keyword in keywords:
-        needle = collapsed(keyword)
+        needle = normalize(keyword)
         if needle and needle in haystack:
             return keyword
+    return None
+
+
+def excluded_match(
+    stat: KeywordStat, keywords: Sequence[str], *, ignore_spaces: bool = False
+) -> tuple[str, str] | None:
+    """후보가 제외에 걸리면 `(걸린 표기, 제외 키워드)`. 안 걸리면 None.
+
+    **관측된 표기 전부**를 본다 — 대표 표기 하나만 보면 소스 나열 순서가 결과를 가른다.
+    """
+    for form in stat.surface_forms:
+        hit = excluded_by(form, keywords, ignore_spaces=ignore_spaces)
+        if hit is not None:
+            return form, hit
     return None

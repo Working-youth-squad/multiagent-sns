@@ -104,6 +104,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--exclude", action="append", help="제외 키워드(반복 가능). 미지정이면 거르지 않는다"
     )
+    parser.add_argument(
+        "--exclude-ignore-spaces",
+        action="store_true",
+        help="제외 판정에서 공백을 무시(‘리콜 대상’이 ‘리콜대상’도 잡음). 오탐 위험 — §2.1",
+    )
     parser.add_argument("--json", action="store_true", help="사람용 표 대신 JSON")
     args = parser.parse_args(argv)
 
@@ -120,6 +125,7 @@ def main(argv: list[str] | None = None) -> int:
         percentiles=(low, high),
         min_present=args.min_present,
         exclude=args.exclude,
+        exclude_ignore_spaces=args.exclude_ignore_spaces,
     )
     if args.json:
         print(json.dumps(ranking_to_dict(ranking), ensure_ascii=False, indent=2))

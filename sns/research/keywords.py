@@ -17,6 +17,7 @@
 | 밴드 필터 | `band=False` / `percentiles=(10, 90)` | 전 후보 반환(filter_mode="off") |
 | 교차검증 하한 | `min_present=2` | 2개 이상 소스가 아는 키워드만 |
 | 제외 키워드 | `exclude=[...]` (기본 없음) | 걸러내지 않는다 |
+| 제외 매칭 폭 | `exclude_ignore_spaces=True` | 공백 무시 부분일치(오탐 위험, 기본 off) |
 
 `exclude`가 기본으로 비어 있는 이유: 이 모듈은 **관련성**을 판정하지 않는다. 등수 분산만
 보므로 밈·오타도 통과한다. 무엇이 부적절한지는 도메인이 정하는 문제라, 질의어에서 부정
@@ -32,7 +33,7 @@ from sns.research.ranking import (
     KeywordRanking,
     KeywordStat,
     band_bounds,
-    excluded_by,
+    excluded_match,
     live_results,
     rank_stats,
 )
@@ -90,6 +91,7 @@ def aggregate(
     percentiles: tuple[float, float] = BAND_PERCENTILES,
     min_present: int = 1,
     exclude: Sequence[str] | None = None,
+    exclude_ignore_spaces: bool = False,
     top: int = DEFAULT_TOP,
 ) -> KeywordRanking:
     """이미 수집된 소스 결과 → 통계·필터·정렬. **순수 함수**(네트워크 접촉 없음).
@@ -106,11 +108,13 @@ def aggregate(
     if exclude:
         survivors: list[KeywordStat] = []
         for stat in stats:
-            hit = excluded_by(stat.text, exclude)
-            if hit is None:
+            # 대표 표기가 아니라 **관측된 표기 전부**로 판정한다 — 그래야 소스 나열
+            # 순서가 제외 여부를 가르지 않는다. 기록도 실제로 걸린 표기를 남긴다.
+            match = excluded_match(stat, exclude, ignore_spaces=exclude_ignore_spaces)
+            if match is None:
                 survivors.append(stat)
             else:
-                excluded.append((stat.text, hit))
+                excluded.append(match)
         stats = tuple(survivors)
 
     if min_present > 1:
@@ -177,6 +181,7 @@ def rank_keywords(
     percentiles: tuple[float, float] = BAND_PERCENTILES,
     min_present: int = 1,
     exclude: Sequence[str] | None = None,
+    exclude_ignore_spaces: bool = False,
     service: ResearchTrendsService | None = None,
     timeout_s: float = DEFAULT_TIMEOUT_S,
 ) -> KeywordRanking:
@@ -199,6 +204,7 @@ def rank_keywords(
         percentiles=percentiles,
         min_present=min_present,
         exclude=exclude,
+        exclude_ignore_spaces=exclude_ignore_spaces,
         top=top,
     )
 

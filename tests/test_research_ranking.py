@@ -15,6 +15,7 @@ from sns.research.ranking import (
     SourceRank,
     band_bounds,
     excluded_by,
+    excluded_match,
     pct_rank_of,
     percentile,
     rank_stats,
@@ -234,3 +235,46 @@ def test_exclude_is_case_insensitive() -> None:
 
 def test_exclude_returns_none_when_clean() -> None:
     assert excluded_by("개발자 연봉", ["리콜", "결함"]) is None
+
+
+def test_exclude_ignore_spaces_trades_recall_for_false_positives() -> None:
+    """토글을 켜면 붙여쓴 형태를 잡는 대신 '고장' 류 오탐을 감수한다."""
+    assert excluded_by("리콜대상 확인", ["리콜 대상"]) is None
+    assert excluded_by("리콜대상 확인", ["리콜 대상"], ignore_spaces=True) == "리콜 대상"
+    assert excluded_by("최고 장점", ["고장"], ignore_spaces=True) == "고장"
+
+
+def _stat(text: str, *variants: str) -> KeywordStat:
+    return KeywordStat(
+        text=text,
+        present_count=1,
+        observed_mean=0.1,
+        rank_std=None,
+        per_source=(SourceRank("naver_autocomplete", 0.1, True),),
+        variants=variants or (text,),
+    )
+
+
+def test_excluded_match_scans_every_observed_variant() -> None:
+    """R2 회귀: 대표 표기 하나만 보면 소스 나열 순서가 제외 여부를 가른다."""
+    spaced_first = _stat("리콜 대상", "리콜 대상", "리콜대상")
+    squeezed_first = _stat("리콜대상", "리콜대상", "리콜 대상")
+    assert excluded_match(spaced_first, ["리콜 대상"]) == ("리콜 대상", "리콜 대상")
+    assert excluded_match(squeezed_first, ["리콜 대상"]) == ("리콜 대상", "리콜 대상")
+
+
+def test_excluded_match_falls_back_to_text_without_variants() -> None:
+    assert excluded_match(_stat("리콜 대상"), ["리콜"]) == ("리콜 대상", "리콜")
+    assert excluded_match(_stat("개발자 연봉"), ["리콜"]) is None
+
+
+def test_rank_stats_records_every_surface_form() -> None:
+    stats = rank_stats(
+        [
+            ok("naver_autocomplete", "리콜대상", "정비"),
+            ok("google_suggest", "리콜 대상", "정비"),
+        ]
+    )
+    recall = next(s for s in stats if s.key == "리콜대상")
+    assert recall.variants == ("리콜대상", "리콜 대상")
+    assert recall.present_count == 2
