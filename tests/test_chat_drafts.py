@@ -4,12 +4,13 @@ from sns.chat.drafts import (
     BODY_PREVIEW_CHARS,
     SEED_DONE,
     DraftItem,
+    ExportItem,
     SeedOutcome,
     seed_done_message,
     seed_done_payload,
 )
 from sns.chat.store import ChatMessage, Conversation
-from sns.web.chat.render import render_conversation, render_drafts
+from sns.web.chat.render import render_conversation, render_drafts, render_export
 from tests.test_chat_app import _now
 
 _APPROVE = "http://127.0.0.1:8001"
@@ -175,3 +176,100 @@ def test_plain_system_message_stays_a_bubble() -> None:
     html = render_conversation(conversation, messages)
     assert 'class="draft"' not in html
     assert "초안 제작을 시작했습니다." in html
+
+
+# ── 수동 발행용 내보내기 ───────────────────────────────────────────────
+
+
+def _export(**overrides: object) -> ExportItem:
+    base: dict[str, object] = {
+        "content_item_id": "ce6fd70f-f2eb-47c3-8aca-2e232bec2d23",
+        "topic_title": "개발자 포트폴리오 작성법",
+        "channel_label": "instagram @demo",
+        "platform": "instagram",
+        "content_status": "approved",
+        "body": "훅: 시작이 반이다\n\n본문:\n실전처럼 보이는 프로젝트를 골라라\n\n#개발자",
+        "media_asset_id": "ma-1",
+    }
+    base.update(overrides)
+    return ExportItem(**base)  # type: ignore[arg-type]
+
+
+def test_export_shows_the_whole_caption_uncut() -> None:
+    """초안 카드와 정반대의 요구 — 잘린 캡션을 복사하면 잘린 채 게시된다."""
+    item = _export(body="가" * (BODY_PREVIEW_CHARS + 500))
+    html = render_export(item)
+    assert item.body in html
+    assert f"{len(item.body)}자" in html
+
+
+def test_export_offers_both_downloads() -> None:
+    html = render_export(_export())
+    assert "/media/ma-1?download=1" in html
+    assert "/export/ce6fd70f-f2eb-47c3-8aca-2e232bec2d23/caption.txt" in html
+    assert "download" in html
+
+
+def test_export_warns_when_not_approved() -> None:
+    """승인 전 원고를 손으로 올리면 사람 관문(FR-Q3)을 건너뛴 것이 된다."""
+    html = render_export(_export(content_status="needs_review"))
+    assert "needs_review" in html
+    assert "관문을 건너뜁니다" in html
+
+
+def test_export_has_no_warning_when_approved() -> None:
+    assert "관문을 건너뜁니다" not in render_export(_export())
+
+
+def test_export_without_media_says_so() -> None:
+    html = render_export(_export(media_asset_id=None))
+    assert "이미지 없음" in html
+    assert "?download=1" not in html
+
+
+def test_export_escapes_body() -> None:
+    html = render_export(_export(body="<script>alert(1)</script>"))
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;" in html
+
+
+def test_filename_stem_drops_characters_the_os_rejects() -> None:
+    stem = _export(topic_title="개발자/포트폴리오: 작성법?").filename_stem
+    for bad in "/:?":
+        assert bad not in stem
+    assert stem.endswith("-ce6fd70f")
+
+
+def test_filename_stem_survives_an_all_symbol_title() -> None:
+    assert _export(topic_title="///").filename_stem == "content-ce6fd70f"
+
+
+def test_export_surfaces_the_id_needed_for_manual_registration() -> None:
+    """수동 등록(scripts/manual_register.py)에 content_item_id가 필요하다."""
+    html = render_export(_export())
+    assert "ce6fd70f-f2eb-47c3-8aca-2e232bec2d23" in html
+
+
+def test_draft_card_links_to_export() -> None:
+    html = render_drafts(seed_done_payload(_outcome(_prepared()), approve_base=_APPROVE))
+    assert "/export/ci-1" in html
+
+
+def test_hybrid_export_says_registration_is_not_possible() -> None:
+    """sns.publish.manual은 manual 채널만 받는다 — 되는 것처럼 안내하면 실패로 보낸다."""
+    html = render_export(_export(channel_mode="hybrid"))
+    assert "등록할 수 없습니다" in html
+    assert "manual_register" not in html
+    assert "pending" in html
+
+
+def test_manual_export_points_at_the_registration_cli() -> None:
+    html = render_export(_export(channel_mode="manual"))
+    assert "manual_register.py" in html
+    assert "등록할 수 없습니다" not in html
+
+
+def test_export_without_a_channel_says_so() -> None:
+    html = render_export(_export(channel_mode=None))
+    assert "채널을 찾지 못했습니다" in html
+    assert "manual_register" not in html

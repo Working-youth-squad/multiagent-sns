@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
 from sns.agents.topic import TopicResult
+from sns.chat.drafts import ExportItem
 from sns.chat.store import InMemoryChatStore
 from sns.research.keywords import aggregate
 from sns.research.ranking import KeywordRanking
@@ -267,3 +268,77 @@ def test_media_store_failure_does_not_500_the_page() -> None:
 
     client = _client(InMemoryChatStore(), [], load_media_fn=boom)
     assert client.get("/media/ma-1").status_code == 404
+
+
+# ── 수동 발행용 내보내기 라우트 ────────────────────────────────────────
+
+
+def _export_item() -> ExportItem:
+    return ExportItem(
+        content_item_id="ci-1",
+        topic_title="개발자 포트폴리오 작성법",
+        channel_label="instagram @demo",
+        platform="instagram",
+        content_status="approved",
+        body="훅: 시작이 반이다\n#개발자",
+        media_asset_id="ma-1",
+    )
+
+
+def _export_client(**kwargs: Any) -> TestClient:
+    item = _export_item()
+    return _client(
+        InMemoryChatStore(),
+        [],
+        load_export_fn=kwargs.pop("load_export_fn", lambda cid: item if cid == "ci-1" else None),
+        **kwargs,
+    )
+
+
+def test_export_page_renders_and_404s_for_unknown() -> None:
+    client = _export_client()
+    ok = client.get("/export/ci-1")
+    assert ok.status_code == 200
+    assert "개발자 포트폴리오 작성법" in ok.text
+    assert client.get("/export/없는-id").status_code == 404
+
+
+def test_export_page_is_404_when_unwired() -> None:
+    assert _client(InMemoryChatStore(), []).get("/export/ci-1").status_code == 404
+
+
+def test_caption_download_is_utf8_attachment() -> None:
+    r = _export_client().get("/export/ci-1/caption.txt")
+    assert r.status_code == 200
+    assert r.content.decode("utf-8") == _export_item().body
+    disposition = r.headers["content-disposition"]
+    assert disposition.startswith("attachment;")
+    # 한글 파일명은 RFC 5987로 실어야 헤더에서 깨지지 않는다.
+    assert "filename*=UTF-8''" in disposition
+
+
+def test_attachment_header_keeps_an_ascii_fallback_name() -> None:
+    """제목이 전부 비ASCII여도 이름 없는 다운로드가 되지 않아야 한다."""
+    r = _export_client().get("/export/ci-1/caption.txt")
+    disposition = r.headers["content-disposition"]
+    ascii_part = disposition.split('filename="')[1].split('"')[0]
+    assert ascii_part
+    assert ascii_part.isascii()
+
+
+def test_media_download_flag_switches_to_attachment() -> None:
+    client = _export_client(load_media_fn=lambda aid: (b"PNG", "image/png"))
+    inline = client.get("/media/ma-1")
+    assert "content-disposition" not in inline.headers
+    attached = client.get("/media/ma-1", params={"download": "1", "name": "카드"})
+    assert attached.headers["content-disposition"].startswith("attachment;")
+    assert attached.content == b"PNG"
+
+
+def test_export_lookup_failure_is_404_not_500() -> None:
+    def boom(content_item_id: str) -> ExportItem | None:
+        raise OSError("DB 장애")
+
+    client = _export_client(load_export_fn=boom)
+    assert client.get("/export/ci-1").status_code == 404
+    assert client.get("/export/ci-1/caption.txt").status_code == 404
