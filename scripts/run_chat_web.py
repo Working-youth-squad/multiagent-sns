@@ -2,7 +2,9 @@
 
 전제:
   1. docker compose up -d postgres (+ python -m sns.db.migrate — 마이그 004 필요)
-  2. env GEMINI_API_KEY — **필수**. 이 앱의 본체가 LLM 대화다.
+  2. LLM 키 — **필수**(앱 본체가 대화다). env SNS_MODEL_PROVIDER로 고른다:
+     · gemini(기본) → GEMINI_API_KEY   · openai → OPENAI_API_KEY
+     모델은 GEMINI_MODEL / OPENAI_MODEL로 덮어쓴다.
   3. env DATABASE_URL — (선택) 기본 postgresql://sns:sns@localhost:5432/sns
   4. env CHAT_WEB_HOST/PORT — (선택) 기본 127.0.0.1:8003
   5. env CARD_FONT — (선택) 한글 TTF 경로. 미지정 시 자동 탐색
@@ -28,7 +30,7 @@ import psycopg
 import uvicorn
 from dotenv import load_dotenv
 
-from sns.agents.models import make_model
+from sns.agents.models import make_model, required_key_env, resolve_model_name, resolve_provider
 from sns.agents.topic import TopicResult
 from sns.chat.store import PgChatStore
 from sns.quality.gate import QualityReport, check_card
@@ -182,10 +184,18 @@ def main() -> int:
             stream.reconfigure(encoding="utf-8", errors="replace")
 
     load_dotenv(ENV_FILE, override=False)
-    if not os.environ.get("GEMINI_API_KEY"):
-        print("중단: env GEMINI_API_KEY 없음 — 챗봇 본체가 LLM 대화입니다.")
-        print("      무료 키 발급: https://aistudio.google.com/apikey")
+    try:
+        provider = resolve_provider()
+    except RuntimeError as exc:
+        print(f"중단: {exc}")
         return 1
+    key_env = required_key_env(provider)
+    if not os.environ.get(key_env):
+        print(f"중단: env {key_env} 없음 — 챗봇 본체가 LLM 대화입니다.")
+        print("      gemini: https://aistudio.google.com/apikey (무료 티어)")
+        print("      openai: https://platform.openai.com/api-keys")
+        return 1
+    print(f"모델 : {provider} / {resolve_model_name(provider)}")
 
     dsn = os.environ.get("DATABASE_URL", DEFAULT_DSN)
     try:

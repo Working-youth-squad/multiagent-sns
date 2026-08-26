@@ -11,6 +11,7 @@ dependencies = [
     "google-auth-oauthlib>=1.4.0",
     "google-cloud-texttospeech>=2.37.0",
     "langchain-google-genai>=4.3.3",
+    "langchain-openai>=1.1.7",
     "pillow>=12.3.0",
     "psycopg[binary]>=3.2",
     "pygments>=2.20.0",

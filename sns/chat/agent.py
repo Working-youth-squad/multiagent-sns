@@ -61,7 +61,11 @@ _SYSTEM_PROMPT = """당신은 SNS 성장 엔진의 키워드 상담 챗봇이다
 5. confirm_topic은 사용자가 명시적으로 고른 뒤에만 부른다. 먼저 제안하는 것은 좋지만
    동의 없이 확정하지 않는다. title은 콘텐츠 제목이 될 한 줄, summary는 무엇을 다룰지
    한두 문장이다.
-6. 한국어로, 짧게 답한다."""
+6. **confirm_topic을 부른 뒤 콘텐츠를 직접 쓰지 않는다.** 초안·개요·목차·본문은 전부
+   콘텐츠 제작 담당의 몫이다. 당신이 여기서 초안을 써 보이면 실제로 발행 승인 화면에
+   올라갈 글과 달라서, 사용자는 어느 쪽이 나갈지 알 수 없게 된다. 확정했다는 사실과
+   어디서 확인하면 되는지만 한두 줄로 알린다.
+7. 한국어로, 짧게 답한다."""
 
 
 @dataclass
@@ -176,7 +180,10 @@ def run_chat_turn(
         seed.update(
             title=title.strip(), summary=summary.strip(), category=category.strip() or "tool"
         )
-        return "주제 확정. 초안 제작을 시작한다 — 사용자에게 승인 화면에서 확인하라고 안내할 것."
+        return (
+            "주제 확정. 초안 제작이 시작됐다. **초안을 직접 쓰지 말 것** — 확정 사실과 "
+            "승인 화면에서 확인하면 된다는 안내만 한두 줄로 하고 끝낸다."
+        )
 
     agent = create_deep_agent(
         model=model,
