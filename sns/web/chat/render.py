@@ -71,8 +71,8 @@ button{padding:.6rem 1.2rem;border:none;border-radius:8px;cursor:pointer;font-si
 .card{display:flex;gap:.9rem;align-items:flex-start;border-top:1px solid #e6efe6;
   padding-top:.75rem;margin-top:.75rem}
 .card:first-of-type{border-top:none;padding-top:0;margin-top:0}
-.card img{width:150px;height:auto;max-height:230px;object-fit:contain;border-radius:8px;
-  border:1px solid #ddd;flex-shrink:0;background:#f4f4f4}
+.card img,.card video{width:150px;height:auto;max-height:230px;object-fit:contain;
+  border-radius:8px;border:1px solid #ddd;flex-shrink:0;background:#f4f4f4}
 .card .who{font-size:.82rem;color:#666;margin:0 0 .3rem}
 .card .preview{white-space:pre-wrap;word-break:break-word;font-size:.9rem;margin:0}
 .card .rest{color:#888;font-size:.8rem}
@@ -85,7 +85,8 @@ button{padding:.6rem 1.2rem;border:none;border-radius:8px;cursor:pointer;font-si
 .actions{margin-top:.5rem;display:flex;gap:.75rem;flex-wrap:wrap;align-items:center}
 .actions a{font-size:.85rem}
 .export-grid{display:flex;gap:1.2rem;align-items:flex-start;flex-wrap:wrap}
-.export-grid img{width:270px;height:auto;border:1px solid #ddd;border-radius:8px}
+.export-grid img,.export-grid video{width:270px;height:auto;border:1px solid #ddd;
+  border-radius:8px;background:#f4f4f4}
 .export-side{flex:1;min-width:260px}
 .caption{width:100%;min-height:22rem;font-family:inherit;font-size:.95rem;padding:.6rem;
   box-sizing:border-box;border:1px solid #ccc;border-radius:8px;line-height:1.5}
@@ -344,6 +345,22 @@ def render_drafts(payload: Mapping[str, object]) -> str:
     )
 
 
+def _media_tag(asset_id: str, media_kind: str) -> str:
+    """자산 종류로 <img> ↔ <video>를 가른다 — **종류는 원장이 준다**.
+
+    확장자나 MIME으로 추측하지 않는다. 화면에는 저장소 URL이 오지 않고(`/media/{id}`
+    중계) 응답을 미리 받아볼 수도 없다. 종류를 payload에 실어 보내는 이유가 이것이다
+    ([sns.chat.drafts.DraftItem.media_kind]).
+
+    `preload="metadata"`인 이유: 대화 한 화면에 초안이 여러 건 붙을 수 있는데 전부
+    자동 로드하면 mp4 수 MB가 한꺼번에 흐른다. 첫 프레임만 받아 포스터로 쓴다.
+    """
+    src = f"/media/{escape(asset_id)}"
+    if media_kind == "video":
+        return f'<video src="{src}" controls preload="metadata" playsinline></video>'
+    return f'<img src="{src}" alt="생성된 카드 이미지">'
+
+
 def _draft_card(item: Mapping[str, object]) -> str:
     outcome = str(item.get("outcome", ""))
     who = escape(str(item.get("channel_label", "")))
@@ -361,9 +378,9 @@ def _draft_card(item: Mapping[str, object]) -> str:
 
     asset_id = item.get("media_asset_id")
     if isinstance(asset_id, str) and asset_id:
-        thumb = f'<img src="/media/{escape(asset_id)}" alt="생성된 카드 이미지">'
+        thumb = _media_tag(asset_id, str(item.get("media_kind") or "image"))
     else:
-        thumb = '<div class="noimg">이미지 없음</div>'
+        thumb = '<div class="noimg">자산 없음</div>'
 
     # 주 뱃지는 **승인 상태**다. 미디어 품질이 passed여도 사람 승인 전이면 나가지 않는다 —
     # 품질만 보여주면 "통과했다"로 읽혀 발행된 줄 안다.
@@ -439,16 +456,18 @@ def render_export(item: ExportItem) -> str:
     """
     stem = item.filename_stem
     cid = escape(item.content_item_id)
+    is_video = item.media_kind == "video"
     if item.media_asset_id:
         src = f"/media/{escape(item.media_asset_id)}"
+        label = "영상 내려받기" if is_video else "이미지 내려받기"
         image = (
-            f'<div><img src="{src}" alt="발행용 카드 이미지">'
+            f"<div>{_media_tag(item.media_asset_id, item.media_kind)}"
             f'<div class="actions">'
-            f'<a href="{src}?download=1&amp;name={escape(stem)}" download>이미지 내려받기</a>'
+            f'<a href="{src}?download=1&amp;name={escape(stem)}" download>{label}</a>'
             "</div></div>"
         )
     else:
-        image = '<div class="noimg">이미지 없음 — 렌더 자산이 없습니다.</div>'
+        image = '<div class="noimg">렌더 자산이 없습니다.</div>'
 
     # 승인 전 원고를 손으로 올리면 사람 관문(FR-Q3)을 건너뛴 것이 된다. 막지는 않되
     # 어떤 상태인지는 반드시 알린다 — 모르고 올리는 것과 알고 올리는 것은 다르다.
@@ -461,7 +480,7 @@ def render_export(item: ExportItem) -> str:
         gate = ""
 
     steps = (
-        '<div class="step">1. 이미지를 내려받습니다.</div>'
+        f'<div class="step">1. {"영상" if is_video else "이미지"}을(를) 내려받습니다.</div>'
         '<div class="step">2. 아래 캡션을 전체 선택해 복사하거나 .txt로 내려받습니다.</div>'
         f'<div class="step">3. {escape(item.platform)} 앱에서 직접 올립니다.</div>'
         f'<div class="step">4. {_register_step(item)}</div>'

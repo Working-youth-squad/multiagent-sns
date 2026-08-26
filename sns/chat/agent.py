@@ -29,6 +29,8 @@ from langchain_core.tools import tool
 from sns.agents.topic import TopicResult
 from sns.chat.store import ChatMessage
 from sns.research import KeywordRanking, rank_keywords, ranking_to_dict
+from sns.runner.formats import FormatChoice, parse_format_choice
+from sns.tools.contracts import VideoMethod
 
 RankFn = Callable[..., KeywordRanking]
 
@@ -40,15 +42,29 @@ _SUMMARY_LIMIT = 10
 # 서버가 매 턴 전량을 읽는데, 그걸 그대로 모델에 넣으면 토큰이 선형으로 는다.
 HISTORY_LIMIT = 20
 
-_SYSTEM_PROMPT = """당신은 SNS 성장 엔진의 키워드 상담 챗봇이다. 사용자가 막연한 관심사를 \
+METHOD_LABELS: dict[VideoMethod, str] = {
+    "template": "템플릿 — 스톡 사진과 타이포로 조립한다. 추가 비용 없음",
+    "generated_scene": "장면 생성 — 컷마다 AI가 이미지를 만든다. **유료**",
+    "generated_clip": "클립 생성 — 컷 배경을 AI가 영상으로 만든다. **유료(가장 비쌈)**",
+    "hybrid": "혼합 — 컷마다 방식이 다르다",
+}
+
+FORMAT_LABELS: dict[FormatChoice, str] = {
+    "card": "카드 — 피드에 올리는 정사각/세로 이미지 한 장",
+    "video": "영상 — 세로 쇼츠·릴스(나레이션 포함)",
+}
+
+_PROMPT_HEAD = """당신은 SNS 성장 엔진의 키워드 상담 챗봇이다. 사용자가 막연한 관심사를 \
 가져오면 대화로 좁혀서, 근거 있는 트렌드 키워드를 찾아주고, 사용자가 원하면 그 주제로 \
 콘텐츠 초안 제작까지 연결한다.
 
 도구:
 - search_keywords(query): 네이버·구글·유튜브 자동완성 3소스에서 그 질의어의 연관 키워드를
   모아 등수 통계를 낸다. 질의어는 한 번에 하나이고, 짧은 명사구가 잘 나온다.
-- confirm_topic(title, summary, category): 사용자가 "이걸로 만들어줘"라고 확정했을 때만
-  부른다. 부르는 순간 콘텐츠 초안 제작이 시작된다.
+- confirm_topic(title, summary, category, content_format, method): 사용자가 "이걸로 만들어줘"
+  라고 확정했을 때만 부른다. 부르는 순간 콘텐츠 초안 제작이 시작된다.
+
+«CAPABILITIES»
 
 규칙:
 1. **숫자를 지어내지 않는다.** 등수·표준편차·점수 같은 수치는 화면이 도구 결과 원본에서
@@ -65,7 +81,52 @@ _SYSTEM_PROMPT = """당신은 SNS 성장 엔진의 키워드 상담 챗봇이다
    콘텐츠 제작 담당의 몫이다. 당신이 여기서 초안을 써 보이면 실제로 발행 승인 화면에
    올라갈 글과 달라서, 사용자는 어느 쪽이 나갈지 알 수 없게 된다. 확정했다는 사실과
    어디서 확인하면 되는지만 한두 줄로 알린다.
-7. 한국어로, 짧게 답한다."""
+7. **위 목록에 없는 포맷·제작 방식은 제안하지 않는다.** 목록은 이 서버가 실제로 배선한
+   것뿐이다 — 없는 것을 권하면 사용자는 도구가 거부할 선택을 고르게 된다.
+8. **유료 표시가 붙은 방식은 그 사실을 먼저 말하고** 사용자가 그래도 좋다고 한 뒤에 쓴다.
+9. 한국어로, 짧게 답한다."""
+
+
+def _capabilities_block(formats: Sequence[FormatChoice], methods: Sequence[VideoMethod]) -> str:
+    """이 서버가 **실제로 배선한** 선택지만 프롬프트에 적는다.
+
+    Capability Gate([sns.render.video.router])를 대화까지 끌고 온 자리다. 라우터가
+    거부할 방식을 LLM이 권하면 사용자는 막다른 길을 고르게 된다 — 애초에 안 보이는
+    편이 낫다.
+    """
+    lines = ["이 서버가 만들 수 있는 것 (여기 없는 것은 고를 수 없다):", "", "content_format:"]
+    lines += [f"- {f}: {FORMAT_LABELS[f]}" for f in formats]
+    if "video" not in formats:
+        lines.append("")
+        lines.append(
+            "영상은 이 서버에 배선돼 있지 않다(ffmpeg 또는 나레이션 자격증명 없음) — "
+            "사용자가 영상을 원하면 만들 수 없다고 말한다."
+        )
+        return "\n".join(lines)
+    lines += ["", "method (content_format=video일 때만 쓴다):"]
+    lines += [f"- {m}: {METHOD_LABELS.get(m, m)}" for m in methods]
+    return "\n".join(lines)
+
+
+def _system_prompt(formats: Sequence[FormatChoice], methods: Sequence[VideoMethod]) -> str:
+    return _PROMPT_HEAD.replace("«CAPABILITIES»", _capabilities_block(formats, methods))
+
+
+@dataclass(frozen=True)
+class SeedRequest:
+    """사용자가 대화에서 확정한 것 전부 — 주제 + **무엇으로 만들지**.
+
+    `TopicResult` 하나만 넘기던 자리를 대신한다. 포맷·제작 방식이 주제와 함께 대화에서
+    정해지는데 시그니처가 주제만 나르면, 배선이 그 선택을 알 길이 없어 진입점이 포맷을
+    하드코딩하게 된다 — 실제로 그랬다(`content_format="feed_image"` 고정).
+
+    `method`가 `None`인 것은 "기본값"이 아니라 **카드에는 제작 방식이라는 축이 없다**는
+    뜻이다. 영상일 때만 값이 있다.
+    """
+
+    topic: TopicResult
+    content_format: FormatChoice = "card"
+    method: VideoMethod | None = None
 
 
 @dataclass
@@ -78,8 +139,8 @@ class ChatTurn:
     rankings: list[KeywordRanking] = field(default_factory=list)
     """이 턴에 수행된 랭킹 전량(툴 호출 순서). role='ranking'으로 원본 박제된다."""
 
-    seed_topic: TopicResult | None = None
-    """사용자가 확정한 주제. 있으면 호출자가 콘텐츠 사이클을 띄운다(FR-W5)."""
+    seed_request: SeedRequest | None = None
+    """사용자가 확정한 주제·포맷·방식. 있으면 호출자가 콘텐츠 사이클을 띄운다(FR-W5)."""
 
 
 def summarize_for_model(ranking: KeywordRanking) -> str:
@@ -141,18 +202,29 @@ def run_chat_turn(
     user_text: str,
     rank_fn: RankFn = rank_keywords,
     exclude: Sequence[str] | None = None,
+    formats: Sequence[FormatChoice] = ("card",),
+    methods: Sequence[VideoMethod] = ("template",),
 ) -> ChatTurn:
     """한 턴 진행. 툴 호출 결과는 코드가 포착해 `ChatTurn`으로 돌려준다.
 
     `rank_fn`은 테스트가 네트워크 없이 도는 지점이다(`rank_keywords`와 같은 시그니처).
     `exclude`는 채널 프로필에서 온 제외어 — [sns.research.keywords]가 이 목록을 판정하지
     않고 호출자에게 맡긴 그 자리다.
+
+    `formats`·`methods`는 **이 서버가 배선한 것**이다(Capability Gate를 대화까지). 기본값이
+    카드·템플릿뿐인 것은 그 둘만이 추가 전제 없이 항상 도는 조합이기 때문이다 — 영상은
+    ffmpeg과 나레이션 자격증명을, 생성 방식은 결제를 요구한다. 배선이 명시로 넓힌다.
     """
     if not user_text.strip():
         raise ValueError("사용자 발화가 비어 있다")
+    if not formats:
+        raise ValueError("formats가 비어 있다 — 만들 수 있는 것이 없으면 대화할 수 없다")
+    if "video" in formats and not methods:
+        raise ValueError("영상을 배선했는데 methods가 비어 있다 — 라우터가 아무것도 못 고른다")
 
     rankings: list[KeywordRanking] = []
     seed: dict[str, str] = {}
+    choice: dict[str, object] = {}
 
     @tool
     def search_keywords(query: str, min_present: int = 1) -> str:
@@ -173,30 +245,69 @@ def run_chat_turn(
         return summarize_for_model(ranking)
 
     @tool
-    def confirm_topic(title: str, summary: str, category: str = "tool") -> str:
-        """사용자가 확정한 주제로 콘텐츠 초안 제작을 시작한다. 동의 없이 부르지 않는다."""
+    def confirm_topic(
+        title: str,
+        summary: str,
+        category: str = "tool",
+        content_format: str = "card",
+        method: str = "",
+    ) -> str:
+        """사용자가 확정한 주제로 콘텐츠 초안 제작을 시작한다. 동의 없이 부르지 않는다.
+
+        content_format은 'card' 또는 'video'. method는 영상일 때의 제작 방식이다 —
+        시스템 프롬프트의 목록에 있는 값만 받는다.
+        """
         if not title.strip() or not summary.strip():
             return "오류: title과 summary가 모두 필요하다."
+
+        fmt = parse_format_choice(content_format.strip().lower())
+        if fmt is None or fmt not in formats:
+            # 배선 밖의 값은 되돌려 보낸다 — 여기서 카드로 떨구면 사용자가 영상을
+            # 골랐는데 이미지가 나오고, 왜 그런지는 아무 데도 안 남는다.
+            return (
+                f"오류: content_format {content_format!r}은 이 서버가 만들 수 없다. "
+                f"고를 수 있는 것: {list(formats)}"
+            )
+
+        picked: VideoMethod | None = None
+        if fmt == "video":
+            name = method.strip() or methods[0]
+            if name not in methods:
+                return (
+                    f"오류: method {method!r}은 이 서버가 배선하지 않았다. "
+                    f"고를 수 있는 것: {list(methods)}"
+                )
+            picked = name  # type: ignore[assignment]
+
         seed.update(
             title=title.strip(), summary=summary.strip(), category=category.strip() or "tool"
         )
+        choice.update(content_format=fmt, method=picked)
+        # 카드에 method를 실어 보내는 것은 오류가 아니라 축 착각이다 — 거부하면 LLM이
+        # 같은 호출을 반복한다. 무시했다는 사실만 분명히 밝힌다.
+        ignored = (
+            " (카드에는 제작 방식이라는 축이 없어 method는 무시했다)"
+            if (fmt == "card" and method.strip())
+            else ""
+        )
         return (
-            "주제 확정. 초안 제작이 시작됐다. **초안을 직접 쓰지 말 것** — 확정 사실과 "
-            "승인 화면에서 확인하면 된다는 안내만 한두 줄로 하고 끝낸다."
+            f"주제 확정 — {fmt}{'' if picked is None else f'/{picked}'}로 초안 제작이 "
+            f"시작됐다.{ignored} **초안을 직접 쓰지 말 것** — 확정 사실과 승인 화면에서 "
+            "확인하면 된다는 안내만 한두 줄로 하고 끝낸다."
         )
 
     agent = create_deep_agent(
         model=model,
         tools=[search_keywords, confirm_topic],
-        system_prompt=_SYSTEM_PROMPT,
+        system_prompt=_system_prompt(formats, methods),
     )
     messages: list[BaseMessage] = [*to_langchain_messages(history), HumanMessage(user_text)]
     state = agent.invoke({"messages": messages})  # type: ignore[call-overload]
     reply = _message_text(state["messages"][-1].content)
 
-    seed_topic = None
+    seed_request = None
     if seed:
-        seed_topic = TopicResult(
+        topic = TopicResult(
             title=seed["title"],
             category=seed["category"],
             # 출처는 "챗봇 대화"다. 트렌드 소스 이름을 적으면 원장에서 자동 수집분과
@@ -205,8 +316,13 @@ def run_chat_turn(
             summary=seed["summary"],
             reason="사용자가 대화에서 직접 확정",
         )
+        seed_request = SeedRequest(
+            topic=topic,
+            content_format=choice["content_format"],  # type: ignore[arg-type]
+            method=choice["method"],  # type: ignore[arg-type]
+        )
 
-    return ChatTurn(reply=reply, rankings=rankings, seed_topic=seed_topic)
+    return ChatTurn(reply=reply, rankings=rankings, seed_request=seed_request)
 
 
 def _message_text(content: object) -> str:
