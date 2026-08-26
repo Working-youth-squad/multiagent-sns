@@ -11,7 +11,8 @@
 from collections.abc import Mapping
 
 # 직전 N건 대비 유사도 상한. 이 위면 사실상 같은 콘텐츠로 본다.
-MAX_CONTENT_SIMILARITY = 0.8
+# 문자 2-gram 기준 실측: 재탕·조사 변형 ≥ 0.7, 같은 도메인의 다른 대본 ≤ 0.45.
+MAX_CONTENT_SIMILARITY = 0.6
 
 # 영상 슬라이드에서 지문에 넣을 텍스트 필드(코드 제외).
 _SLIDE_TEXT_FIELDS = ("subtitle", "narration")
@@ -52,9 +53,17 @@ def spec_texts(media_spec: Mapping[str, object]) -> list[tuple[str, str]]:
 
 
 def spec_signature(media_spec: Mapping[str, object]) -> frozenset[str]:
-    """콘텐츠 지문 — 텍스트 토큰 집합. 팔레트·규격은 항상 같으므로 보지 않는다."""
+    """콘텐츠 지문 — **문자 2-gram** 집합. 팔레트·규격은 항상 같으므로 보지 않는다.
+
+    처음엔 어절(공백 분리) 집합이었는데 한국어에서 무력했다: 조사만 바뀌어도
+    ("쿠키를"/"쿠키가") 다른 토큰이라, 같은 대본의 재탕이 임계(0.8)에 한 번도 안
+    걸렸다. 문자 2-gram은 조사 변형을 그대로 잡고 의존성이 0이다(형태소 분석기 불요).
+    """
     text = " ".join(t for _, t in spec_texts(media_spec)).lower()
-    return frozenset(text.split())
+    compact = "".join(text.split())
+    if len(compact) < 2:
+        return frozenset({compact} if compact else ())
+    return frozenset(compact[i : i + 2] for i in range(len(compact) - 1))
 
 
 def jaccard(a: frozenset[str], b: frozenset[str]) -> float:

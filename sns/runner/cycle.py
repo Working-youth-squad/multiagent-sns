@@ -107,6 +107,9 @@ RECENT_TOPIC_DAYS = 14
 RECENT_SPEC_LIMIT = 50
 
 ResolveMediaSpec = Callable[[Mapping[str, object]], ImageResolution]
+# 주제 리서치 seam([sns.agents.research]) — 확정된 주제로 근거 노트를 만든다.
+# 미주입이면 기존 동작 무변경, 실패는 notice로 남기고 근거 없이 진행한다.
+ResearchTopic = Callable[[TopicResult], str]
 
 
 def run_cycle(
@@ -124,6 +127,8 @@ def run_cycle(
     channel_brief: str | None = None,
     topic_categories: Sequence[str] | None = None,
     seed_topic: TopicResult | None = None,
+    research_topic: ResearchTopic | None = None,
+    audience: str | None = None,
 ) -> CycleResult:
     """한 사이클 구동.
 

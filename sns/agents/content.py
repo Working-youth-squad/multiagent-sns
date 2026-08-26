@@ -14,6 +14,7 @@ LLM이 자유 JSON으로 흘리지 않고 **툴로 코드가 포착·검증**한
 """
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, get_args
 
@@ -31,8 +32,11 @@ from sns.tools.contracts import ContentFormat
 HookPattern = Literal["bold_claim", "curiosity", "story", "shock", "question"]
 HOOK_PATTERNS: tuple[str, ...] = get_args(HookPattern)
 
+# 채널마다 독자가 다르다(개발·요리·음악…) — {audience} 자리만 갈리고 규칙은 같다.
+DEFAULT_AUDIENCE = "개발자"
+
 _SYSTEM_PROMPT = """당신은 SNS 성장 엔진의 Content 에이전트다. \
-주어진 개발자 주제로 포맷에 맞는 콘텐츠를 만든다.
+주어진 {audience} 주제로 포맷에 맞는 콘텐츠를 만든다.
 
 규칙:
 1. 첫 화면(훅)과 본문을 분리한다. 훅은 스크롤을 멈출 이유를 첫 프레임/첫 카드에 담는다.
@@ -65,9 +69,12 @@ _SYSTEM_PROMPT = """당신은 SNS 성장 엔진의 Content 에이전트다. \
        - 충격적인 수치·키워드 한 방:
          {"kind":"emphasis","tag":"최악의 경우","headline":"100억","sub":"십만 건 × 십만 건 비교"}
          headline은 한글 8자 이내. 숫자 하나면 가장 세다.
-       - 느린 방법 vs 빠른 방법 도해(왜 빨라지는지 보여주는 컷):
+       - 느린 방법 vs 빠른 방법 도해(왜 빨라지는지·왜 나은지 보여주는 컷):
          {"kind":"compare","before_label":"list","before_note":"6번 비교",
           "after_label":"set","after_note":"1번 비교","footer":"O(n) -> O(1)"}
+         비개발 주제도 같은 모양이다:
+         {"kind":"compare","before_label":"실온 버터","before_note":"30분 대기",
+          "after_label":"전자레인지","after_note":"10초 해동","footer":"질감은 실온이 승"}
          label은 짧은 이름(한글 8자 이내), footer는 전후 변화 한 줄.
        - 마무리 "기억하세요" 한 줄:
          {"kind":"remember","line":"반복문 안에서 in을 쓴다면","code":"set(...)"}
@@ -98,10 +105,10 @@ _SYSTEM_PROMPT = """당신은 SNS 성장 엔진의 Content 에이전트다. \
      * focus_lines(선택): 지금 말하고 있는 코드 줄 번호 목록(1-기반). 나머지 줄은
        어둡게 눌린다. code 없이 쓰면 거부된다. 같은 코드를 초점만 바꿔 연속 컷으로
        보여주면 "지금 이 줄"이 전달된다.
-4. **근거를 댈 수 없는 구체 수치를 쓰지 않는다.** "확 빨라집니다"·"이거 모르면 손해" 같은
-   과장은 좋지만, "생산성 300% 향상"·"3배 빨라짐"처럼 측정하지 않은 숫자는 개발자 독자에게
-   신뢰를 잃는다. 근거가 있으면 근거와 함께 쓰고(예: "십만 건 기준 비교 횟수 1/10만"),
-   없으면 숫자를 빼고 말로 쓴다.
+4. **구체성은 근거에서 온다.** '근거 자료' 블록이 주어지면 거기 있는 사실·수치·순서를
+   대본의 중심에 그대로 인용하라 — 그게 이 영상의 알맹이다. 근거 자료 밖의 측정하지 않은
+   숫자("생산성 300% 향상"·"3배 빨라짐")는 {audience} 독자에게 신뢰를 잃으니 쓰지 않는다.
+   근거가 하나도 없으면 숫자를 빼고 말로 쓴다.
 5. 마지막 메시지는 발행 캡션/본문(body)이다 — 해시태그 포함 가능, 한국어로 쓴다.
    캡션은 마크다운을 렌더하지 않는 플랫폼에 올라가니 **, ##, --- 같은 기호를 쓰지 않는다.
 6. 정치·특정인 비방·음란·불법 복제 소재는 쓰지 않는다 — 게이트에 걸려 발행이 막힌다.
@@ -159,8 +166,16 @@ def run_content(
     topic: TopicResult,
     content_format: ContentFormat,
     playbook_guidance: str | None = None,
+    audience: str | None = None,
+    research: str | None = None,
+    avoid_titles: Sequence[str] = (),
 ) -> ContentResult:
-    """주제 → 포맷별 콘텐츠. 훅·검증된 media_spec·본문 모두 확보돼야 반환."""
+    """주제 → 포맷별 콘텐츠. 훅·검증된 media_spec·본문 모두 확보돼야 반환.
+
+    `research`는 [sns.agents.research]의 근거 노트 — 있으면 구체성의 원천이 된다.
+    `avoid_titles`는 최근 다룬 주제 — 같은 각도의 재탕을 입력 단계에서 막는다
+    (temperature=0 결정론은 유지하고, 다양성은 입력으로 만든다).
+    """
     captured: dict[str, object] = {}
 
     @tool
@@ -185,17 +200,28 @@ def run_content(
         return "media_spec 검증 통과"
 
     guidance = f"\n참고 플레이북 지침: {playbook_guidance}" if playbook_guidance else ""
+    # 근거 노트 — 대본이 인용할 수 있는 유일한 사실 공급원(규칙 4가 참조한다).
+    research_block = f"\n근거 자료:\n{research.strip()}\n" if research and research.strip() else ""
+    avoid_block = (
+        "\n최근 다룬 주제(겹치지 않게 다른 각도·다른 소재로 써라): "
+        + " / ".join(avoid_titles)
+        + "\n"
+        if avoid_titles
+        else ""
+    )
+    # JSON 예시의 중괄호 때문에 str.format은 못 쓴다 — 치환은 이 한 자리뿐이다.
+    system_prompt = _SYSTEM_PROMPT.replace("{audience}", audience or DEFAULT_AUDIENCE)
     agent = create_deep_agent(
         model=model,
         tools=[set_hook, set_media_spec],
-        system_prompt=_SYSTEM_PROMPT,
+        system_prompt=system_prompt,
     )
     state = agent.invoke(
         {
             "messages": [
                 HumanMessage(
                     f"주제: {topic.title} [{topic.category}] — {topic.summary}\n"
-                    f"포맷: {content_format}.{guidance}\n"
+                    f"포맷: {content_format}.{guidance}\n{research_block}{avoid_block}"
                     "set_hook과 set_media_spec을 호출한 뒤 마지막 메시지로 본문을 써라."
                 )
             ]
