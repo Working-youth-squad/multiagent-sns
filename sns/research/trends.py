@@ -110,6 +110,7 @@ def default_service(
     sources: Sequence[str] | None = None,
     search_terms: Sequence[str] | None = None,
     grounding_prompt: str | None = None,
+    extra_fetchers: Mapping[str, SourceFetcher] | None = None,
 ) -> ResearchTrendsService:
     """사용 가능한 실 fetcher를 배선한 서비스. 새 소스가 붙을 때마다 여기 등록한다.
 
@@ -129,6 +130,9 @@ def default_service(
       전체가 데이터랩의 추이 비교 키워드다. 프로필의 `(topic_major, *topic_subs)`가
       그대로 들어온다 — 사람이 인터뷰에서 고른 말이 곧 검색어다.
     - `grounding_prompt`: LLM 그라운딩 질의([sns.topic_policy.grounding_prompt_for]).
+    - `extra_fetchers`: 호출자가 이름 붙여 넘기는 소스. 질의어 키워드 랭킹처럼 **내장
+      레지스트리에 없는** 소스를 얹는 자리다([sns.onboarding.trends]). `sources` 필터를
+      타지 않는다 — 명시로 준 것이라 내장 목록에 있을 리 없고, 태우면 전부 걸러진다.
 
     그라운딩 **모델**은 env `GROUNDING_MODEL`로 바꾼다 — 프로필이 아니라 운영 설정이라
     자격증명과 같은 자리에서 읽는다. 모델이 은퇴해도 코드 배포 없이 넘어갈 수 있어야
@@ -184,6 +188,10 @@ def default_service(
     if sources is not None:
         # 이 주제가 안 쓰는 소스는 키가 있어도 등록하지 않는다.
         fetchers = {k: v for k, v in fetchers.items() if k in set(sources)}
+    if extra_fetchers:
+        # **`sources` 필터를 태우지 않는다.** 호출자가 이름을 붙여 명시로 넘긴 것이라
+        # 내장 소스 목록에 있을 리가 없다 — 태우면 방금 준 것이 전부 걸러진다.
+        fetchers.update(extra_fetchers)
     return ResearchTrendsService(fetchers, timeout_s=timeout_s)
 
 

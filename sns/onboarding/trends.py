@@ -17,8 +17,31 @@
 from collections.abc import Mapping
 
 from sns.onboarding.profile import ChannelProfile
-from sns.research.trends import DEFAULT_TIMEOUT_S, ResearchTrendsService, default_service
+from sns.research.keywords import rank_keywords
+from sns.research.trends import (
+    DEFAULT_TIMEOUT_S,
+    ResearchTrendsService,
+    SourceFetcher,
+    default_service,
+)
 from sns.topic_policy import grounding_prompt_for, trend_sources_for
+
+KEYWORD_SOURCE_PREFIX = "keywords:"
+"""세부 주제별 키워드 소스의 이름 앞머리 — 다이제스트에서 어느 니치의 후보인지 보인다."""
+
+
+def _keyword_fetcher(query: str, timeout_s: float) -> SourceFetcher:
+    """질의어 1개 → 자동완성 3종 교차검증 후보([sns.research.keywords]).
+
+    `SourceFetcher`(limit→items) 모양으로 감싸면 기존 서비스가 동시 실행·소스별
+    타임아웃·실패 격리를 그대로 해준다 — 어댑터나 합성 클래스가 필요 없다.
+    """
+
+    def fetcher(limit: int) -> tuple[str, ...]:
+        ranking = rank_keywords(query, top=limit, timeout_s=timeout_s)
+        return tuple(stat.text for stat in ranking.candidates)
+
+    return fetcher
 
 
 def profile_trend_service(
@@ -38,4 +61,11 @@ def profile_trend_service(
         sources=trend_sources_for(profile.topic_major),
         search_terms=(profile.topic_major, *profile.topic_subs),
         grounding_prompt=grounding_prompt_for(profile.topic_major, profile.topic_subs),
+        # 세부 주제마다 소스 하나. 자동완성은 질의어가 구체적일수록 쓸모 있는 연관어를
+        # 낸다 — 대분류("요리")는 일반명사만 나오기 쉽다. 무인증이라 호출 비용이 0이고,
+        # 니치별로 나눠 두면 Topic 에이전트가 어디서 온 후보인지 구분해서 본다.
+        extra_fetchers={
+            f"{KEYWORD_SOURCE_PREFIX}{sub}": _keyword_fetcher(sub, timeout_s)
+            for sub in profile.topic_subs
+        },
     )

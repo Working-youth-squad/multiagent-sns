@@ -87,3 +87,46 @@ def test_grounding_prompt_comes_from_the_profile(monkeypatch) -> None:  # type: 
     prompt = str(seen["prompt"])
     assert "요리" in prompt and "자취요리" in prompt
     assert "개발" not in prompt
+
+
+def test_keyword_source_per_sub() -> None:
+    """세부 주제마다 소스 하나 — 다이제스트에서 어느 니치의 후보인지 보여야 한다."""
+    profile = _profile(topic_major="요리", topic_subs=["자취요리", "간편식"])
+    svc = profile_trend_service(profile, env=FULL_ENV)
+    assert "keywords:자취요리" in svc.sources
+    assert "keywords:간편식" in svc.sources
+
+
+def test_keyword_sources_survive_the_source_filter() -> None:
+    """extra_fetchers가 sources 필터를 타면 방금 준 것이 전부 걸러진다."""
+    profile = _profile(topic_major="요리", topic_subs=["자취요리"])
+    svc = profile_trend_service(profile, env=FULL_ENV)
+    # 요리는 개발 전용 소스를 안 쓰지만 키워드 소스는 남아야 한다.
+    assert not (DEV_ONLY & set(svc.sources))
+    assert any(s.startswith("keywords:") for s in svc.sources)
+
+
+def test_keyword_candidates_reach_the_digest(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """랭킹 결과가 후보 문자열로 다이제스트에 실린다. 네트워크는 타지 않는다."""
+    from sns.research.ranking import KeywordStat
+
+    class _Ranking:
+        candidates = (
+            KeywordStat("자취요리 레시피", 3, 0.2, 0.05, ()),
+            KeywordStat("자취요리 초간단", 2, 0.4, 0.10, ()),
+        )
+
+    seen: dict[str, object] = {}
+
+    def fake_rank(query: str, **kw: object) -> object:
+        seen["query"] = query
+        return _Ranking()
+
+    monkeypatch.setattr("sns.onboarding.trends.rank_keywords", fake_rank)
+    profile = _profile(topic_major="요리", topic_subs=["자취요리"])
+    digest = profile_trend_service(profile, env=FULL_ENV)(sources=("keywords:자취요리",))
+    result = digest.source_results[0]
+    assert seen["query"] == "자취요리"  # 대분류가 아니라 세부 주제로 묻는다
+    assert result.ok
+    assert result.items == ("자취요리 레시피", "자취요리 초간단")
+    assert "자취요리 레시피" in digest.digest_markdown

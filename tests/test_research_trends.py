@@ -218,3 +218,19 @@ def test_grounding_model_defaults_when_env_absent(monkeypatch) -> None:  # type:
     monkeypatch.setattr("sns.research.sources.llm_grounding.fetch_llm_grounding", fake_grounding)
     default_service(env=_ALL_KEYS)(sources=("llm_grounding",))
     assert "url" not in seen["kw"]  # type: ignore[operator]
+
+
+def test_extra_fetchers_bypass_the_source_filter() -> None:
+    """호출자가 이름 붙여 준 소스는 내장 목록에 있을 리 없다 — 태우면 전부 걸러진다."""
+    svc = default_service(
+        env={},
+        sources=("google_trends",),
+        extra_fetchers={"keywords:자취요리": _ok("자취요리 레시피")},
+    )
+    assert set(svc.sources) == {"google_trends", "keywords:자취요리"}
+
+
+def test_extra_fetchers_none_changes_nothing() -> None:
+    assert set(default_service(env={}).sources) == set(
+        default_service(env={}, extra_fetchers=None).sources
+    )
