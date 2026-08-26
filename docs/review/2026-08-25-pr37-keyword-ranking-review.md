@@ -119,7 +119,7 @@ A가 먼저 나열되면  → stat.text = "리콜대상"  → 그냥 통과
 
 ```python
 active = service or keyword_service(query, timeout_s=timeout_s)
-selected = tuple(sources) if sources is not None else KEYWORD_SOURCES   # ← 여기
+selected = tuple(sources) if sources is not None else KEYWORD_SOURCES  # ← 여기
 digest = active(selected, limit=limit)
 ```
 
@@ -154,8 +154,8 @@ CLI `choices`와 문서용 상수로만 남긴다. 임의 이름 레지스트리
 **위치**: `sns/research/ranking.py:151`
 
 ```python
-live = [r for r in results if r.ok]                        # 리스트 — 중복이 남는다
-per_source = {r.source: _ranked(r.items) for r in live}    # dict — 중복이 접힌다
+live = [r for r in results if r.ok]  # 리스트 — 중복이 남는다
+per_source = {r.source: _ranked(r.items) for r in live}  # dict — 중복이 접힌다
 ```
 
 두 자료구조의 중복 처리가 다르다. `results`에 같은 `source` 이름이 두 번 들어오면

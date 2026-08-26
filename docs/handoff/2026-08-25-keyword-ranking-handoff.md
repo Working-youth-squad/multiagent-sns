@@ -115,9 +115,9 @@ JSON 최상위 키와 파이썬 필드는 1:1이다. 후보 항목(`candidates`�
 탐색으로도 안 잡힌다. 한국어에는 단어 경계가 없어 공백 무시 부분일치는 오탐과의 맞바꿈이다:
 
 ```python
-rank_keywords("기아", exclude=["리콜 대상"])                              # "리콜대상" 통과
+rank_keywords("기아", exclude=["리콜 대상"])  # "리콜대상" 통과
 rank_keywords("기아", exclude=["리콜 대상"], exclude_ignore_spaces=True)  # "리콜대상" 차단
-rank_keywords("등산", exclude=["고장"], exclude_ignore_spaces=True)       # "최고 장점"도 차단 ← 오탐
+rank_keywords("등산", exclude=["고장"], exclude_ignore_spaces=True)  # "최고 장점"도 차단 ← 오탐
 ```
 
 **부정 키워드를 좁게 통제할 수 있을 때만 켠다.** 브랜드 리스크 단어처럼 짧고 흔한 음절
