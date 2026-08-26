@@ -200,3 +200,17 @@ def test_research_topic_returns_grounded_note() -> None:
     prompt = json.loads(sink["target"].data)["contents"][0]["parts"][0]["text"]
     assert "베이킹 예열" in prompt
     assert json.loads(sink["target"].data)["tools"] == [{"google_search": {}}]
+
+
+def test_llm_grounding_url_follows_model_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """gemini-2.0-flash 하드코딩이 모델 은퇴로 404를 내던 실사고 — 모델은 env를 따른다."""
+    from sns.research.sources.llm_grounding import gemini_url
+
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    assert "gemini-3.5-flash:generateContent" in gemini_url()
+    monkeypatch.setenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
+    assert "gemini-3.5-flash-lite:generateContent" in gemini_url()
+
+    sink: dict[str, Any] = {}
+    fetch_llm_grounding(1, api_key="gk", opener=_opener(_GEMINI, sink))
+    assert "gemini-3.5-flash-lite:generateContent" in sink["target"].full_url

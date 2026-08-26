@@ -203,9 +203,10 @@ def run_content(
     # 근거 노트 — 대본이 인용할 수 있는 유일한 사실 공급원(규칙 4가 참조한다).
     research_block = f"\n근거 자료:\n{research.strip()}\n" if research and research.strip() else ""
     avoid_block = (
-        "\n최근 다룬 주제(겹치지 않게 다른 각도·다른 소재로 써라): "
+        "\n이미 만든 콘텐츠 목록: "
         + " / ".join(avoid_titles)
-        + "\n"
+        + "\n이 목록과 소재·레시피·결론이 겹치면 안 된다 — 같은 분야라도 완전히 다른"
+        " 소재(다른 재료·다른 문제·다른 상황)를 골라라.\n"
         if avoid_titles
         else ""
     )

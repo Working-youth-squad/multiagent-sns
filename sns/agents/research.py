@@ -10,7 +10,7 @@
 """
 
 from sns.net.http import DEFAULT_OPENER, Opener
-from sns.research.sources.llm_grounding import GEMINI_URL, fetch_grounded_text
+from sns.research.sources.llm_grounding import fetch_grounded_text
 
 # 검색 그라운딩은 텍스트 생성보다 느리다 — 트렌드 소스(10s)보다 넉넉히.
 TIMEOUT_S = 30.0
@@ -28,7 +28,7 @@ def research_topic(
     topic_title: str,
     *,
     api_key: str,
-    url: str = GEMINI_URL,
+    url: str | None = None,
     timeout_s: float = TIMEOUT_S,
     opener: Opener = DEFAULT_OPENER,
 ) -> str:

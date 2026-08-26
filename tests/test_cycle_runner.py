@@ -701,3 +701,36 @@ def test_near_duplicate_twice_is_blocked() -> None:
     )
     assert result.targets[0].outcome == "blocked"
     assert "근접중복" in (result.targets[0].error or "")
+
+
+def test_avoid_list_includes_recent_content_topics(monkeypatch: pytest.MonkeyPatch) -> None:
+    """회피 목록의 첫머리는 **이미 만든 영상의 주제**다 — 트렌드 주제 제목만 줬더니
+    다른 주제에서 같은 영상(전자레인지 3분 컵케이크)으로 수렴한 실사고."""
+    import sns.runner.cycle as cycle_mod
+
+    captured: dict[str, Any] = {}
+    real_run_content = cycle_mod.run_content
+
+    def spy(model: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return real_run_content(model, **kwargs)
+
+    monkeypatch.setattr(cycle_mod, "run_content", spy)
+    store = InMemoryCycleStore()
+    store.save_content_item(
+        cycle_id="c0", topic_id="t0", content_format="shorts", body="본문",
+        media_spec={"topic": "오븐 없이 3분 초코컵케이크", "slides": [
+            {"subtitle": "오븐은 사치다", "narration": "전자레인지면 됩니다."}]},
+        hook_pattern="curiosity", status="approved",
+    )  # fmt: skip
+    run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target()],
+        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script())),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+    )
+    assert captured["avoid_titles"][0] == "오븐 없이 3분 초코컵케이크"

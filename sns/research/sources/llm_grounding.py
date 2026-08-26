@@ -5,14 +5,23 @@
 """
 
 import json
+import os
 import urllib.parse
 import urllib.request
 
 from sns.net.http import DEFAULT_OPENER, MAX_RESPONSE_BYTES, Opener
 
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-)
+# 모델은 에이전트와 같은 env를 따른다 — gemini-2.0-flash 하드코딩이 모델 은퇴로
+# 404를 내며 조용히 죽은 실사고(2026-08-26, research_topic 404 notice 2건).
+ENV_GEMINI_MODEL = "GEMINI_MODEL"
+DEFAULT_GROUNDING_MODEL = "gemini-3.5-flash"
+
+
+def gemini_url() -> str:
+    model = os.environ.get(ENV_GEMINI_MODEL, "").strip() or DEFAULT_GROUNDING_MODEL
+    return f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+
+
 _PROMPT = (
     "한국 개발자 커뮤니티에서 최근 화제인 기술 주제 후보를 근거와 함께 한 줄씩 나열해줘. "
     "각 줄은 '- '로 시작하고, 확인되지 않은 내용은 넣지 마."
@@ -50,11 +59,12 @@ def fetch_grounded_text(
     prompt: str,
     *,
     api_key: str,
-    url: str = GEMINI_URL,
+    url: str | None = None,
     timeout_s: float = 10.0,
     opener: Opener = DEFAULT_OPENER,
 ) -> str:
     """임의 프롬프트를 google_search 그라운딩으로 1회 실행 — 원문 텍스트를 돌려준다."""
+    url = url or gemini_url()
     body = json.dumps(
         {"contents": [{"parts": [{"text": prompt}]}], "tools": [{"google_search": {}}]}
     ).encode("utf-8")
@@ -72,13 +82,11 @@ def fetch_llm_grounding(
     *,
     api_key: str,
     topic: str | None = None,
-    url: str = GEMINI_URL,
+    url: str | None = None,
     timeout_s: float = 10.0,
     opener: Opener = DEFAULT_OPENER,
 ) -> tuple[str, ...]:
     """주제 후보 줄 목록. `topic`이 있으면 그 분야로 묻는다(채널 프로필 최소 바인딩)."""
     prompt = _PROMPT_TOPIC.format(topic=topic.strip()) if topic and topic.strip() else _PROMPT
-    text = fetch_grounded_text(
-        prompt, api_key=api_key, url=url, timeout_s=timeout_s, opener=opener
-    )
+    text = fetch_grounded_text(prompt, api_key=api_key, url=url, timeout_s=timeout_s, opener=opener)
     return _bullet_lines(text)[:limit]

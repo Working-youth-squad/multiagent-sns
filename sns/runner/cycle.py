@@ -162,10 +162,8 @@ def run_cycle(
 
     try:
         # 근접중복 판정의 재료 — 사이클당 1회만 읽는다(대상마다 다시 읽을 이유가 없다).
-        recent_signatures = tuple(
-            spec_signature(spec)
-            for spec in store.recent_media_specs(days=RECENT_TOPIC_DAYS, limit=RECENT_SPEC_LIMIT)
-        )
+        recent_specs = store.recent_media_specs(days=RECENT_TOPIC_DAYS, limit=RECENT_SPEC_LIMIT)
+        recent_signatures = tuple(spec_signature(spec) for spec in recent_specs)
 
         # ── 주제(사이클당 1건, 통제변수: 동일 주제 도메인) ──────────────
         if seed_topic is not None:
@@ -247,7 +245,18 @@ def run_cycle(
                 )
 
         # 회피 목록 — 재탕을 입력 단계에서 막는다(temperature=0 결정론은 유지).
-        avoid_titles = tuple(store.recent_topic_titles(days=RECENT_TOPIC_DAYS))[:10]
+        # **콘텐츠 주제(spec의 topic)가 먼저다**: 실사고 — 트렌드 주제 제목만 줬더니
+        # "베이킹 레시피"와 "간편식 만들기"라는 다른 주제에서 둘 다 "전자레인지 3분
+        # 초코 컵케이크" 영상으로 수렴했다. 모델이 피해야 하는 건 주제 제목이 아니라
+        # 이미 만든 영상의 알맹이다.
+        recent_content_topics = tuple(
+            str(t) for s in recent_specs if isinstance(t := s.get("topic"), str) and t.strip()
+        )
+        avoid_titles = tuple(
+            dict.fromkeys(
+                (*recent_content_topics, *store.recent_topic_titles(days=RECENT_TOPIC_DAYS))
+            )
+        )[:10]
 
         # ── 대상별 콘텐츠 제작·적재(도메인 오류만 격리) ─────────────────
         results: list[TargetResult] = []
