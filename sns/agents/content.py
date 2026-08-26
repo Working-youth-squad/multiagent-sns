@@ -140,7 +140,9 @@ def _validate_spec(spec: object, fmt: ContentFormat, topic_major: str) -> dict[s
     if fmt == "feed_image":
         parse_card_spec(spec)  # 던지면 CardSpecError
     elif fmt in ("reels", "shorts"):
-        parse_video_spec(spec, topic_major=topic_major)  # 던지면 VideoSpecError
+        # PLAN 단계 — 해소 전이라 scene_prompt가 필수이고 scene_ref는 금지다
+        # (LLM이 저장소 URL을 환각으로 써넣는 경로를 막는다).
+        parse_video_spec(spec, topic_major=topic_major, stage="plan")  # 던지면 VideoSpecError
     else:
         raise ValueError(f"미지원 포맷: {fmt}")
     return spec
