@@ -237,10 +237,45 @@ def test_ranking_to_dict_shape() -> None:
         "sources_ok",
         "sources_failed",
         "candidates",
+        "pool",
         "dropped",
+        "below_min_present",
         "unscored",
         "excluded",
     }
+
+
+def test_json_keeps_candidates_cut_by_top() -> None:
+    """R7 회귀: pool이 없으면 top 컷으로 잘린 후보가 JSON 소비자에게 흔적조차 없다."""
+    payload = ranking_to_dict(run(band=False, top=2))  # type: ignore[arg-type]
+    assert len(payload["candidates"]) == 2  # type: ignore[arg-type]
+    assert len(payload["pool"]) > 2  # type: ignore[arg-type]
+
+
+def test_json_marks_scored_per_candidate() -> None:
+    """R7 회귀: 최상위 unscored는 이름 목록이라 항목만 보면 판정 여부를 알 수 없었다."""
+    payload = ranking_to_dict(run(band=False, top=99))  # type: ignore[arg-type]
+    unscored = set(payload["unscored"])  # type: ignore[arg-type]
+    for c in payload["candidates"]:  # type: ignore[attr-defined]
+        assert c["scored"] is (c["text"] not in unscored)
+
+
+def test_json_records_min_present_cut() -> None:
+    """R7 회귀: 교차검증 하한으로 사라진 후보가 어느 목록에도 안 남았다."""
+    payload = ranking_to_dict(run(band=False, min_present=2, top=99))  # type: ignore[arg-type]
+    cut = {c["text"] for c in payload["below_min_present"]}  # type: ignore[attr-defined]
+    assert "개발자 짤" in cut
+    assert all(c["present_count"] >= 2 for c in payload["candidates"])  # type: ignore[attr-defined]
+
+
+def test_exclude_records_the_variant_that_matched() -> None:
+    """제외 기록은 대표 표기가 아니라 실제로 걸린 표기를 남긴다."""
+    service = ResearchTrendsService(
+        {"a": fetcher("리콜대상", "정비"), "b": fetcher("리콜 대상", "정비")}
+    )
+    r = rank_keywords("기아", service=service, band=False, exclude=["리콜 대상"])
+    assert r.excluded == (("리콜 대상", "리콜 대상"),)
+    assert "리콜대상" not in {c.text for c in r.candidates}
 
 
 def test_keyword_service_registers_three_unauthenticated_sources() -> None:

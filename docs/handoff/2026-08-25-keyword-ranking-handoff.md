@@ -33,7 +33,7 @@ for i, c in enumerate(ranking.candidates, 1):
 | `pool` | 컷 이전 전량 |
 | `below_min_present` | ③ 교차검증 하한에 걸려 빠진 것 |
 | `dropped` | 밴드 밖으로 잘린 것 |
-| `unscored` | rank_std를 잴 수 없어 **판정하지 않은** 후보(candidates에도 포함) |
+| `unscored` | rank_std를 잴 수 없어 **판정하지 않은** 후보 — `candidates`의 **부분집합** |
 | `excluded` | `(원문, 걸린 제외 키워드)` — `exclude`를 준 경우만 |
 
 `KeywordStat`:
@@ -57,7 +57,30 @@ uv run python scripts/rank_keywords.py 개발자 --json
 ```
 
 `--json`은 `ranking_to_dict()`를 그대로 찍는다 — 파이썬 호출 결과와 모양이 같다.
-종료 코드: `0` 정상(후보 0건 포함) / `1` 전 소스 실패 / `2` 인자 사용 오류.
+종료 코드: `0` 정상(후보 0건 포함) / `1` 전 소스 실패 / `2` 인자 사용 오류(빈 질의어 포함).
+
+JSON 최상위 키와 파이썬 필드는 1:1이다. 후보 항목(`candidates`·`pool`·`dropped`·
+`below_min_present`의 원소)은 이 모양이다:
+
+```json
+{
+  "text": "등산화",
+  "variants": ["등산화"],
+  "present_count": 3,
+  "observed_mean": 0.3,
+  "rank_std": 0.141421,
+  "scored": true,
+  "per_source": {"naver_autocomplete": {"pct_rank": 0.25, "present": true}}
+}
+```
+
+**세지 말고 표식을 읽을 것.** `unscored`는 이름 목록이고 `candidates`의 부분집합이라,
+`len(candidates) + len(unscored)`처럼 더하면 실제 후보 수를 넘는다. 항목 단위로 알고
+싶으면 `"scored": false`를 본다 — 같은 사실이다.
+
+**`top` 컷으로 잘린 후보는 `pool`에 있다.** `candidates`만 보면 무엇이 잘렸는지 알 수
+없다. `below_min_present`는 교차검증 하한(③)에 걸린 것으로, 밴드 밖(`dropped`)과 사유가
+다르다.
 
 ---
 

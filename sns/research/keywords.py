@@ -117,7 +117,9 @@ def aggregate(
                 excluded.append(match)
         stats = tuple(survivors)
 
+    below_min_present: tuple[KeywordStat, ...] = ()
     if min_present > 1:
+        below_min_present = tuple(s for s in stats if s.present_count < min_present)
         stats = tuple(s for s in stats if s.present_count >= min_present)
 
     live = live_results(results)
@@ -168,6 +170,7 @@ def aggregate(
         dropped=dropped,
         unscored=unscored,
         excluded=tuple(excluded),
+        below_min_present=below_min_present,
     )
 
 
@@ -218,9 +221,13 @@ def ranking_to_dict(ranking: KeywordRanking) -> dict[str, object]:
     def stat(s: KeywordStat) -> dict[str, object]:
         return {
             "text": s.text,
+            # 제외 판정이 보는 대상 그대로 — 왜 걸렸는지/안 걸렸는지를 경계 밖에서도 안다.
+            "variants": list(s.surface_forms),
             "present_count": s.present_count,
             "observed_mean": round(s.observed_mean, 6),
             "rank_std": None if s.rank_std is None else round(s.rank_std, 6),
+            # 최상위 `unscored`가 이름 목록이라 후보 항목만 보면 판정 여부를 알 수 없었다.
+            "scored": s.rank_std is not None,
             "per_source": {
                 r.source: {"pct_rank": round(r.pct_rank, 6), "present": r.present}
                 for r in s.per_source
@@ -235,7 +242,11 @@ def ranking_to_dict(ranking: KeywordRanking) -> dict[str, object]:
         "sources_ok": list(ranking.sources_ok),
         "sources_failed": list(ranking.sources_failed),
         "candidates": [stat(s) for s in ranking.candidates],
+        # `top` 컷으로 잘린 후보가 JSON 소비자에게 흔적조차 없던 구멍을 메운다.
+        "pool": [stat(s) for s in ranking.pool],
         "dropped": [stat(s) for s in ranking.dropped],
+        "below_min_present": [stat(s) for s in ranking.below_min_present],
+        # candidates의 **부분집합**이다(항목의 "scored": false와 같은 사실).
         "unscored": [s.text for s in ranking.unscored],
         "excluded": [{"text": t, "keyword": k} for t, k in ranking.excluded],
     }

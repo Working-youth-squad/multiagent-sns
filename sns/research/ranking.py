@@ -109,9 +109,18 @@ class KeywordRanking:
     pool: tuple[KeywordStat, ...]
     dropped: tuple[KeywordStat, ...]
     unscored: tuple[KeywordStat, ...] = ()
-    """rank_std가 정의되지 않아 밴드 판정을 받지 않은 후보 — candidates에도 포함된다."""
+    """rank_std가 정의되지 않아 밴드 판정을 받지 않은 후보 — **candidates의 부분집합**이다.
+
+    별도 목록이 아니라 표식이라, `len(candidates) + len(unscored)`는 아무 뜻이 없다.
+    """
     excluded: tuple[tuple[str, str], ...] = ()
-    """(원문, 걸린 제외 키워드). 호출자가 `exclude`를 준 경우만."""
+    """(걸린 표기, 걸린 제외 키워드). 호출자가 `exclude`를 준 경우만."""
+    below_min_present: tuple[KeywordStat, ...] = ()
+    """`min_present` 하한에 걸려 빠진 후보. `dropped`(밴드 밖)와 사유가 다르다.
+
+    사유가 기록되는 다른 필터(`excluded`)와 대칭을 맞춘 자리다 — 이게 없으면 교차검증
+    하한으로 사라진 후보가 어느 목록에도 남지 않아 "왜 빠졌는지" 되짚을 수 없다.
+    """
 
 
 def pct_rank_of(index: int, length: int) -> float:
