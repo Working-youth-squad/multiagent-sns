@@ -79,20 +79,32 @@ class GraphHttp(Protocol):
 
 
 class UrllibGraphHttp:
-    """`GraphHttp`의 운영 구현 — urllib 기반, opener 주입점 보존."""
+    """`GraphHttp`의 운영 구현 — urllib 기반, opener 주입점 보존.
 
-    def __init__(self, *, timeout_s: float = 15.0, opener: Opener = urllib.request.urlopen) -> None:
+    `version`은 호출부가 필요할 때만 올린다(기본은 발행이 검증한 버전 그대로). 지표
+    폴러가 v22를 요구하는데(media insights의 `views`) 발행 버전을 같이 끌어올리면,
+    지표 때문에 발행 경로가 바뀐다 — 그래서 상수가 아니라 인자다.
+    """
+
+    def __init__(
+        self,
+        *,
+        timeout_s: float = 15.0,
+        opener: Opener = urllib.request.urlopen,
+        version: str = GRAPH_API_VERSION,
+    ) -> None:
         self._timeout_s = timeout_s
         self._opener = opener
+        self._base = f"https://graph.facebook.com/{version}"
 
     def post(self, path: str, params: Mapping[str, str]) -> dict[str, Any]:
         body = urllib.parse.urlencode(params).encode("utf-8")
-        request = urllib.request.Request(f"{GRAPH_BASE}{path}", data=body, method="POST")
+        request = urllib.request.Request(f"{self._base}{path}", data=body, method="POST")
         return self._call(request)
 
     def get(self, path: str, params: Mapping[str, str]) -> dict[str, Any]:
         query = urllib.parse.urlencode(params)
-        request = urllib.request.Request(f"{GRAPH_BASE}{path}?{query}", method="GET")
+        request = urllib.request.Request(f"{self._base}{path}?{query}", method="GET")
         return self._call(request)
 
     def _call(self, request: urllib.request.Request) -> dict[str, Any]:

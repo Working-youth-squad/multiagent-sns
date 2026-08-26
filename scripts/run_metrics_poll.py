@@ -8,8 +8,9 @@
   2. env DATABASE_URL — (선택) 기본 postgresql://sns:sns@localhost:5432/sns
   3. 유튜브 폴링: `.secrets/client_secret.json` + `token.json`
      (analytics scope 포함 — 없으면 브라우저 동의가 뜬다)
-  4. 인스타 폴링: **아직 어댑터가 없다**(IG-3). IG 발행분은 `미배선`으로 세어지고
-     창은 그대로 남는다 — 어댑터가 붙으면 다음 훑기에 잡힌다.
+  4. 인스타 폴링: env IG_ACCESS_TOKEN (IG 비즈니스 계정 토큰, insights 권한).
+     없으면 IG 발행분은 `미배선`으로 세어지고 창은 그대로 남는다 — 토큰이 생기면
+     다음 훑기에 잡힌다.
 
 `--dry-run`은 DB를 읽되 쓰지 않는다: 무엇이 찍힐지만 보여준다. 실 계정 폴링 전에
 스케줄이 의도대로 도는지 확인하는 자리다.
@@ -32,12 +33,15 @@ from sns.tools.contracts import Platform, PollMetrics
 ENV_FILE = Path(__file__).parent.parent / ".env"
 SECRETS = Path(__file__).parent.parent / ".secrets"
 DEFAULT_DSN = "postgresql://sns:sns@localhost:5432/sns"
+ENV_IG_TOKEN = "IG_ACCESS_TOKEN"
 
 
-def build_pollers(*, youtube: bool) -> dict[Platform, PollMetrics]:
+def build_pollers(*, youtube: bool, instagram: bool) -> dict[Platform, PollMetrics]:
     """플랫폼 → 폴러. 없는 플랫폼은 넣지 않는다(폴러가 미배선을 스스로 센다).
 
-    IG 폴러(IG-3)가 오면 여기 한 줄이다 — `sns/runner/wiring.py`와 같은 규율.
+    **토큰이 없으면 붙이지 않는다.** 빈 토큰으로 붙이면 발행분마다 401이 나서
+    `run_event(kind='error')`가 쌓이고, 정작 "폴러가 없다"는 사실은 안 보인다 —
+    미배선(unrouted)으로 세어지는 편이 정직하다.
     """
     pollers: dict[Platform, PollMetrics] = {}
     if youtube:
@@ -46,6 +50,17 @@ def build_pollers(*, youtube: bool) -> dict[Platform, PollMetrics]:
 
         creds = load_credentials(SECRETS / "client_secret.json", SECRETS / "token.json")
         pollers["youtube"] = YouTubeMetrics(build_youtube_analytics(creds))
+    if instagram:
+        from sns.adapters.instagram.metrics import INSIGHTS_API_VERSION, InstagramMetrics
+        from sns.adapters.instagram.publisher import UrllibGraphHttp
+
+        token = os.environ.get(ENV_IG_TOKEN, "")
+        if token:
+            pollers["instagram"] = InstagramMetrics(
+                UrllibGraphHttp(version=INSIGHTS_API_VERSION), access_token=token
+            )
+        else:
+            print(f"인스타 폴러 생략 — {ENV_IG_TOKEN} 없음 (IG 발행분은 미배선으로 남는다)")
     return pollers
 
 
@@ -76,6 +91,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="발행분 지표 폴링 1회")
     parser.add_argument("--dry-run", action="store_true", help="계획만 출력, 적재하지 않음")
     parser.add_argument("--no-youtube", action="store_true", help="유튜브 폴러를 붙이지 않음")
+    parser.add_argument("--no-instagram", action="store_true", help="인스타 폴러를 붙이지 않음")
     parser.add_argument(
         "--horizon-days",
         type=int,
@@ -97,9 +113,9 @@ def main() -> int:
             print(f"→ 대상 {report.items}건 · 찍을 창 {report.observed} · 놓친 창 {report.missed}")
             return 0
 
-        pollers = build_pollers(youtube=not args.no_youtube)
+        pollers = build_pollers(youtube=not args.no_youtube, instagram=not args.no_instagram)
         if not pollers:
-            print("폴러가 하나도 없다 — 아무것도 하지 않는다 (--no-youtube?)")
+            print("폴러가 하나도 없다 — 아무것도 하지 않는다 (--no-youtube? 토큰 부재?)")
             return 1
         report = poll_due_metrics(
             store=store,
@@ -112,7 +128,7 @@ def main() -> int:
     print(report.summary())
     if report.unrouted:
         # 조용히 넘어가면 IG 지표가 영영 안 모이는 것을 아무도 모른다.
-        print(f"⚠️  폴러 없는 플랫폼의 발행 {report.unrouted}건 — IG 인사이트 폴러(IG-3) 대기")
+        print(f"⚠️  폴러 없는 플랫폼의 발행 {report.unrouted}건 — 해당 플랫폼 자격증명 확인")
     if report.failed:
         print(f"⚠️  어댑터 오류 {report.failed}건 — run_event(kind='error')에 사유가 있다")
     return 0
