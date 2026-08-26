@@ -50,11 +50,12 @@ MAX_IMAGE_QUERY_LEN = 60
 MAX_IMAGE_PROMPT_LEN = 200
 
 DEFAULT_VOICE = "ko-KR-Chirp3-HD-Charon"
-# 코드가 없는 컷의 정사각을 채우는 그라데이션 + 텍스트/액센트 (다크 브랜드 팔레트).
-DEFAULT_BACKGROUND = "#0d1117"
-DEFAULT_BACKGROUND2 = "#1b2a4a"
-DEFAULT_FOREGROUND = "#e6edf3"
-DEFAULT_ACCENT = "#58a6ff"
+# 코드가 없는 컷의 정사각을 채우는 그라데이션 + 텍스트/액센트 (화이트 모드 기본).
+# 다크 팔레트는 classic 템플릿([sns.render.video.classic.spec])에 보존돼 있다.
+DEFAULT_BACKGROUND = "#ffffff"
+DEFAULT_BACKGROUND2 = "#dbe4f0"
+DEFAULT_FOREGROUND = "#1f2328"
+DEFAULT_ACCENT = "#0969da"
 
 
 class VideoSpecError(ValueError):
@@ -87,6 +88,12 @@ class VideoSpec:
     background2: str
     foreground: str
     accent: str = DEFAULT_ACCENT
+    # 채널 캐릭터(마스코트) 이미지의 저장소 URL — 있으면 렌더러가 코너 배지로 얹는다.
+    # spec 안에 있는 이유: 렌더 입력의 자기완결성(재렌더가 채널 조립 없이 동작해야 한다).
+    character_ref: str = ""
+    # 화면 문법 선택: "" = 3단 레이아웃(현행), "motion" = 모션 그래픽
+    # ([sns.render.video.motion]). spec에 있어야 승인 웹 재렌더가 같은 스타일로 돈다.
+    style: str = ""
     _unused: tuple[()] = field(default=(), repr=False, compare=False)
 
 
@@ -250,6 +257,16 @@ def _parse_voice(spec: Mapping[str, object]) -> str:
     return value
 
 
+VIDEO_STYLES = ("", "motion")
+
+
+def _parse_style(spec: Mapping[str, object]) -> str:
+    value = _optional_str(spec, "style", "")
+    if value not in VIDEO_STYLES:
+        raise VideoSpecError(f"'style'은 {VIDEO_STYLES} 중 하나여야 함: {value!r}")
+    return value
+
+
 def parse_video_spec(media_spec: Mapping[str, object]) -> VideoSpec:
     """`media_spec` → `VideoSpec`. 누락·형식 오류는 `VideoSpecError`."""
     width = _parse_dimension(media_spec, "width", DEFAULT_WIDTH)
@@ -266,4 +283,6 @@ def parse_video_spec(media_spec: Mapping[str, object]) -> VideoSpec:
         background2=_parse_color(media_spec, "background2", DEFAULT_BACKGROUND2),
         foreground=_parse_color(media_spec, "foreground", DEFAULT_FOREGROUND),
         accent=_parse_color(media_spec, "accent", DEFAULT_ACCENT),
+        character_ref=_optional_str(media_spec, "character_ref", ""),
+        style=_parse_style(media_spec),
     )

@@ -2,7 +2,12 @@
 
 import pytest
 
-from sns.onboarding.character import character_subject, ensure_character
+from sns.onboarding.character import (
+    SCENE_RULES,
+    character_subject,
+    ensure_character,
+    make_scene_generate,
+)
 from sns.onboarding.profile import ChannelProfile, categories_for
 from sns.render.images.generate import ImageGenerationError
 from sns.render.storage import InMemoryMediaStore
@@ -58,6 +63,24 @@ def test_generation_error_propagates() -> None:
 
     with pytest.raises(ImageGenerationError):
         ensure_character(_profile(), InMemoryMediaStore(), generate=broke)
+
+
+def test_scene_generate_carries_reference_and_scene_rules() -> None:
+    """장면 생성기는 캐릭터 앵커를 레퍼런스로, 장면 규칙을 화풍으로 넘긴다."""
+    seen: dict[str, object] = {}
+
+    def spy(subject: str, **kwargs: object) -> bytes:
+        seen["subject"] = subject
+        seen.update(kwargs)
+        return b"scene"
+
+    fn = make_scene_generate(b"anchor-png", generate=spy)
+    assert fn("mascot riding a rocket") == b"scene"
+    assert seen["subject"] == "mascot riding a rocket"
+    assert seen["reference_png"] == b"anchor-png"
+    assert seen["style_rules"] == SCENE_RULES
+    assert any("reference image" in r for r in SCENE_RULES)
+    assert any("no text" in r for r in SCENE_RULES)
 
 
 def test_style_rules_passed_to_generate() -> None:

@@ -41,6 +41,17 @@ def test_parse_minimal() -> None:
     assert slide.code == "" and slide.focus_lines == ()
 
 
+def test_character_ref_defaults_empty_and_parses() -> None:
+    assert parse_video_spec(MINIMAL).character_ref == ""
+    spec = parse_video_spec({**MINIMAL, "character_ref": "mem://image/char.png"})
+    assert spec.character_ref == "mem://image/char.png"
+
+
+def test_character_ref_non_string_rejected() -> None:
+    with pytest.raises(VideoSpecError, match="character_ref"):
+        parse_video_spec({**MINIMAL, "character_ref": 7})
+
+
 def test_slide_carries_code_and_focus() -> None:
     spec = parse_video_spec(
         {

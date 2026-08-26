@@ -1,6 +1,7 @@
 """온보딩 위저드 앱 — 인터뷰 먼저, 계정 생성은 컨셉 확정 후 (InMemory, 네트워크 0)."""
 
 from dataclasses import replace
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from httpx import Response
@@ -8,6 +9,7 @@ from httpx import Response
 from sns.onboarding.profile import ChannelProfile
 from sns.onboarding.store import InMemoryOnboardingStore
 from sns.web.onboarding.app import create_app
+from sns.web.onboarding.render import ScriptJobView, VideoItemView
 
 _ANSWERS = {
     "major": "개발",
@@ -291,3 +293,131 @@ def test_channels_list_and_missing_detail() -> None:
     client = _client(store)
     assert "아직 만든 계정이 없습니다" in client.get("/channels").text
     assert client.get("/channels/nope").status_code == 404
+
+
+class FakeVideoManager:
+    """호출 기록 + 미리 정한 항목/작업 뷰 — 서브프로세스·DB 없음."""
+
+    def __init__(
+        self,
+        items: tuple[VideoItemView, ...] = (),
+        script: ScriptJobView | None = None,
+    ) -> None:
+        self.script_started: list[str] = []
+        self.render_started: list[tuple[str, str]] = []
+        self._items = items
+        self._script = script
+
+    def start_script(self, handle: str) -> None:
+        self.script_started.append(handle)
+
+    def start_render(self, handle: str, item_id: str) -> None:
+        self.render_started.append((handle, item_id))
+
+    def items(self, handle: str) -> tuple[VideoItemView, ...]:
+        return self._items
+
+    def script_job(self, handle: str) -> ScriptJobView | None:
+        return self._script
+
+
+def test_videos_tab_script_first_then_render(tmp_path: Path) -> None:
+    """대본 승인 대기 → '영상 만들기' 수락 → 완성 mp4 서빙까지 탭 플로우."""
+    store = InMemoryOnboardingStore()
+    script_item = VideoItemView(
+        item_id="item-1", topic="혈당 베이킹", state="script",
+        slides=(("대체당", "설탕 없이 굽는 법을 알려드려요."),), body="캡션",
+    )  # fmt: skip
+    manager = FakeVideoManager(items=(script_item,))
+    client = _client(store, video_manager=manager)
+    _walk_interview(client)
+    ch = _create_channel(client)
+
+    detail = client.get(f"/channels/{ch}")
+    assert f"/channels/{ch}/videos" in detail.text  # 채널 페이지 → 영상 관리 탭 링크
+
+    tab = client.get(f"/channels/{ch}/videos")
+    assert "새 대본 만들기" in tab.text
+    assert "대본 승인 대기" in tab.text and "설탕 없이 굽는 법" in tab.text
+    assert "영상 만들기" in tab.text  # 수락 버튼 — 영상은 아직 없다
+
+    r = client.post(f"/channels/{ch}/videos/script", follow_redirects=False)
+    assert r.status_code == 303 and manager.script_started == ["demo"]
+    r = client.post(f"/channels/{ch}/videos/item-1/render", follow_redirects=False)
+    assert r.status_code == 303 and manager.render_started == [("demo", "item-1")]
+    assert client.post(f"/channels/{ch}/videos/nope/render").status_code == 404
+
+    mp4 = tmp_path / "video-abc.mp4"
+    mp4.write_bytes(b"fake-mp4")
+    done = VideoItemView(item_id="item-1", topic="혈당 베이킹", state="done",
+                         video_path=str(mp4))  # fmt: skip
+    done_client = _client(store, video_manager=FakeVideoManager(items=(done,)))
+    page = done_client.get(f"/channels/{ch}/videos")
+    assert f"/channels/{ch}/videos/item-1/media" in page.text
+    served = done_client.get(f"/channels/{ch}/videos/item-1/media")
+    assert served.status_code == 200 and served.content == b"fake-mp4"
+
+
+def test_videos_tab_shows_running_script_job() -> None:
+    store = InMemoryOnboardingStore()
+    client = _client(store, video_manager=FakeVideoManager(script=ScriptJobView("running")))
+    _walk_interview(client)
+    ch = _create_channel(client)
+    tab = client.get(f"/channels/{ch}/videos")
+    assert "대본 생성 중" in tab.text and "disabled" in tab.text
+
+
+def test_video_routes_404_without_manager() -> None:
+    client = _client(InMemoryOnboardingStore())
+    _walk_interview(client)
+    ch = _create_channel(client)
+    assert "영상 관리" not in client.get(f"/channels/{ch}").text
+    assert client.get(f"/channels/{ch}/videos").status_code == 404
+    assert client.post(f"/channels/{ch}/videos/script").status_code == 404
+
+
+def test_character_regenerate_with_user_style(tmp_path: Path) -> None:
+    """캐릭터 카드 — 사용자가 스타일을 지정해 (재)생성하고, 실패는 화면에 표면화된다."""
+    store = InMemoryOnboardingStore()
+    png = tmp_path / "char.png"
+    png.write_bytes(b"fake-png")
+    calls: list[tuple[str, str | None]] = []
+
+    def fake_ensure(profile: ChannelProfile) -> ChannelProfile:
+        calls.append((profile.character_style, profile.character_image_url))
+        return replace(profile, character_image_url=png.resolve().as_uri(), character_checksum="c")
+
+    client = _client(store, ensure_character_fn=fake_ensure)
+    _walk_interview(client)
+    ch = _create_channel(client)  # 생성 시 1회
+    assert (
+        "캐릭터 만들기" in client.get(f"/channels/{ch}").text
+        or "다시 만들기" in client.get(f"/channels/{ch}").text
+    )
+
+    r = client.post(f"/channels/{ch}/character", data={"style": "pixel_art"},
+                    follow_redirects=False)  # fmt: skip
+    assert r.status_code == 303
+    assert calls[-1] == ("pixel_art", None)  # URL을 비워 재생성을 강제한다
+    saved = store.latest_profile(ch)
+    assert saved is not None and saved.character_style == "pixel_art"
+    assert saved.character_image_url is not None
+
+    img = client.get(f"/channels/{ch}/character/image")
+    assert img.status_code == 200 and img.content == b"fake-png"
+
+
+def test_character_failure_shown_not_swallowed() -> None:
+    def boom(profile: ChannelProfile) -> ChannelProfile:
+        raise RuntimeError("429 크레딧 없음")
+
+    store = InMemoryOnboardingStore()
+    client = _client(store)
+    _walk_interview(client)
+    ch = _create_channel(client)
+
+    failing = _client(store, ensure_character_fn=boom)
+    r = failing.post(f"/channels/{ch}/character", data={"style": "pixel_art"})
+    assert r.status_code == 502 and "캐릭터 생성 실패" in r.text
+    saved = store.latest_profile(ch)
+    assert saved is not None and saved.character_image_url is None  # 프로필은 그대로

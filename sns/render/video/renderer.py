@@ -155,9 +155,25 @@ def _square(slide: Slide, side: int, spec: VideoSpec, mono_path: str | None,
     return _gradient(side, side, spec.background, spec.background2)
 
 
+def _character_badge(png: bytes, size: int) -> Image.Image:
+    """캐릭터 PNG → 원형 배지. 생성 캐릭터는 단색 배경이라 사각 그대로 붙이면 상자가 된다."""
+    src = Image.open(io.BytesIO(png)).convert("RGB").resize((size, size), Image.Resampling.LANCZOS)
+    # 안티앨리어싱: 마스크를 4배로 그려서 줄인다 — 원 둘레 계단 현상 방지.
+    mask = Image.new("L", (size * 4, size * 4), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, size * 4, size * 4), fill=255)
+    badge = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    badge.paste(src, (0, 0), mask.resize((size, size), Image.Resampling.LANCZOS))
+    return badge
+
+
+# 배지 크기·여백 (가로 대비 비율, 1080 → 173px). 우하단 = 자막 아래·진행바 위.
+_BADGE_RATIO = 0.16
+
+
 def _frame_png(slide: Slide, spec: VideoSpec, font_path: str, mono_path: str | None,
-               fetch_image: FetchImage | None) -> bytes:  # fmt: skip
-    """컷 1장 — 알약·주제·정사각·자막을 검은 바탕에 그린다."""
+               fetch_image: FetchImage | None,
+               character: Image.Image | None = None) -> bytes:  # fmt: skip
+    """컷 1장 — 알약·주제·정사각·자막(+캐릭터 배지)을 검은 바탕에 그린다."""
     width, height = spec.width, spec.height
     top_h = round(height * _TOP_RATIO)
     side = round(width * _SQUARE_RATIO)
@@ -197,6 +213,13 @@ def _frame_png(slide: Slide, spec: VideoSpec, font_path: str, mono_path: str | N
         draw, cap_lines, cap_font, width, top_h + side + round(height * 0.035),
         round(cap_font.size * 1.33), fg,
     )  # fmt: skip
+
+    if character is not None:
+        # 우하단, 진행바 위 — 자막은 하단 밴드 위쪽부터 채우므로 겹칠 일이 거의 없다.
+        bar_h = max(round(height * _BAR_RATIO), 4)
+        x = width - character.width - margin
+        y = height - character.height - margin - bar_h
+        canvas.paste(character, (x, y), character)
 
     buf = io.BytesIO()
     canvas.save(buf, format="PNG", optimize=False, compress_level=6)
@@ -258,13 +281,25 @@ def render_video(
     resolved_font, _ = _pick_font(font_path)
     bar_h = max(round(spec.height * _BAR_RATIO), 4)
 
+    character: Image.Image | None = None
+    if spec.character_ref:
+        if fetch_image is None:
+            raise VideoSpecError(
+                f"'character_ref'({spec.character_ref})가 있는데 fetch_image seam이 없음 — "
+                "조용히 캐릭터 없이 렌더하지 않는다"
+            )
+        # 컷마다 재호출하지 않는다 — 캐릭터는 영상 내내 같은 배지다.
+        character = _character_badge(
+            fetch_image(spec.character_ref), round(spec.width * _BADGE_RATIO)
+        )
+
     with tempfile.TemporaryDirectory() as tmp:
         workdir = Path(tmp)
 
         # 1패스: 컷당 정지 영상. 줌이 없으므로 오버스캔도 세그먼트 등분도 없다.
         for i, (slide, duration) in enumerate(zip(spec.slides, durations, strict=True)):
             (workdir / f"f{i}.png").write_bytes(
-                _frame_png(slide, spec, resolved_font, mono_path, fetch_image)
+                _frame_png(slide, spec, resolved_font, mono_path, fetch_image, character)
             )
             _run_ffmpeg(
                 [
@@ -294,41 +329,64 @@ def render_video(
                 workdir,
             )
 
-        # 2패스: concat + 진행바 + 오디오. 목록은 반드시 1패스가 만든 컷 수와 같아야 한다
-        # — 적게 쓰면 영상만 조용히 잘리고 오디오는 그대로라 뒷부분이 정지 화면이 된다.
-        (workdir / "list.txt").write_text(
-            "".join(f"file 'cut{i}.mp4'\n" for i in range(len(spec.slides))), encoding="utf-8"
-        )
-        (workdir / "audio.wav").write_bytes(_concat_wavs(wavs))
-
-        cmd = [
-            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "concat", "-safe", "0", "-i", "list.txt",
-            "-i", "audio.wav",
-            "-f", "lavfi", "-t", f"{total:.3f}",
-            "-i", f"color=c=0x{spec.accent[1:]}:s={spec.width}x{bar_h}:r={FPS}",
-        ]  # fmt: skip
-        # 진행바: 화면 폭짜리 색 소스를 왼쪽 밖에서 밀어넣어 차오르게 한다. drawbox로는
-        # 안 된다 — drawbox 표현식의 `t`는 타임스탬프가 아니라 **선 두께**라 매 프레임
-        # 같은 값이 나와 바가 처음부터 꽉 찬 채로 멈춘다. overlay의 `x`는 `t`가 시각이다.
-        chain = f"[0:v][2:v]overlay=x='-W+W*t/{total:.3f}':y=H-{bar_h}:shortest=1,format=yuv420p[v]"
-        if bgm is not None:
-            (workdir / f"bgm.{bgm_ext}").write_bytes(bgm)
-            cmd += ["-stream_loop", "-1", "-i", f"bgm.{bgm_ext}"]
-            cmd += [
-                "-filter_complex",
-                f"{chain};[1:a]volume=1.0[nar];[3:a]volume=0.12[bg];"
-                "[nar][bg]amix=inputs=2:duration=first:normalize=0[a]",
-                "-map", "[v]", "-map", "[a]",
-            ]  # fmt: skip
-        else:
-            cmd += ["-filter_complex", chain, "-map", "[v]", "-map", "1:a"]
-        cmd += [
-            "-r", str(FPS), "-c:v", "libx264", "-preset", "veryfast",
-            "-c:a", "aac", "-t", f"{total:.3f}",
-            *_BITEXACT, "out.mp4",
-        ]  # fmt: skip
-        _run_ffmpeg(cmd, workdir)
-        mp4 = (workdir / "out.mp4").read_bytes()
+        mp4 = _assemble(
+            workdir, cut_count=len(spec.slides), wavs=wavs, total=total,
+            width=spec.width, accent=spec.accent, bar_h=bar_h,
+            ffmpeg=ffmpeg, bgm=bgm, bgm_ext=bgm_ext,
+        )  # fmt: skip
 
     return VideoRender(mp4=mp4, duration_s=total, cut_durations_s=tuple(durations))
+
+
+def _assemble(
+    workdir: Path,
+    *,
+    cut_count: int,
+    wavs: list[bytes],
+    total: float,
+    width: int,
+    accent: str,
+    bar_h: int,
+    ffmpeg: str,
+    bgm: bytes | None,
+    bgm_ext: str,
+) -> bytes:
+    """2패스 공용부: cut{i}.mp4 → concat + 진행바 + 오디오. 3단·모션 두 템플릿이 쓴다.
+
+    목록은 반드시 1패스가 만든 컷 수와 같아야 한다 — 적게 쓰면 영상만 조용히 잘리고
+    오디오는 그대로라 뒷부분이 정지 화면이 된다.
+    """
+    (workdir / "list.txt").write_text(
+        "".join(f"file 'cut{i}.mp4'\n" for i in range(cut_count)), encoding="utf-8"
+    )
+    (workdir / "audio.wav").write_bytes(_concat_wavs(wavs))
+
+    cmd = [
+        ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "concat", "-safe", "0", "-i", "list.txt",
+        "-i", "audio.wav",
+        "-f", "lavfi", "-t", f"{total:.3f}",
+        "-i", f"color=c=0x{accent[1:]}:s={width}x{bar_h}:r={FPS}",
+    ]  # fmt: skip
+    # 진행바: 화면 폭짜리 색 소스를 왼쪽 밖에서 밀어넣어 차오르게 한다. drawbox로는
+    # 안 된다 — drawbox 표현식의 `t`는 타임스탬프가 아니라 **선 두께**라 매 프레임
+    # 같은 값이 나와 바가 처음부터 꽉 찬 채로 멈춘다. overlay의 `x`는 `t`가 시각이다.
+    chain = f"[0:v][2:v]overlay=x='-W+W*t/{total:.3f}':y=H-{bar_h}:shortest=1,format=yuv420p[v]"
+    if bgm is not None:
+        (workdir / f"bgm.{bgm_ext}").write_bytes(bgm)
+        cmd += ["-stream_loop", "-1", "-i", f"bgm.{bgm_ext}"]
+        cmd += [
+            "-filter_complex",
+            f"{chain};[1:a]volume=1.0[nar];[3:a]volume=0.12[bg];"
+            "[nar][bg]amix=inputs=2:duration=first:normalize=0[a]",
+            "-map", "[v]", "-map", "[a]",
+        ]  # fmt: skip
+    else:
+        cmd += ["-filter_complex", chain, "-map", "[v]", "-map", "1:a"]
+    cmd += [
+        "-r", str(FPS), "-c:v", "libx264", "-preset", "veryfast",
+        "-c:a", "aac", "-t", f"{total:.3f}",
+        *_BITEXACT, "out.mp4",
+    ]  # fmt: skip
+    _run_ffmpeg(cmd, workdir)
+    return (workdir / "out.mp4").read_bytes()

@@ -26,7 +26,7 @@ from sns.render.storage import InMemoryMediaStore
 from sns.render.video import renderer as renderer_mod
 from sns.render.video.media import VideoRenderMedia
 from sns.render.video.quality import check_video
-from sns.render.video.renderer import _BAR_RATIO, render_video
+from sns.render.video.renderer import _BADGE_RATIO, _BAR_RATIO, _MARGIN_RATIO, render_video
 from sns.render.video.spec import MAX_SLIDES, VideoSpecError, parse_video_spec
 
 pytestmark = pytest.mark.skipif(
@@ -250,6 +250,33 @@ def test_image_ref_without_fetch_seam_raises() -> None:
             ],
         }
     )
+    with pytest.raises(VideoSpecError, match="fetch_image"):
+        render_video(spec, synthesize=tone_wav)
+
+
+def test_character_ref_overlays_badge_bottom_right() -> None:
+    """캐릭터 배지는 우하단(자막 아래·진행바 위)에 매 컷 얹힌다."""
+    lime = (60, 220, 60)
+    spec = parse_video_spec({**SPEC_DICT, "character_ref": "mem://image/char.png"})
+    render = render_video(
+        spec, synthesize=tone_wav, fetch_image=lambda ref: _solid_png(lime, side=300)
+    )
+    img = _frame_at(render.mp4, render.duration_s * 0.5)
+    margin = round(spec.width * _MARGIN_RATIO)
+    size = round(spec.width * _BADGE_RATIO)
+    bar_h = max(round(spec.height * _BAR_RATIO), 4)
+    cx = spec.width - margin - size // 2
+    cy = spec.height - margin - bar_h - size // 2
+    px = img.getpixel((cx, cy))
+    assert px[1] > 150 and px[1] > px[0] + 60, f"배지 중심이 캐릭터 색이 아님: {px}"
+    # 배지가 없으면 같은 자리는 검은 바탕이다 — 유무가 프레임을 실제로 바꾼다.
+    plain = _frame_at(render_video(SPEC, synthesize=tone_wav).mp4, 0.5)
+    assert plain.getpixel((cx, cy)) == (0, 0, 0)
+
+
+def test_character_ref_without_fetch_seam_raises() -> None:
+    """조용히 캐릭터 없이 렌더하면 배선 실수가 영상까지 흘러간다 — image_ref와 같은 규율."""
+    spec = parse_video_spec({**SPEC_DICT, "character_ref": "mem://image/char.png"})
     with pytest.raises(VideoSpecError, match="fetch_image"):
         render_video(spec, synthesize=tone_wav)
 
