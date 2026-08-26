@@ -1,6 +1,7 @@
 """온보딩 프로필 채널의 게시물 생성 사이클 — 인터뷰 결과가 실제 콘텐츠가 되는 연결부.
 
 uv run python scripts/run_profile_cycle.py <채널핸들> [--format card|video]
+                                                     [--method template|generated_scene]
 
 `channel_profile` 최신 revision을 읽어 사이클에 주입한다:
   goal_ref            → run_cycle(goal_ref=...)          (goal 프리셋 실배선)
@@ -19,6 +20,10 @@ uv run python scripts/run_profile_cycle.py <채널핸들> [--format card|video]
 포맷은 `--format`으로 고른다 — card=피드 카드, video=쇼츠(유튜브)/릴스(인스타).
 영상은 ffmpeg과 Google TTS가 필요하고, 정사각 사진 해소(resolve_images)가 함께 돈다.
 
+`--method generated_scene`은 **컷마다 유료 이미지를 생성한다**(사이클당 12장 상한,
+FR-P6). 기본은 template이라 명시해야 켜진다 — 라우터에 안 적힌 방식은 에이전트가
+고를 수도 없다(Capability Gate).
+
 전제: docker compose up -d postgres · env GEMINI_API_KEY · (선택) DATABASE_URL, CARD_FONT
 """
 
@@ -35,6 +40,7 @@ import psycopg
 from dotenv import load_dotenv
 
 from sns.agents.models import make_model
+from sns.onboarding.character import scene_rules_for
 from sns.onboarding.profile import build_channel_brief
 from sns.onboarding.store import PgOnboardingStore
 from sns.onboarding.trends import profile_trend_service
@@ -43,8 +49,12 @@ from sns.quality.gate import QualityReport, check_card
 from sns.render.card.media import CardRenderMedia
 from sns.render.card.spec import parse_card_spec
 from sns.render.images.resolve import ImageResolution, resolve_images
+from sns.render.video.gen.budget import ImageBudget
+from sns.render.video.gen.media import SceneRenderMedia
+from sns.render.video.gen.scenes import resolve_scenes
 from sns.render.video.media import VideoRenderMedia
 from sns.render.video.quality import make_video_gate
+from sns.render.video.router import VideoRenderRouter
 from sns.render.video.tts import synthesize_google
 from sns.runner.cycle import AssessQuality, ChannelMode, CycleTarget, ResolveMediaSpec, run_cycle
 from sns.runner.store import PgCycleStore
@@ -57,6 +67,7 @@ from sns.tools.contracts import (
     ResearchTrends,
     SourceResult,
     TrendDigest,
+    VideoMethod,
 )
 from sns.tools.fakes import FakePublish, FakeReadStats
 
@@ -81,6 +92,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--format", choices=("card", "video"), default="card")
     p.add_argument("--ffmpeg", default="ffmpeg", help="영상 포맷에서만 쓴다")
     p.add_argument("--font", default=None, help="자막/카드 폰트 경로(비우면 자동 탐색)")
+    p.add_argument(
+        "--method",
+        choices=("template", "generated_scene"),
+        default="template",
+        help="generated_scene은 컷마다 유료 이미지 생성이다(사이클당 12장 상한)",
+    )
     return p
 
 
@@ -218,21 +235,46 @@ def main() -> int:
         renderer: RenderMedia
         assess: AssessQuality
         resolve: ResolveMediaSpec | None
+        methods: tuple[VideoMethod, ...] = ("template",)
         if args.format == "video":
-            renderer = VideoRenderMedia(
-                media_store,
-                synthesize=synthesize_google,
-                topic_major=profile.topic_major,
-                font_path=font,
-                ffmpeg=args.ffmpeg,
-            )
+            # **라우터에 적은 것만 켜진다**(Capability Gate). 생성은 유료라 --method로
+            # 명시해야 등록된다 — resolve.py의 "기본값을 generate_image로 두면 결제가
+            # 켜진 계정에서 사이클이 조용히 돈을 쓴다"와 같은 규율이다.
+            renderers: dict[VideoMethod, RenderMedia] = {
+                "template": VideoRenderMedia(
+                    media_store,
+                    synthesize=synthesize_google,
+                    topic_major=profile.topic_major,
+                    font_path=font,
+                    ffmpeg=args.ffmpeg,
+                )
+            }
+            if args.method == "generated_scene":
+                renderers["generated_scene"] = SceneRenderMedia(
+                    media_store,
+                    synthesize=synthesize_google,
+                    topic_major=profile.topic_major,
+                    font_path=font,
+                    ffmpeg=args.ffmpeg,
+                )
+            router = VideoRenderRouter(renderers)
+            methods = router.supported_methods
+            renderer = router
             ffprobe = (
                 str(Path(args.ffmpeg).parent / "ffprobe") if args.ffmpeg != "ffmpeg" else "ffprobe"
             )
             assess = make_video_gate(media_store.get, ffprobe=ffprobe, ffmpeg=args.ffmpeg)
 
+            # 예산은 사이클 하나에 하나 — 재사용하면 이전 소비가 이어져 계산이 어긋난다.
+            budget = ImageBudget()
+            rules = scene_rules_for(profile.character_style)
+
             def resolve_video(spec: Mapping[str, object]) -> ImageResolution:
                 resolved = resolve_images(spec, store=media_store)
+                # 장면 해소 — generated_scene이 아니면 resolve_scenes가 그대로 통과시킨다.
+                resolved = resolve_scenes(
+                    resolved.media_spec, store=media_store, scene_rules=rules, budget=budget
+                )
                 # 캐릭터도 image_ref와 같은 규율로 **spec에 못박는다** — 배선으로만
                 # 넘기면 같은 media_spec이 채널마다 다른 mp4를 낳아 FR-M1이 깨지고,
                 # "이 영상이 어떤 캐릭터를 썼는지"가 원장에 안 남는다.
@@ -285,6 +327,7 @@ def main() -> int:
             research_trends=reporting,
             read_stats=FakeReadStats(),
             render_media=renderer,
+            supported_methods=methods,
             assess_quality=assess,
             resolve_media_spec=resolve,
             channel_brief=brief,

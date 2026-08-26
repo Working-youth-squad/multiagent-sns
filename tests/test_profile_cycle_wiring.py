@@ -77,3 +77,20 @@ def test_media_store_round_trip(tmp_path: Path) -> None:
     store = DirMediaStore(tmp_path)
     url = store.put(b"\x00\x01mp4", checksum="a" * 64, kind="video", ext="mp4")
     assert store.get(url) == b"\x00\x01mp4"
+
+
+def test_scene_method_is_opt_in() -> None:
+    """생성은 유료다 — 기본 배선에 없고 명시로 켠다(resolve.py와 같은 규율)."""
+    args = build_parser().parse_args(["c", "--format", "video"])
+    assert args.method == "template"
+
+
+def test_scene_method_can_be_selected() -> None:
+    args = build_parser().parse_args(["c", "--format", "video", "--method", "generated_scene"])
+    assert args.method == "generated_scene"
+
+
+def test_card_format_ignores_method() -> None:
+    """카드에는 제작 방식이라는 개념이 없다 — 인자는 받되 영상에서만 쓴다."""
+    args = build_parser().parse_args(["c", "--method", "generated_scene"])
+    assert args.format == "card"
