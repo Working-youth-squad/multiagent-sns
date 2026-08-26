@@ -284,3 +284,69 @@ def test_concept_fills_the_square() -> None:
     # 그라데이션이었다면 정사각 가운데가 배경 그라데이션 색이다. 개념 그림은 액센트 글자를 낸다.
     band = [img.getpixel((x, 360 + 470)) for x in range(200, 880, 3)]
     assert any(p[2] > 150 and p[2] > p[0] + 40 for p in band), "액센트 글자가 안 보임"
+
+
+def _mascot_png(color: tuple[int, int, int] = (255, 0, 255)) -> bytes:
+    """불투명 단색 1:1 마스코트 — 프레임에서 픽셀로 찾을 수 있게 튀는 색을 쓴다."""
+    buf = io.BytesIO()
+    Image.new("RGBA", (256, 256), (*color, 255)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+_MASCOT_REF = "mem://image/mascot.png"
+
+
+def _mascot_pixels(img: Image.Image, width: int) -> int:
+    """마젠타 픽셀 표본 수.
+
+    **초록 성분을 함께 본다** — 문법 강조의 보라·분홍 토큰이 r·b만 높아 처음엔
+    코드 컷에서 캐릭터를 찾은 것처럼 나왔다. 실측: 개념 컷 1089 / 코드 컷 0.
+    """
+    return sum(
+        1
+        for x in range(0, width, 8)
+        for y in range(400, 1290, 8)
+        if (px := img.getpixel((x, y)))[0] > 200 and px[2] > 200 and px[1] < 80
+    )
+
+
+def _spec_with_mascot(**slide_extra: object) -> VideoSpec:
+    slide = {"subtitle": "부제", "narration": "한 문장입니다.", **slide_extra}
+    return _parse_video_spec(
+        {**SPEC_DICT, "slides": [slide], "character_ref": _MASCOT_REF}, topic_major=DEV_MAJOR
+    )
+
+
+def test_mascot_appears_on_a_concept_cut() -> None:
+    """캐릭터가 붙는지 — 튀는 색 픽셀이 프레임에 있어야 한다."""
+    spec = _spec_with_mascot(concept={"kind": "emphasis", "headline": "100억"})
+    render = render_video(spec, synthesize=tone_wav, fetch_image=lambda ref: _mascot_png())
+    img = _frame_at(render.mp4, render.duration_s * 0.5)
+    assert _mascot_pixels(img, spec.width) > 500, "캐릭터 픽셀을 못 찾음"
+
+
+def test_mascot_skipped_on_code_cut() -> None:
+    """코드 컷에는 안 넣는다 — 어느 모서리든 코드 줄 위라 가리면 못 읽는다."""
+    spec = _spec_with_mascot(code="x = 1\ny = 2", lang="python")
+    render = render_video(spec, synthesize=tone_wav, fetch_image=lambda ref: _mascot_png())
+    img = _frame_at(render.mp4, render.duration_s * 0.5)
+    assert _mascot_pixels(img, spec.width) == 0, "코드 컷에 캐릭터가 들어갔다"
+
+
+def test_no_mascot_without_ref_is_byte_identical() -> None:
+    """character_ref가 비면 지금까지의 프레임과 **바이트 동일**해야 한다."""
+    a = render_video(SPEC, synthesize=tone_wav)
+    b = render_video(SPEC, synthesize=tone_wav)
+    assert hashlib.sha256(a.mp4).digest() == hashlib.sha256(b.mp4).digest()
+    assert SPEC.character_ref == ""
+
+
+def test_mascot_fetch_failure_does_not_kill_the_video() -> None:
+    """저장소 오류는 캐릭터만 빼고 영상은 낸다 — 사진 해소와 같은 폴백 규율."""
+
+    def broken(ref: str) -> bytes:
+        raise OSError("저장소 오류")
+
+    spec = _spec_with_mascot(concept={"kind": "remember", "line": "기억하세요"})
+    render = render_video(spec, synthesize=tone_wav, fetch_image=broken)
+    assert check_video(render.mp4).passed

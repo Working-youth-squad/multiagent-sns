@@ -26,6 +26,7 @@ import argparse
 import os
 import sys
 from collections.abc import Mapping
+from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
@@ -231,7 +232,19 @@ def main() -> int:
             assess = make_video_gate(media_store.get, ffprobe=ffprobe, ffmpeg=args.ffmpeg)
 
             def resolve_video(spec: Mapping[str, object]) -> ImageResolution:
-                return resolve_images(spec, store=media_store)
+                resolved = resolve_images(spec, store=media_store)
+                # 캐릭터도 image_ref와 같은 규율로 **spec에 못박는다** — 배선으로만
+                # 넘기면 같은 media_spec이 채널마다 다른 mp4를 낳아 FR-M1이 깨지고,
+                # "이 영상이 어떤 캐릭터를 썼는지"가 원장에 안 남는다.
+                if not profile.character_image_url:
+                    return resolved
+                return replace(
+                    resolved,
+                    media_spec={
+                        **resolved.media_spec,
+                        "character_ref": profile.character_image_url,
+                    },
+                )
 
             resolve = resolve_video
         else:

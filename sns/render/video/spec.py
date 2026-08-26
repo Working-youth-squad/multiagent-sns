@@ -105,6 +105,11 @@ class VideoSpec:
     # **기본값을 두지 않는다** — 빠뜨리면 요리 채널에 개발 순서가 조용히 적용된다.
     square_sources: tuple[str, ...]
     accent: str = DEFAULT_ACCENT
+    # 채널 캐릭터의 저장소 URL. 비면 캐릭터 없이 렌더한다(인터뷰에서 "캐릭터 없음"을
+    # 골랐거나 생성이 실패한 채널). **배선이 아니라 spec에 있어야 한다** — 밖에서 넘기면
+    # 같은 media_spec이 채널마다 다른 mp4를 낳아 FR-M1이 깨진다. `image_ref`와 같은 규율로
+    # 해소 시점에 못박고 렌더러는 이것만 읽는다([sns.render.video.mascot]).
+    character_ref: str = ""
     _unused: tuple[()] = field(default=(), repr=False, compare=False)
 
 
@@ -318,4 +323,5 @@ def parse_video_spec(media_spec: Mapping[str, object], *, topic_major: str) -> V
         foreground=_parse_color(media_spec, "foreground", DEFAULT_FOREGROUND),
         accent=_parse_color(media_spec, "accent", DEFAULT_ACCENT),
         square_sources=sources,
+        character_ref=_optional_str(media_spec, "character_ref", ""),
     )

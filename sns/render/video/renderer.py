@@ -35,6 +35,7 @@ from PIL import Image, ImageDraw, ImageFont
 from sns.render.concept_image import render_concept_square
 from sns.render.fonts import FONT_CANDIDATES, pick_font
 from sns.render.text import wrap_balanced
+from sns.render.video.mascot import place_mascot
 from sns.render.video.quality import MAX_DURATION_S
 from sns.render.video.spec import Slide, VideoSpec, VideoSpecError
 from sns.render.video.tts import Synthesize, wav_duration_s
@@ -166,6 +167,32 @@ def _square(slide: Slide, side: int, spec: VideoSpec, mono_path: str | None,
     return _gradient(side, side, spec.background, spec.background2)
 
 
+def _paste_mascot(canvas: Image.Image, slide: Slide, spec: VideoSpec, square_x: int,
+                  square_y: int, side: int, fetch_image: FetchImage | None) -> None:  # fmt: skip
+    """채널 캐릭터를 컷 성격에 맞는 자리에 얹는다([sns.render.video.mascot]).
+
+    **코드가 있는 컷은 건너뛴다.** 정사각의 어느 모서리든 코드 줄 위라, 가리면 못 읽는다.
+    사진·개념 그림은 가려도 되지만 코드는 정보 밀도가 다르다.
+
+    캐릭터가 없거나(인터뷰에서 "캐릭터 없음") 되읽기가 실패하면 조용히 건너뛴다 —
+    사진 해소와 같은 폴백 규율이다. 캐릭터 때문에 영상이 죽지 않는다.
+    """
+    if not spec.character_ref or slide.code or fetch_image is None:
+        return
+    try:
+        mascot = Image.open(io.BytesIO(fetch_image(spec.character_ref))).convert("RGBA")
+    except Exception:
+        return  # 저장소 오류·깨진 이미지 — 캐릭터만 빠지고 영상은 나간다
+    spot = place_mascot(
+        slide.concept.kind if slide.concept else None,
+        square_x=square_x,
+        square_y=square_y,
+        side=side,
+    )
+    resized = mascot.resize((spot.size, spot.size), Image.Resampling.LANCZOS)
+    canvas.paste(resized, (spot.x, spot.y), resized)
+
+
 def _frame_png(slide: Slide, spec: VideoSpec, font_path: str, mono_path: str | None,
                fetch_image: FetchImage | None) -> bytes:  # fmt: skip
     """컷 1장 — 알약·주제·정사각·자막을 검은 바탕에 그린다."""
@@ -176,10 +203,9 @@ def _frame_png(slide: Slide, spec: VideoSpec, font_path: str, mono_path: str | N
     fg, accent = _hex_to_rgb(spec.foreground), _hex_to_rgb(spec.accent)
 
     canvas = Image.new("RGB", (width, height), _GROUND)
-    canvas.paste(
-        _square(slide, side, spec, mono_path, font_path, fetch_image),
-        ((width - side) // 2, top_h),
-    )
+    square_x = (width - side) // 2
+    canvas.paste(_square(slide, side, spec, mono_path, font_path, fetch_image), (square_x, top_h))
+    _paste_mascot(canvas, slide, spec, square_x, top_h, side, fetch_image)
     draw = ImageDraw.Draw(canvas)
 
     topic_font = _font(round(width / _TOPIC_DIV), font_path)
