@@ -21,6 +21,7 @@ COOK_MAJOR = "요리"
 def parse_video_spec(media_spec: Mapping[str, object]) -> VideoSpec:
     return _parse_video_spec(media_spec, topic_major=COOK_MAJOR)
 
+
 pytestmark = pytest.mark.skipif(
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
     reason="ffmpeg/ffprobe 필요 — CI에서 설치·실행",
