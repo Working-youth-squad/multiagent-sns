@@ -2,11 +2,14 @@
 
 uv run python scripts/run_profile_cycle.py <채널핸들> [--format card|video]
                                                      [--method template|generated_scene]
+                                                     [--style 3col|motion]
+                                                     [--script-only | --render-item <id>]
 
 `channel_profile` 최신 revision을 읽어 사이클에 주입한다:
   goal_ref            → run_cycle(goal_ref=...)          (goal 프리셋 실배선)
   categories          → run_cycle(topic_categories=...)  (주제 카테고리 교체)
   brief(주제범위·톤·캐릭터) → channel_brief(Topic) + playbook_guidance(Content)
+  캐릭터 이미지        → spec `character_ref`(코너 배지) + 장면 생성 레퍼런스
 
 **채널당 전용 사이클**(targets 1개)로 돈다 — 기존 실험 사이클(변수=mode 하나,
 동일 주제 도메인 공유)과 실행 단위를 분리해 통제 설계를 깨지 않는다.
@@ -20,14 +23,19 @@ uv run python scripts/run_profile_cycle.py <채널핸들> [--format card|video]
 포맷은 `--format`으로 고른다 — card=피드 카드, video=쇼츠(유튜브)/릴스(인스타).
 영상은 ffmpeg과 Google TTS가 필요하고, 정사각 사진 해소(resolve_images)가 함께 돈다.
 
-`--method generated_scene`은 **컷마다 유료 이미지를 생성한다**(사이클당 12장 상한,
-FR-P6). 기본은 template이라 명시해야 켜진다 — 라우터에 안 적힌 방식은 에이전트가
-고를 수도 없다(Capability Gate).
+**영상은 축이 둘이다.** `--method`는 어느 트랙인가(재료 출처), `--style`은 그 트랙 안의
+화면 문법이다. `--method generated_scene`은 **컷마다 유료 이미지를 생성한다**(사이클당
+12장 상한, FR-P6). 기본은 template이라 명시해야 켜진다 — 라우터에 안 적힌 방식은
+에이전트가 고를 수도 없다(Capability Gate).
 
 전제: docker compose up -d postgres · env GEMINI_API_KEY · (선택) DATABASE_URL, CARD_FONT
+  영상 포맷 추가 전제: TTS 자격증명(GOOGLE_TTS_API_KEY 또는 ADC) · ffmpeg/ffprobe
+  캐릭터 장면 생성(선택): 결제 켜진 키 + IMAGE_GEN_MODEL=google:<이미지 모델>
 """
 
 import argparse
+import hashlib
+import json
 import os
 import sys
 from collections.abc import Mapping
@@ -40,7 +48,7 @@ import psycopg
 from dotenv import load_dotenv
 
 from sns.agents.models import make_model
-from sns.onboarding.character import scene_rules_for
+from sns.onboarding.character import make_scene_generate, scene_rules_for
 from sns.onboarding.profile import build_channel_brief
 from sns.onboarding.store import PgOnboardingStore
 from sns.onboarding.trends import profile_trend_service
@@ -48,6 +56,7 @@ from sns.publish.runner import run_pending_publications
 from sns.quality.gate import QualityReport, check_card
 from sns.render.card.media import CardRenderMedia
 from sns.render.card.spec import parse_card_spec
+from sns.render.images.generate import generate_image
 from sns.render.images.resolve import ImageResolution, resolve_images
 from sns.render.video.gen.budget import ImageBudget
 from sns.render.video.gen.media import SceneRenderMedia
@@ -70,6 +79,7 @@ from sns.tools.contracts import (
     VideoMethod,
 )
 from sns.tools.fakes import FakePublish, FakeReadStats
+from sns.web.approve.store import ApprovalNotFound, PgApprovalStore
 
 OUT = Path(__file__).parent / "out"
 ENV_FILE = Path(__file__).parent.parent / ".env"
@@ -98,6 +108,20 @@ def build_parser() -> argparse.ArgumentParser:
         default="template",
         help="generated_scene은 컷마다 유료 이미지 생성이다(사이클당 12장 상한)",
     )
+    # `--method`와 직교한다: method=어느 트랙(재료 출처), style=그 트랙 안의 화면 문법.
+    p.add_argument(
+        "--style", choices=("3col", "motion"), default="motion",
+        help="영상 화면 문법. motion(기본): 키워드 타이포+애니메이션 / 3col: 3단 레이아웃. "
+        "개발(코드) 주제 채널은 3col을 쓰세요 — motion은 코드 컷을 거부합니다",
+    )  # fmt: skip
+    p.add_argument(
+        "--script-only", action="store_true",
+        help="대본까지만 만든다 — 렌더·이미지 해소(과금) 없이 content_item을 승인 대기로 적재",
+    )  # fmt: skip
+    p.add_argument(
+        "--render-item", default=None, metavar="CONTENT_ITEM_ID",
+        help="--script-only로 만든 대본을 영상으로 렌더해 원장을 갱신한다 (사이클 없음)",
+    )  # fmt: skip
     return p
 
 
@@ -149,10 +173,10 @@ class DirMediaStore:
         """`put`이 낸 file:// URI를 되읽는다.
 
         영상 품질 게이트가 산출 mp4를 다시 읽고([sns.render.video.quality]), 사진 해소도
-        저장한 정사각을 되읽는다. URI를 경로로 그냥 넘기면 Windows에서 `file:\\C:\\...`가
-        되어 OSError가 난다 — 실제로 그렇게 터졌다.
+        저장한 정사각을 되읽고, 렌더러가 image_ref·character_ref를 읽는다. URI를 경로로
+        그냥 넘기면 Windows에서 `file:\\C:\\...`가 되어 OSError가 난다 — 실제로 그렇게 터졌다.
         """
-        return Path(url2pathname(urlparse(url).path)).read_bytes()
+        return _read_file_uri(url)
 
 
 class ReportingTrends:
@@ -183,11 +207,71 @@ class ReportingTrends:
         return "\n".join(rows)
 
 
-def find_font() -> str | None:
-    env = os.environ.get("CARD_FONT")
+def _read_file_uri(url: str) -> bytes:
+    return Path(url2pathname(urlparse(url).path)).read_bytes()
+
+
+def find_font(cli: str | None) -> str | None:
+    env = cli or os.environ.get("CARD_FONT")
     if env:
         return env
     return next((c for c in FONT_CANDIDATES if Path(c).exists()), None)
+
+
+# 대본 단계의 자리표시 자산 URL — --render-item이 진짜 미디어로 갱신하기 전의 표식.
+PENDING_URL = "pending://script-approval"
+
+
+def placeholder_render(media_spec: Mapping[str, object], kind: MediaKind) -> MediaAsset:
+    """--script-only의 렌더 자리표시 — 렌더 없이 원장 FK 사슬(자산→발행)만 세운다."""
+    checksum = hashlib.sha256(
+        json.dumps(media_spec, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
+    return MediaAsset(kind=kind, storage_url=PENDING_URL, checksum=checksum)
+
+
+def render_item(
+    conn: psycopg.Connection,
+    item_id: str,
+    *,
+    media_store: "DirMediaStore",
+    renderer: RenderMedia,
+    assess: AssessQuality | None,
+    resolve: ResolveMediaSpec,
+    fmt: ContentFormat,
+) -> int:
+    """수락된 대본 1건 → 이미지 해소 → 렌더 → 게이트 → 원장 갱신 (사이클 없음)."""
+    row = conn.execute("SELECT media_spec FROM content_item WHERE id = %s", (item_id,)).fetchone()
+    if row is None or not isinstance(row[0], Mapping):
+        print(f"중단: content_item {item_id!r} 없음 또는 media_spec 비어 있음")
+        return 1
+
+    resolution = resolve(row[0])
+    for note in resolution.notes:
+        print(f"  ⚠ {note}")
+    media = renderer(resolution.media_spec, "video")
+    report: Mapping[str, object] | None = None
+    quality_status = "needs_review"
+    if assess is not None:
+        gate = assess(media_spec=resolution.media_spec, media=media, content_format=fmt)
+        quality_status, report = gate.status, gate.to_json()
+    try:
+        # 승인 웹 재렌더와 같은 원장 경로 — 항목은 종결되지 않고 다시 승인 대기가 된다.
+        PgApprovalStore(conn).update_media(
+            item_id,
+            media_spec=resolution.media_spec,
+            storage_url=media.storage_url,
+            checksum=media.checksum,
+            quality_status=quality_status,
+            quality_report=report,
+        )
+    except ApprovalNotFound:
+        print(f"중단: {item_id!r}가 승인 대기 목록에 없음 — 이미 처리됐거나 hybrid가 아님")
+        return 1
+    print(f"  품질: {quality_status}")
+    for p in media_store.saved:
+        print(f"  렌더 산출물: {p}")
+    return 0 if quality_status == "passed" else 1
 
 
 def main() -> int:
@@ -221,22 +305,41 @@ def main() -> int:
             print(f"중단: 채널 {handle!r}에 프로필 없음 — 온보딩 인터뷰를 먼저 완료")
             return 1
 
+        platform = platform_of(channel.platform)
+        fmt = content_format_for(platform, args.format)
         brief = build_channel_brief(profile)
-        print(f"채널  : {channel.handle} ({channel.platform}, {channel.mode})")
+        print(f"채널  : {channel.handle} ({channel.platform}, {channel.mode}, {fmt})")
         print(f"프로필: {profile.topic_major} / {', '.join(profile.topic_subs)}")
         print(f"goal  : {profile.goal_ref}")
+        print(f"캐릭터: {profile.character_image_url or '없음'}")
         print(f"brief :\n{brief}\n")
 
+        if (args.script_only or args.render_item) and fmt == "feed_image":
+            print("중단: --script-only / --render-item은 영상 포맷 전용입니다")
+            return 1
+
         media_store = DirMediaStore(OUT)
-        font = args.font or find_font()  # --font를 받아놓고 무시하지 않는다
-        platform = platform_of(channel.platform)
-        content_format = content_format_for(platform, args.format)
+        font = find_font(args.font)  # --font를 받아놓고 무시하지 않는다
 
         renderer: RenderMedia
-        assess: AssessQuality
-        resolve: ResolveMediaSpec | None
+        assess: AssessQuality | None
+        resolve: ResolveMediaSpec | None = None
         methods: tuple[VideoMethod, ...] = ("template",)
-        if args.format == "video":
+
+        if fmt == "feed_image":
+            card_renderer = CardRenderMedia(media_store, font_path=font)
+
+            def assess_card(
+                *,
+                media_spec: Mapping[str, object],
+                media: MediaAsset,
+                content_format: ContentFormat,
+            ) -> QualityReport:
+                return check_card(parse_card_spec(media_spec), card_renderer.render(media_spec))
+
+            renderer = card_renderer
+            assess = assess_card
+        else:
             # **라우터에 적은 것만 켜진다**(Capability Gate). 생성은 유료라 --method로
             # 명시해야 등록된다 — resolve.py의 "기본값을 generate_image로 두면 결제가
             # 켜진 계정에서 사이클이 조용히 돈을 쓴다"와 같은 규율이다.
@@ -264,6 +367,66 @@ def main() -> int:
                 str(Path(args.ffmpeg).parent / "ffprobe") if args.ffmpeg != "ffmpeg" else "ffprobe"
             )
             assess = make_video_gate(media_store.get, ffprobe=ffprobe, ffmpeg=args.ffmpeg)
+
+            # 캐릭터가 있으면 정사각 생성의 **레퍼런스**로 쓴다. 없으면 일반 생성 이미지로
+            # — 캐릭터 미선택이 글자만 남은 영상이 되지 않게(image_query 스톡 폴백은 그대로).
+            character_url = profile.character_image_url
+            generate = (
+                make_scene_generate(_read_file_uri(character_url))
+                if character_url is not None
+                else generate_image
+            )
+            # 예산은 사이클 하나에 하나 — 재사용하면 이전 소비가 이어져 계산이 어긋난다.
+            budget = ImageBudget()
+            rules = scene_rules_for(profile.character_style)
+            style = args.style
+
+            def _extras() -> dict[str, object]:
+                """spec에 못박는 값 — 배선으로만 넘기면 같은 media_spec이 채널마다 다른
+                mp4를 낳아 FR-M1이 깨지고, 승인 웹 재렌더가 같은 꼴로 못 돈다."""
+                extra: dict[str, object] = {}
+                if style == "motion":
+                    extra["style"] = "motion"
+                if character_url is not None:
+                    extra["character_ref"] = character_url
+                return extra
+
+            def resolve_video(spec: Mapping[str, object]) -> ImageResolution:
+                res = resolve_images(spec, store=media_store, generate=generate)
+                # 장면 해소 — generated_scene이 아니면 resolve_scenes가 그대로 통과시킨다.
+                res = resolve_scenes(
+                    res.media_spec, store=media_store, scene_rules=rules, budget=budget
+                )
+                return ImageResolution({**res.media_spec, **_extras()}, res.notes)
+
+            resolve = resolve_video
+
+            if args.render_item:
+                return render_item(
+                    conn, args.render_item,
+                    media_store=media_store, renderer=renderer, assess=assess,
+                    resolve=resolve_video, fmt=fmt,
+                )  # fmt: skip
+            if args.script_only:
+                # 대본 단계는 렌더·이미지 해소(과금)를 하지 않는다 — 자리표시 자산만
+                # 적재하고, 수락 시 --render-item이 진짜 미디어로 갱신한다.
+                renderer = placeholder_render
+                assess = None
+
+                def resolve_extras_only(spec: Mapping[str, object]) -> ImageResolution:
+                    return ImageResolution({**spec, **_extras()})
+
+                resolve = resolve_extras_only
+
+        # 모션 스타일이면 에이전트에게 화면 문법을 알린다 — 코드/도해 컷은 모션 화면에서
+        # 그라데이션으로 강등되므로, 애초에 이미지 장면으로 쓰게 유도한다(soft 지침).
+        playbook = brief
+        if fmt != "feed_image" and args.style == "motion":
+            playbook = brief + (
+                "\n영상 화면은 모션 그래픽 스타일이다: code와 concept는 쓰지 말고, "
+                "컷마다 image_query(실사 검색어) 또는 image_prompt로 배경 장면을 지정하라. "
+                "화면 글자는 최소로 — subtitle은 2~4단어 키워드, narration은 짧은 한 문장."
+            )
 
             # 예산은 사이클 하나에 하나 — 재사용하면 이전 소비가 이어져 계산이 어긋난다.
             budget = ImageBudget()
@@ -319,7 +482,7 @@ def main() -> int:
                 CycleTarget(
                     channel_id=channel.channel_id,
                     platform=platform,
-                    content_format=content_format,
+                    content_format=fmt,
                     mode=channel_mode_of(channel.mode),
                 )
             ],
@@ -332,7 +495,7 @@ def main() -> int:
             resolve_media_spec=resolve,
             channel_brief=brief,
             topic_categories=profile.categories,
-            playbook_guidance=brief,
+            playbook_guidance=playbook,
         )
         print("트렌드 소스 결과")
         print(reporting.report())

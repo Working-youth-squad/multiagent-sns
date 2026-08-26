@@ -18,7 +18,8 @@
 "승인 대기 목록에 없다 = 이미 발행 진입 가능"이 성립한다.
 """
 
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
 from typing import Protocol
 
 import psycopg
@@ -45,6 +46,7 @@ class PendingItem:
     channel_id: str
     platform: str
     handle: str
+    media_spec: Mapping[str, object] | None = None
 
 
 class ApprovalStore(Protocol):
@@ -54,6 +56,16 @@ class ApprovalStore(Protocol):
     def get_pending(self, content_item_id: str) -> PendingItem | None: ...
     def approve(self, content_item_id: str, *, body: str) -> None: ...
     def reject(self, content_item_id: str, *, reason: str) -> None: ...
+    def update_media(
+        self,
+        content_item_id: str,
+        *,
+        media_spec: Mapping[str, object],
+        storage_url: str,
+        checksum: str,
+        quality_status: str,
+        quality_report: Mapping[str, object] | None,
+    ) -> None: ...
 
 
 class InMemoryApprovalStore:
@@ -63,6 +75,7 @@ class InMemoryApprovalStore:
         self._items: dict[str, PendingItem] = {i.content_item_id: i for i in items}
         self.approved: dict[str, str] = {}  # content_item_id -> 승인된 본문
         self.rejected: dict[str, str] = {}  # content_item_id -> 반려 사유
+        self.rerendered: dict[str, Mapping[str, object]] = {}  # id -> 재렌더된 spec
 
     def list_pending(self) -> tuple[PendingItem, ...]:
         return tuple(self._items.values())
@@ -82,11 +95,31 @@ class InMemoryApprovalStore:
         self.rejected[content_item_id] = reason
         del self._items[content_item_id]
 
+    def update_media(
+        self,
+        content_item_id: str,
+        *,
+        media_spec: Mapping[str, object],
+        storage_url: str,
+        checksum: str,
+        quality_status: str,
+        quality_report: Mapping[str, object] | None,
+    ) -> None:
+        item = self._items.get(content_item_id)
+        if item is None:
+            raise ApprovalNotFound(content_item_id)
+        # 재렌더는 항목을 종결하지 않는다 — 새 spec·미디어로 갱신해 다시 승인 대기.
+        self._items[content_item_id] = replace(
+            item, media_spec=media_spec, media_storage_url=storage_url,
+            quality_status=quality_status,
+        )  # fmt: skip
+        self.rerendered[content_item_id] = media_spec
+
 
 _SELECT_PENDING = """
 SELECT ci.id, ci.cycle_id, t.title, ci.format, ci.hook_pattern, COALESCE(ci.body, ''),
        ma.id, ma.kind, ma.storage_url, ma.quality_status,
-       p.id, p.channel_id, ch.platform, ch.handle
+       p.id, p.channel_id, ch.platform, ch.handle, ci.media_spec
   FROM content_item ci
   JOIN publication p ON p.content_item_id = ci.id
   JOIN channel ch ON ch.id = p.channel_id
@@ -150,6 +183,39 @@ class PgApprovalStore:
             )
             self._log(item, "hybrid_rejected", {"reason": reason})
 
+    def update_media(
+        self,
+        content_item_id: str,
+        *,
+        media_spec: Mapping[str, object],
+        storage_url: str,
+        checksum: str,
+        quality_status: str,
+        quality_report: Mapping[str, object] | None,
+    ) -> None:
+        item = self.get_pending(content_item_id)
+        if item is None:
+            raise ApprovalNotFound(content_item_id)
+        with self._conn.transaction():
+            # 사람이 spec을 고쳤다 — 승인의 body 수정과 같은 축(edited_by_human).
+            self._conn.execute(
+                "UPDATE content_item SET media_spec = %s, edited_by_human = true WHERE id = %s",
+                (Json(dict(media_spec)), content_item_id),
+            )
+            if item.media_asset_id is not None:
+                self._conn.execute(
+                    "UPDATE media_asset SET storage_url = %s, checksum = %s, "
+                    "quality_status = %s, quality_report = %s WHERE id = %s",
+                    (
+                        storage_url,
+                        checksum,
+                        quality_status,
+                        None if quality_report is None else Json(dict(quality_report)),
+                        item.media_asset_id,
+                    ),
+                )
+            self._log(item, "hybrid_rerendered", {"quality_status": quality_status})
+
     def _log(self, item: PendingItem, reason: str, extra: dict[str, object]) -> None:
         self._conn.execute(
             "INSERT INTO run_event (cycle_id, kind, payload) VALUES (%s, 'notice', %s)",
@@ -176,6 +242,7 @@ def _row_to_item(row: tuple[object, ...]) -> PendingItem:
         channel_id,
         platform,
         handle,
+        media_spec,
     ) = row
     return PendingItem(
         content_item_id=str(content_item_id),
@@ -192,6 +259,7 @@ def _row_to_item(row: tuple[object, ...]) -> PendingItem:
         channel_id=str(channel_id),
         platform=str(platform),
         handle=str(handle),
+        media_spec=media_spec if isinstance(media_spec, Mapping) else None,
     )
 
 

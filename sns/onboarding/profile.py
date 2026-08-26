@@ -171,6 +171,13 @@ def build_channel_brief(profile: ChannelProfile) -> str:
             f"이 채널은 {CHARACTER_STYLES[profile.character_style]} 스타일의 고정"
             " 캐릭터(마스코트)가 등장하는 컨셉이다."
         )
+    if profile.character_image_url is not None:
+        # 장면 생성기([sns.onboarding.character.make_scene_generate])가 배선된 채널만
+        # 이 지침을 받는다 — image_prompt는 코드가 없는 영상에서만 유효하다(spec 규칙).
+        lines.append(
+            "영상에서 코드가 없는 컷에는 image_prompt로 마스코트 캐릭터가 등장하는"
+            " 장면을 영어로 묘사한다(캐릭터는 레퍼런스 이미지로 유지된다)."
+        )
     if profile.note:
         # 격리 문장 — 자유 줄글이 프롬프트 조립의 마지막 층이라, 구조 지시가 섞이면 코드가
         # 건 자물쇠와 싸운다. **이건 prompt-level soft constraint이며 authorization

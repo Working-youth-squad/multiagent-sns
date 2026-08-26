@@ -71,6 +71,64 @@ def _run_ffmpeg(cmd: list[str], workdir: Path) -> None:
         raise VideoRenderError(f"ffmpeg 실패(exit {result.returncode}): {result.stderr.strip()}")
 
 
+def concat_cuts(
+    workdir: Path,
+    *,
+    cut_count: int,
+    wavs: Sequence[bytes],
+    total: float,
+    width: int,
+    accent: str,
+    bar_h: int,
+    ffmpeg: str = "ffmpeg",
+    bgm: bytes | None = None,
+    bgm_ext: str = "mp3",
+) -> bytes:
+    """2패스 공용부: `workdir`의 `cut{i}.mp4` → concat + 진행바 + 오디오.
+
+    **컷 재료를 어떻게 만들었는지는 묻지 않는다.** 3단·모션·생성 장면이 각자 다른
+    방식으로 컷 mp4를 만들고(정지 PNG, 줌, 풀블리드 장면) 여기서 합류한다. 진행바
+    좌표와 `-bitexact`가 한 벌뿐이라는 게 이 자리의 값이다.
+
+    목록은 반드시 1패스가 만든 컷 수와 같아야 한다 — 적게 쓰면 영상만 조용히 잘리고
+    오디오는 그대로라 뒷부분이 정지 화면이 된다.
+    """
+    (workdir / "list.txt").write_text(
+        "".join(f"file 'cut{i}.mp4\n" for i in range(cut_count)), encoding="utf-8"
+    )
+    (workdir / "audio.wav").write_bytes(_concat_wavs(wavs))
+
+    cmd = [
+        ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+        "-f", "concat", "-safe", "0", "-i", "list.txt",
+        "-i", "audio.wav",
+        "-f", "lavfi", "-t", f"{total:.3f}",
+        "-i", f"color=c=0x{accent[1:]}:s={width}x{bar_h}:r={FPS}",
+    ]  # fmt: skip
+    # 진행바: 화면 폭짜리 색 소스를 왼쪽 밖에서 밀어넣어 차오르게 한다. drawbox로는
+    # 안 된다 — drawbox 표현식의 `t`는 타임스탬프가 아니라 **선 두께**라 매 프레임
+    # 같은 값이 나와 바가 처음부터 꽉 찬 채로 멈춘다. overlay의 `x`는 `t`가 시각이다.
+    chain = f"[0:v][2:v]overlay=x='-W+W*t/{total:.3f}':y=H-{bar_h}:shortest=1,format=yuv420p[v]"
+    if bgm is not None:
+        (workdir / f"bgm.{bgm_ext}").write_bytes(bgm)
+        cmd += ["-stream_loop", "-1", "-i", f"bgm.{bgm_ext}"]
+        cmd += [
+            "-filter_complex",
+            f"{chain};[1:a]volume=1.0[nar];[3:a]volume=0.12[bg];"
+            "[nar][bg]amix=inputs=2:duration=first:normalize=0[a]",
+            "-map", "[v]", "-map", "[a]",
+        ]  # fmt: skip
+    else:
+        cmd += ["-filter_complex", chain, "-map", "[v]", "-map", "1:a"]
+    cmd += [
+        "-r", str(FPS), "-c:v", "libx264", "-preset", "veryfast",
+        "-c:a", "aac", "-t", f"{total:.3f}",
+        *_BITEXACT, "out.mp4",
+    ]  # fmt: skip
+    _run_ffmpeg(cmd, workdir)
+    return (workdir / "out.mp4").read_bytes()
+
+
 def assemble_video(
     cut_pngs: Sequence[bytes],
     durations: Sequence[float],
@@ -123,41 +181,10 @@ def assemble_video(
                 workdir,
             )
 
-        # 2패스: concat + 진행바 + 오디오. 목록은 반드시 1패스가 만든 컷 수와 같아야 한다
-        # — 적게 쓰면 영상만 조용히 잘리고 오디오는 그대로라 뒷부분이 정지 화면이 된다.
-        (workdir / "list.txt").write_text(
-            "".join(f"file 'cut{i}.mp4'\n" for i in range(len(cut_pngs))), encoding="utf-8"
-        )
-        (workdir / "audio.wav").write_bytes(_concat_wavs(wavs))
-
-        cmd = [
-            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "concat", "-safe", "0", "-i", "list.txt",
-            "-i", "audio.wav",
-            "-f", "lavfi", "-t", f"{total:.3f}",
-            "-i", f"color=c=0x{spec.accent[1:]}:s={spec.width}x{bar_h}:r={FPS}",
-        ]  # fmt: skip
-        # 진행바: 화면 폭짜리 색 소스를 왼쪽 밖에서 밀어넣어 차오르게 한다. drawbox로는
-        # 안 된다 — drawbox 표현식의 `t`는 타임스탬프가 아니라 **선 두께**라 매 프레임
-        # 같은 값이 나와 바가 처음부터 꽉 찬 채로 멈춘다. overlay의 `x`는 `t`가 시각이다.
-        chain = f"[0:v][2:v]overlay=x='-W+W*t/{total:.3f}':y=H-{bar_h}:shortest=1,format=yuv420p[v]"
-        if bgm is not None:
-            (workdir / f"bgm.{bgm_ext}").write_bytes(bgm)
-            cmd += ["-stream_loop", "-1", "-i", f"bgm.{bgm_ext}"]
-            cmd += [
-                "-filter_complex",
-                f"{chain};[1:a]volume=1.0[nar];[3:a]volume=0.12[bg];"
-                "[nar][bg]amix=inputs=2:duration=first:normalize=0[a]",
-                "-map", "[v]", "-map", "[a]",
-            ]  # fmt: skip
-        else:
-            cmd += ["-filter_complex", chain, "-map", "[v]", "-map", "1:a"]
-        cmd += [
-            "-r", str(FPS), "-c:v", "libx264", "-preset", "veryfast",
-            "-c:a", "aac", "-t", f"{total:.3f}",
-            *_BITEXACT, "out.mp4",
-        ]  # fmt: skip
-        _run_ffmpeg(cmd, workdir)
-        mp4 = (workdir / "out.mp4").read_bytes()
+        mp4 = concat_cuts(
+            workdir, cut_count=len(cut_pngs), wavs=wavs, total=total,
+            width=spec.width, accent=spec.accent, bar_h=bar_h,
+            ffmpeg=ffmpeg, bgm=bgm, bgm_ext=bgm_ext,
+        )  # fmt: skip
 
     return VideoRender(mp4=mp4, duration_s=total, cut_durations_s=tuple(durations))

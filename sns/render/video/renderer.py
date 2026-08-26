@@ -155,9 +155,24 @@ def _square(slide: Slide, side: int, spec: VideoSpec, mono_path: str | None,
     return _gradient(side, side, spec.background, spec.background2)
 
 
+def _character_badge(png: bytes, size: int) -> Image.Image:
+    """캐릭터 PNG → 원형 배지. 생성 캐릭터는 단색 배경이라 사각 그대로 붙이면 상자가 된다."""
+    src = Image.open(io.BytesIO(png)).convert("RGB").resize((size, size), Image.Resampling.LANCZOS)
+    # 안티앨리어싱: 마스크를 4배로 그려서 줄인다 — 원 둘레 계단 현상 방지.
+    mask = Image.new("L", (size * 4, size * 4), 0)
+    ImageDraw.Draw(mask).ellipse((0, 0, size * 4, size * 4), fill=255)
+    badge = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    badge.paste(src, (0, 0), mask.resize((size, size), Image.Resampling.LANCZOS))
+    return badge
+
+
 def _paste_mascot(canvas: Image.Image, slide: Slide, spec: VideoSpec, square_x: int,
                   square_y: int, side: int, fetch_image: FetchImage | None) -> None:  # fmt: skip
-    """채널 캐릭터를 컷 성격에 맞는 자리에 얹는다([sns.render.video.mascot]).
+    """채널 캐릭터를 컷 성격에 맞는 자리에 **원형 배지**로 얹는다.
+
+    두 갈래가 합쳐진 자리다: 모양은 `_character_badge`(단색 배경이 상자로 보이는 걸
+    원형 마스크로 없앤다), 자리는 [sns.render.video.mascot]의 컷 성격별 배치다.
+    우하단 고정이 아닌 이유는 정사각 내용이 컷마다 달라서다.
 
     **코드가 있는 컷은 건너뛴다.** 정사각의 어느 모서리든 코드 줄 위라, 가리면 못 읽는다.
     사진·개념 그림은 가려도 되지만 코드는 정보 밀도가 다르다.
@@ -165,25 +180,31 @@ def _paste_mascot(canvas: Image.Image, slide: Slide, spec: VideoSpec, square_x: 
     캐릭터가 없거나(인터뷰에서 "캐릭터 없음") 되읽기가 실패하면 조용히 건너뛴다 —
     사진 해소와 같은 폴백 규율이다. 캐릭터 때문에 영상이 죽지 않는다.
     """
-    if not spec.character_ref or slide.code or fetch_image is None:
+    if not spec.character_ref or slide.code:
         return
-    try:
-        mascot = Image.open(io.BytesIO(fetch_image(spec.character_ref))).convert("RGBA")
-    except Exception:
-        return  # 저장소 오류·깨진 이미지 — 캐릭터만 빠지고 영상은 나간다
+    if fetch_image is None:
+        # **배선 실수는 조용히 넘기지 않는다.** 아래 폴백은 런타임 실패(깨진 이미지·저장소
+        # 오류)의 몫이고, seam이 아예 없는 건 부르는 쪽이 틀린 것이다.
+        raise VideoSpecError(
+            f"'character_ref'({spec.character_ref})가 있는데 fetch_image seam이 없음 — "
+            "조용히 캐릭터 없이 렌더하지 않는다"
+        )
     spot = place_mascot(
         slide.concept.kind if slide.concept else None,
         square_x=square_x,
         square_y=square_y,
         side=side,
     )
-    resized = mascot.resize((spot.size, spot.size), Image.Resampling.LANCZOS)
-    canvas.paste(resized, (spot.x, spot.y), resized)
+    try:
+        badge = _character_badge(fetch_image(spec.character_ref), spot.size)
+    except Exception:
+        return  # 저장소 오류·깨진 이미지 — 캐릭터만 빠지고 영상은 나간다
+    canvas.paste(badge, (spot.x, spot.y), badge)
 
 
 def _frame_png(slide: Slide, spec: VideoSpec, font_path: str, mono_path: str | None,
                fetch_image: FetchImage | None) -> bytes:  # fmt: skip
-    """컷 1장 — 알약·주제·정사각·자막을 검은 바탕에 그린다."""
+    """컷 1장 — 알약·주제·정사각·자막(+캐릭터 배지)을 검은 바탕에 그린다."""
     width, height = spec.width, spec.height
     top_h = round(height * _TOP_RATIO)
     side = round(width * _SQUARE_RATIO)

@@ -114,11 +114,12 @@ MAX_IMAGE_QUERY_LEN = 60
 MAX_IMAGE_PROMPT_LEN = 200
 
 DEFAULT_VOICE = "ko-KR-Chirp3-HD-Charon"
-# 코드가 없는 컷의 정사각을 채우는 그라데이션 + 텍스트/액센트 (다크 브랜드 팔레트).
-DEFAULT_BACKGROUND = "#0d1117"
-DEFAULT_BACKGROUND2 = "#1b2a4a"
-DEFAULT_FOREGROUND = "#e6edf3"
-DEFAULT_ACCENT = "#58a6ff"
+# 코드가 없는 컷의 정사각을 채우는 그라데이션 + 텍스트/액센트 (화이트 모드 기본).
+# 다크 팔레트는 classic 템플릿([sns.render.video.classic.spec])에 보존돼 있다.
+DEFAULT_BACKGROUND = "#ffffff"
+DEFAULT_BACKGROUND2 = "#dbe4f0"
+DEFAULT_FOREGROUND = "#1f2328"
+DEFAULT_ACCENT = "#0969da"
 
 
 class VideoSpecError(ValueError):
@@ -165,10 +166,15 @@ class VideoSpec:
     # 채널 캐릭터의 저장소 URL. 비면 캐릭터 없이 렌더한다(인터뷰에서 "캐릭터 없음"을
     # 골랐거나 생성이 실패한 채널). **배선이 아니라 spec에 있어야 한다** — 밖에서 넘기면
     # 같은 media_spec이 채널마다 다른 mp4를 낳아 FR-M1이 깨진다. `image_ref`와 같은 규율로
-    # 해소 시점에 못박고 렌더러는 이것만 읽는다([sns.render.video.mascot]).
+    # 해소 시점에 못박고 렌더러는 이것만 읽는다([sns.render.video.mascot]). 승인 웹
+    # 재렌더가 채널 조립 없이 도는 근거이기도 하다.
     character_ref: str = ""
-    # 영상 전체의 제작 방식. hybrid면 컷마다 다를 수 있어 검증 단위는 slide.method다.
+    # **축이 둘이다.** 섞으면 "이 영상이 어떻게 만들어졌나"의 답이 둘이 되고 어긋난다.
+    #   method — 어느 트랙인가(재료 출처). 비용·AI 표기·Capability Gate가 여기 걸린다.
+    #   style  — 그 트랙 안의 화면 문법. spec에 있어야 승인 웹 재렌더가 같은 꼴로 돈다.
+    # hybrid면 method가 컷마다 다를 수 있어 검증 단위는 slide.method다.
     method: VideoMethod = "template"
+    style: str = ""
     _unused: tuple[()] = field(default=(), repr=False, compare=False)
 
 
@@ -437,6 +443,17 @@ def _parse_voice(spec: Mapping[str, object]) -> str:
     return value
 
 
+# 화면 문법 — `method`와 직교한다([sns.render.video.media]의 `_RENDERERS`).
+VIDEO_STYLES = ("", "motion")
+
+
+def _parse_style(spec: Mapping[str, object]) -> str:
+    value = _optional_str(spec, "style", "")
+    if value not in VIDEO_STYLES:
+        raise VideoSpecError(f"'style'은 {VIDEO_STYLES} 중 하나여야 함: {value!r}")
+    return value
+
+
 def parse_video_spec(
     media_spec: Mapping[str, object], *, topic_major: str, stage: SpecStage = "render"
 ) -> VideoSpec:
@@ -465,4 +482,5 @@ def parse_video_spec(
         square_sources=sources,
         character_ref=_optional_str(media_spec, "character_ref", ""),
         method=method,
+        style=_parse_style(media_spec),
     )

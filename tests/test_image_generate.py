@@ -168,6 +168,33 @@ def test_google_rejects_non_image_mime(monkeypatch: pytest.MonkeyPatch) -> None:
         generate_image("cube", model=GOOGLE_MODEL, opener=opener_for(payload))
 
 
+def test_google_reference_image_precedes_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    """캐릭터 앵커를 레퍼런스로 실으면 이미지 파트가 텍스트보다 앞이어야 한다."""
+    monkeypatch.setenv(ENV_GEMINI_API_KEY, "k")
+    seen: list[Any] = []
+    generate_image(
+        "cube",
+        model=GOOGLE_MODEL,
+        opener=opener_for(google_body([inline()]), seen=seen),
+        reference_png=b"ref-png",
+    )
+    parts = json.loads(seen[0].data)["contents"][0]["parts"]
+    assert parts[0]["inlineData"]["data"] == base64.b64encode(b"ref-png").decode()
+    assert "cube" in parts[1]["text"]
+
+
+def test_openai_rejects_reference_image(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Images API의 레퍼런스는 별도 엔드포인트다 — 조용히 무시하지 않고 끊는다."""
+    monkeypatch.setenv(ENV_OPENAI_API_KEY, "sk")
+    seen: list[Any] = []
+    with pytest.raises(ImageGenerationError, match="google"):
+        generate_image(
+            "cube", model=OPENAI_MODEL, opener=opener_for(openai_body(), seen=seen),
+            reference_png=b"r",
+        )  # fmt: skip
+    assert seen == [], "거부해야 할 요청이 네트워크로 나감"
+
+
 def test_google_quota_error_explains_billing(monkeypatch: pytest.MonkeyPatch) -> None:
     """무료 티어는 이미지 할당량이 0이다 — 429가 기본 상태라 사유가 읽혀야 한다."""
     monkeypatch.setenv(ENV_GEMINI_API_KEY, "k")

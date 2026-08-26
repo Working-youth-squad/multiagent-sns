@@ -9,11 +9,20 @@ import hashlib
 from collections.abc import Mapping
 
 from sns.render.storage import InMemoryMediaStore, MediaStore
+from sns.render.video.motion import render_motion_video
 from sns.render.video.renderer import VideoRender, render_video
 from sns.render.video.spec import parse_video_spec
 from sns.render.video.tts import Synthesize, synthesize_google
 from sns.tools.contracts import MediaAsset, MediaKind, RenderMedia
 from sns.topic_policy import DEV_MAJOR
+
+# 화면 문법 레지스트리 — 키는 [sns.render.video.spec.VIDEO_STYLES]와 함께 늘린다.
+# 생성 장면(generated_scene)은 여기가 아니라 별도 트랙이다 — 화면 문법이 아니라
+# 재료 출처가 다르고 비용·AI 표기가 걸린다([sns.render.video.gen.media]).
+_RENDERERS = {
+    "": render_video,  # 3단 레이아웃
+    "motion": render_motion_video,  # 모션 그래픽
+}
 
 
 class VideoRenderMedia:
@@ -35,9 +44,17 @@ class VideoRenderMedia:
         self._ffmpeg = ffmpeg
 
     def render(self, media_spec: Mapping[str, object]) -> VideoRender:
-        """렌더 결과를 그대로 반환 — 품질 검사가 mp4 바이트를 참조한다."""
-        return render_video(
-            parse_video_spec(media_spec, topic_major=self._topic_major),
+        """렌더 결과를 그대로 반환 — 품질 검사가 mp4 바이트를 참조한다.
+
+        **축이 둘이다.** 이 클래스는 `method="template"` 트랙의 바인딩이고, 그 안에서
+        spec의 `style`이 화면 문법을 고른다 — 승인 웹 재렌더가 별도 배선 없이 같은
+        스타일로 다시 그려지는 근거. 트랙을 가르는 건 한 층 위의
+        [sns.render.video.router]다(Capability Gate).
+        """
+        spec = parse_video_spec(media_spec, topic_major=self._topic_major)
+        render_fn = _RENDERERS[spec.style]
+        return render_fn(
+            spec,
             synthesize=self._synthesize,
             font_path=self._font_path,
             fetch_image=self._store.get,

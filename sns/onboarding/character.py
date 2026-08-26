@@ -10,7 +10,12 @@
    온보딩을 계속한다 — 실패가 인터뷰 완주를 막지 않는다.
 
 저장은 MediaStore(content-addressed) — checksum·URL을 프로필에 박제해 렌더가
-재사용한다(영상 합성 반영은 후속: 렌더러 코너 오버레이).
+재사용한다. 영상 반영은 두 트랙:
+1. 코너 오버레이 — spec의 `character_ref`로 렌더러가 배지를 얹는다
+   ([sns.render.video.renderer]).
+2. 장면 생성 — `make_scene_generate`로 캐릭터 앵커를 레퍼런스 삼아 컷 이미지를
+   생성한다(캐릭터 일관성). 말하는 아바타(HeyGen/D-ID)로의 업그레이드는
+   `character_ref`를 읽는 별도 RenderMedia 구현을 주입하면 된다 — 계약이 seam이다.
 """
 
 import hashlib
@@ -71,13 +76,36 @@ def scene_rules_for(character_style: str) -> tuple[str, ...]:
 
 GenerateImage = Callable[..., bytes]
 
+# 캐릭터 레퍼런스 장면용 — 영상 정사각 규칙(밝은 배경·글자 없음)에 캐릭터 유지를 얹는다.
+SCENE_RULES: tuple[str, ...] = (
+    "feature the exact mascot character from the reference image as the main subject",
+    "keep the character's design, colors and proportions identical to the reference",
+    "square 1:1 composition",
+    "clean white background",
+    "minimal, no text, no letters, no numbers, no watermark, no logos",
+)
+
+
+# 게이트([sns.render.images.gate])가 영문만 받는다 — 고정 대분류의 영문 매핑.
+_MAJOR_EN: dict[str, str] = {
+    "개발": "programming and tech",
+    "요리": "cooking and food",
+    "음악": "music",
+    "춤": "dance",
+}
+
 
 def character_subject(profile: ChannelProfile) -> str:
-    """생성 프롬프트의 주제부 — 채널 주제가 캐릭터 정체성에 스며들게."""
-    return (
-        f"{profile.topic_major} 주제({', '.join(profile.topic_subs)}) SNS 채널을 "
-        "대표하는 마스코트 캐릭터"
-    )
+    """생성 프롬프트의 주제부 — **영문**이어야 한다.
+
+    실사고: 한글 subject가 게이트("검색어는 영문이어야 함")에 막혀 캐릭터 생성이
+    온보딩 내내 조용히 실패했다. 고정 대분류는 매핑, 직접 입력 주제는 영문이면
+    그대로, 한글이면 일반 문구로 폴백한다.
+    """
+    major = profile.topic_major
+    theme = _MAJOR_EN.get(major) or (major if major.isascii() else None)
+    about = f" for a {theme} social media channel" if theme else " for a social media channel"
+    return f"a cute original mascot character{about}"
 
 
 def ensure_character(
@@ -97,6 +125,17 @@ def ensure_character(
     checksum = hashlib.sha256(data).hexdigest()
     url = store.put(data, checksum=checksum, kind="image", ext="png")
     return replace(profile, character_image_url=url, character_checksum=checksum)
+
+
+def make_scene_generate(
+    character_png: bytes, *, generate: GenerateImage = generate_image
+) -> Callable[[str], bytes]:
+    """캐릭터 앵커 이미지를 레퍼런스로 장면을 생성 — resolve_images의 GenerateImage 모양."""
+
+    def fn(prompt: str) -> bytes:
+        return generate(prompt, style_rules=SCENE_RULES, reference_png=character_png)
+
+    return fn
 
 
 def make_character_fn(

@@ -266,6 +266,13 @@ def test_image_ref_without_fetch_seam_raises() -> None:
         render_video(spec, synthesize=tone_wav)
 
 
+def test_character_ref_without_fetch_seam_raises() -> None:
+    """조용히 캐릭터 없이 렌더하면 배선 실수가 영상까지 흘러간다 — image_ref와 같은 규율."""
+    spec = parse_video_spec({**SPEC_DICT, "character_ref": "mem://image/char.png"})
+    with pytest.raises(VideoSpecError, match="fetch_image"):
+        render_video(spec, synthesize=tone_wav)
+
+
 def test_concept_fills_the_square() -> None:
     """개념 그림도 정사각을 채운다 — 코드 다음, 사진보다 앞."""
     spec = parse_video_spec(

@@ -127,6 +127,44 @@ def test_approve_logs_run_event(db: psycopg.Connection) -> None:
     assert row == ("hybrid_approved", ci_id)
 
 
+def test_update_media_replaces_spec_and_asset_but_keeps_pending(db: psycopg.Connection) -> None:
+    """재렌더는 항목을 종결하지 않는다 — 새 spec·미디어로 갱신 후 다시 승인 대기."""
+    ci_id, ma_id, _ = _seed_hybrid(db, title="재렌더 대상")
+    PgApprovalStore(db).update_media(
+        ci_id,
+        media_spec={"topic": "고친 주제"},
+        storage_url="mem://rerendered",
+        checksum="chk-2",
+        quality_status="passed",
+        quality_report={"passed": True, "failures": []},
+    )
+    spec, edited = db.execute(
+        "SELECT media_spec, edited_by_human FROM content_item WHERE id = %s", (ci_id,)
+    ).fetchone()
+    assert spec == {"topic": "고친 주제"}
+    assert edited is True
+    url, chk, qstatus = db.execute(
+        "SELECT storage_url, checksum, quality_status FROM media_asset WHERE id = %s", (ma_id,)
+    ).fetchone()
+    assert (url, chk, qstatus) == ("mem://rerendered", "chk-2", "passed")
+    item = PgApprovalStore(db).get_pending(ci_id)
+    assert item is not None and item.media_spec == {"topic": "고친 주제"}
+    row = db.execute("SELECT payload->>'reason' FROM run_event WHERE kind = 'notice'").fetchone()
+    assert row == ("hybrid_rerendered",)
+
+
+def test_update_media_missing_raises_not_found(db: psycopg.Connection) -> None:
+    with pytest.raises(ApprovalNotFound):
+        PgApprovalStore(db).update_media(
+            "00000000-0000-0000-0000-000000000000",
+            media_spec={},
+            storage_url="mem://x",
+            checksum="c",
+            quality_status="passed",
+            quality_report=None,
+        )
+
+
 def test_double_approve_raises_not_found(db: psycopg.Connection) -> None:
     ci_id, _, _ = _seed_hybrid(db)
     store = PgApprovalStore(db)
