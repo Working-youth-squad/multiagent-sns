@@ -73,6 +73,11 @@ def test_related_terms_keeps_order() -> None:
     assert related_terms("x", ["가", "나", "다"]) == ("가", "나", "다")
 
 
+def test_related_terms_skips_non_str_instead_of_stringifying() -> None:
+    """R1 회귀: `str(candidate)`를 걸면 파이썬 리터럴이 키워드로 통과한다."""
+    assert related_terms("등산", ["등산화", ["등산복", 0], 0, None]) == ("등산화",)
+
+
 @pytest.mark.parametrize(("raw", "expected"), [(0, 1), (-5, 1), (3, 3)])
 def test_clamp_limit_forces_at_least_one(raw: int, expected: int) -> None:
     """limit=0이 빈 랭킹을 '정상 관측'으로 만들면 등수 분모가 오염된다."""
@@ -83,7 +88,25 @@ def test_clamp_limit_forces_at_least_one(raw: int, expected: int) -> None:
 
 
 def test_parse_suggest_extracts_related_terms() -> None:
-    assert parse_suggest(_GOOGLE) == ("개발자 연봉", "개발자 로드맵", "개발자 취업")
+    assert parse_suggest(_GOOGLE, query="개발자") == ("개발자 연봉", "개발자 로드맵", "개발자 취업")
+
+
+def test_parse_suggest_uses_requested_query_not_echo() -> None:
+    """R5 회귀: 에코가 문자열이 아니면 질의어 자신이 1위 후보로 남았다."""
+    payload = json.dumps([["개발자"], ["개발자", "개발 자", "개발자 연봉"]]).encode()
+    assert parse_suggest(payload, query="개발자") == ("개발자 연봉",)
+
+
+def test_parse_suggest_rejects_all_non_str_entries() -> None:
+    """R1 회귀: 형식이 통째로 바뀐 것은 '연관어 0건'이 아니라 소스 실패다."""
+    payload = json.dumps(["등산", [["등산화", 0, [1]], ["등산복", 0]], []]).encode()
+    with pytest.raises(ValueError, match="문자열이 하나도 없다"):
+        parse_suggest(payload, query="등산")
+
+
+def test_parse_suggest_allows_genuinely_empty_list() -> None:
+    """빈 관측은 관측 결과다 — 실패로 올리지 않는다."""
+    assert parse_suggest(json.dumps(["등산", []]).encode(), query="등산") == ()
 
 
 @pytest.mark.parametrize(

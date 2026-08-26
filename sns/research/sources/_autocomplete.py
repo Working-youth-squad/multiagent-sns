@@ -19,11 +19,21 @@ USER_AGENT = "multiagent-sns/0.1 (+https://github.com/Working-youth-squad/multia
 
 
 def related_terms(query: str, candidates: Iterable[object]) -> tuple[str, ...]:
-    """후보에서 질의어 자신과 빈 항목을 뺀 연관어를 순서대로."""
+    """후보에서 질의어 자신과 빈 항목을 뺀 연관어를 순서대로.
+
+    **비-`str` 원소는 문자열화하지 않고 건너뛴다.** `str(candidate)`를 걸면
+    `["등산화", 0, [1]]` 같은 변종 응답이 `"['등산화', 0, [1]]"`이라는 **파이썬 리터럴
+    문자열**로 키워드 목록에 들어가, 등수 통계를 거쳐 챗봇 응답과 LLM 프롬프트까지
+    그대로 간다. 형식이 바뀐 것을 파서가 예외로 알려야 소스 격리(FR-G4)가 작동할
+    기회가 생긴다 — 그 판정은 원소 타입을 아는 각 파서 몫이다(suggest.parse_suggest).
+    `parse_naver_autocomplete`가 이미 쓰던 규율을 공용부로 올린 것이다.
+    """
     query_key = squeezed(query)
     out: list[str] = []
     for candidate in candidates:
-        text = str(candidate).strip()
+        if not isinstance(candidate, str):
+            continue
+        text = candidate.strip()
         if text and squeezed(text) != query_key:
             out.append(text)
     return tuple(out)
