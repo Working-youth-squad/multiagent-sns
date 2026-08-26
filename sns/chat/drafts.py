@@ -39,6 +39,14 @@ class DraftItem:
     body: str = ""
     media_asset_id: str | None = None
 
+    media_kind: str | None = None
+    """`media_asset.kind` — 화면이 <img>로 그릴지 <video>로 그릴지의 유일한 근거.
+
+    자산 id만 실어 보내면 화면은 종류를 알 길이 없어 이미지를 가정하게 된다 — mp4가
+    오면 깨진 이미지가 뜬다. 확장자로 추측하지 않는 이유는 저장소 URL이 화면에 오지
+    않기 때문이다(`/media/{id}` 중계).
+    """
+
     content_status: str | None = None
     """`content_item.status` — **발행을 실제로 막는 값**(hybrid면 needs_review).
 
@@ -89,6 +97,7 @@ def seed_done_payload(outcome: SeedOutcome, *, approve_base: str) -> dict[str, o
                 # 잘렸다는 사실을 화면이 밝힐 수 있게 원본 길이를 같이 싣는다.
                 "body_length": len(item.body),
                 "media_asset_id": item.media_asset_id,
+                "media_kind": item.media_kind,
                 "content_status": item.content_status,
                 "quality_status": item.quality_status,
                 "error": item.error,
@@ -129,7 +138,9 @@ class ExportItem:
     content_status: str
     body: str
     media_asset_id: str | None = None
-    media_ext: str = "png"
+
+    media_kind: str = "image"
+    """`media_asset.kind`. 화면 표기와 내려받을 확장자가 **여기 하나에서** 갈린다."""
 
     channel_mode: str | None = None
     """채널 발행 모드 — 손으로 올린 뒤 **원장에 등록할 수 있는지**를 가른다.
@@ -138,6 +149,12 @@ class ExportItem:
     오염된다). 그래서 hybrid 건을 손으로 올리면 등록 경로가 없고 `publication`은 pending
     으로 남는다 — 화면이 그 사실을 말해야 한다. 되는 것처럼 안내하면 실패로 보낸다.
     """
+
+    @property
+    def media_ext(self) -> str:
+        """내려받을 파일 확장자. `media_kind`에서 파생한다 — 둘을 따로 실어 나르면
+        한쪽만 갱신돼 mp4를 .png로 내려주는 날이 온다."""
+        return "mp4" if self.media_kind == "video" else "png"
 
     @property
     def filename_stem(self) -> str:

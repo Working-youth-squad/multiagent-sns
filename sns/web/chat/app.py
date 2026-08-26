@@ -14,6 +14,8 @@ JS 0줄이고 hidden input으로 이력을 실어 나르지 않는다. 새로고
 - `load_media_fn`: 만들어진 카드 이미지를 대화에 보여주기 위한 조회. None이면 초안
   카드가 이미지 자리를 "이미지 없음"으로 그린다(대화는 그대로 동작한다).
 - `load_export_fn`: 수동 발행용 내보내기 화면의 재료 조회. None이면 그 화면이 404다.
+- `formats`·`methods`: **이 서버가 배선한 것**. 대화가 여기 없는 것을 고를 수 없다
+  (Capability Gate를 대화까지 — [sns.chat.agent._capabilities_block]).
 
 **LLM 실패가 사용자 발화를 삼키지 않는다.** 사용자 메시지를 먼저 append 한 뒤 턴을
 돌리므로, 턴이 죽어도 발화는 대화에 남고 실패 사실이 system 메시지로 붙는다.
@@ -26,11 +28,12 @@ from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from langchain_core.language_models import BaseChatModel
 
-from sns.agents.topic import TopicResult
-from sns.chat.agent import RankFn, ranking_payload, run_chat_turn
+from sns.chat.agent import RankFn, SeedRequest, ranking_payload, run_chat_turn
 from sns.chat.drafts import ExportItem
 from sns.chat.store import ChatStore, ConversationNotFound
 from sns.research import rank_keywords
+from sns.runner.formats import FormatChoice
+from sns.tools.contracts import VideoMethod
 from sns.web.chat.render import (
     render_conversation,
     render_export,
@@ -38,9 +41,13 @@ from sns.web.chat.render import (
     render_not_found,
 )
 
-StartCycleFn = Callable[[str, TopicResult], None]
-"""(conversation_id, topic) → 콘텐츠 사이클 착수. 즉시 반환할 것 — 진행·결과는 구현이
-system 메시지로 대화에 append 한다. 동기로 완주하면 브라우저가 분 단위로 멈춘다."""
+StartCycleFn = Callable[[str, SeedRequest], None]
+"""(conversation_id, 시드 요청) → 콘텐츠 사이클 착수. 즉시 반환할 것 — 진행·결과는
+구현이 system 메시지로 대화에 append 한다. 동기로 완주하면 브라우저가 분 단위로 멈춘다.
+
+**주제만이 아니라 `SeedRequest`를 받는다.** 포맷·제작 방식이 주제와 함께 대화에서
+정해지므로, 시그니처가 주제만 나르면 배선이 그 선택을 알 길이 없어 포맷을 하드코딩하게
+된다 — 실제로 그랬다."""
 
 LoadExportFn = Callable[[str], ExportItem | None]
 """content_item_id → 수동 발행용 재료. None이면 내보내기 화면이 404.
@@ -57,6 +64,14 @@ LoadMediaFn = Callable[[str], tuple[bytes, str] | None]
 TITLE_MAX = 40
 
 
+def _made_of(request: SeedRequest) -> str:
+    """사용자에게 되읽어 줄 "무엇으로 만드는지". 고른 것을 화면이 확인해 준다 —
+    LLM의 답변만으로는 실제로 무엇이 배선에 넘어갔는지 알 수 없다."""
+    if request.content_format == "card":
+        return "카드로"
+    return f"영상({request.method})으로" if request.method else "영상으로"
+
+
 def create_app(
     store: ChatStore,
     *,
@@ -66,6 +81,8 @@ def create_app(
     load_media_fn: LoadMediaFn | None = None,
     load_export_fn: LoadExportFn | None = None,
     exclude: Sequence[str] | None = None,
+    formats: Sequence[FormatChoice] = ("card",),
+    methods: Sequence[VideoMethod] = ("template",),
 ) -> FastAPI:
     app = FastAPI(title="키워드 챗봇")
 
@@ -76,7 +93,13 @@ def create_app(
 
         try:
             turn = run_chat_turn(
-                model, history=history, user_text=text, rank_fn=rank_fn, exclude=exclude
+                model,
+                history=history,
+                user_text=text,
+                rank_fn=rank_fn,
+                exclude=exclude,
+                formats=formats,
+                methods=methods,
             )
         except Exception as exc:  # 모델·네트워크 실패 — 대화는 살아 있어야 한다
             store.append(
@@ -95,10 +118,11 @@ def create_app(
         if turn.reply.strip():
             store.append(conversation_id, role="assistant", body=turn.reply)
 
-        if turn.seed_topic is not None:
-            _seed(conversation_id, turn.seed_topic)
+        if turn.seed_request is not None:
+            _seed(conversation_id, turn.seed_request)
 
-    def _seed(conversation_id: str, topic: TopicResult) -> None:
+    def _seed(conversation_id: str, request: SeedRequest) -> None:
+        topic = request.topic
         if start_cycle_fn is None:
             store.append(
                 conversation_id,
@@ -111,7 +135,7 @@ def create_app(
             )
             return
         try:
-            start_cycle_fn(conversation_id, topic)
+            start_cycle_fn(conversation_id, request)
         except Exception as exc:  # 착수 실패도 대화에 남긴다 — 조용히 삼키지 않는다
             store.append(
                 conversation_id,
@@ -124,10 +148,15 @@ def create_app(
             conversation_id,
             role="system",
             body=(
-                f"주제 ‘{topic.title}’로 초안 제작을 시작했습니다. "
+                f"주제 ‘{topic.title}’로 {_made_of(request)} 초안 제작을 시작했습니다. "
                 "몇 분 걸립니다 — 이 페이지를 새로고침하면 진행 상황이 보입니다."
             ),
-            payload={"kind": "seed_started", "title": topic.title},
+            payload={
+                "kind": "seed_started",
+                "title": topic.title,
+                "content_format": request.content_format,
+                "method": request.method,
+            },
         )
 
     @app.get("/", response_class=HTMLResponse)

@@ -9,7 +9,7 @@ from typing import Any
 from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
-from sns.agents.topic import TopicResult
+from sns.chat.agent import SeedRequest
 from sns.chat.drafts import ExportItem
 from sns.chat.store import InMemoryChatStore
 from sns.research.keywords import aggregate
@@ -144,7 +144,7 @@ def test_llm_failure_does_not_swallow_user_message() -> None:
 
 def test_seed_starts_cycle_and_records_it() -> None:
     store = InMemoryChatStore()
-    started: list[tuple[str, TopicResult]] = []
+    started: list[tuple[str, SeedRequest]] = []
 
     client = _client(
         store,
@@ -152,13 +152,13 @@ def test_seed_starts_cycle_and_records_it() -> None:
             _tool("confirm_topic", {"title": "개발자 연봉 협상", "summary": "협상 팁 3가지"}),
             AIMessage(content="초안을 만들게요."),
         ],
-        start_cycle_fn=lambda cid, topic: started.append((cid, topic)),
+        start_cycle_fn=lambda cid, request: started.append((cid, request)),
     )
     cid = _start(client, text="연봉 얘기로 만들어줘")
 
     assert len(started) == 1
     assert started[0][0] == cid
-    assert started[0][1].title == "개발자 연봉 협상"
+    assert started[0][1].topic.title == "개발자 연봉 협상"
     system = [m for m in store.messages(cid) if m.role == "system"]
     assert "초안 제작을 시작했습니다" in system[-1].body
 
@@ -182,7 +182,7 @@ def test_seed_without_wiring_says_so() -> None:
 def test_seed_start_failure_is_recorded() -> None:
     store = InMemoryChatStore()
 
-    def boom(conversation_id: str, topic: TopicResult) -> None:
+    def boom(conversation_id: str, request: SeedRequest) -> None:
         raise RuntimeError("스레드 기동 실패")
 
     client = _client(
@@ -254,6 +254,23 @@ def test_media_route_serves_bytes_by_asset_id() -> None:
     assert ok.content == b"PNGDATA"
     assert ok.headers["content-type"].startswith("image/png")
     assert client.get("/media/없는-id").status_code == 404
+
+
+def test_media_route_serves_mp4_with_a_video_content_type() -> None:
+    """수동 영상 다운로드가 여기 걸려 있다 — 브라우저가 mp4를 재생/저장할 근거."""
+    client = _client(InMemoryChatStore(), [], load_media_fn=lambda aid: (b"MP4DATA", "video/mp4"))
+    ok = client.get("/media/ma-1")
+    assert ok.status_code == 200
+    assert ok.headers["content-type"].startswith("video/mp4")
+
+
+def test_video_download_gets_an_mp4_filename() -> None:
+    """확장자는 MIME에서 딴다 — .png로 내려주면 사람이 파일을 못 연다."""
+    client = _client(InMemoryChatStore(), [], load_media_fn=lambda aid: (b"MP4DATA", "video/mp4"))
+    got = client.get("/media/ma-1", params={"download": "1", "name": "쇼츠"})
+    disposition = got.headers["content-disposition"]
+    assert disposition.startswith("attachment")
+    assert ".mp4" in disposition
 
 
 def test_media_route_is_404_when_unwired() -> None:

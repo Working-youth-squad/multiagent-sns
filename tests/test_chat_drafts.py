@@ -113,7 +113,8 @@ def test_missing_media_renders_placeholder_not_broken_image() -> None:
     html = render_drafts(
         seed_done_payload(_outcome(_prepared(media_asset_id=None)), approve_base=_APPROVE)
     )
-    assert "이미지 없음" in html
+    # 영상도 오므로 문구는 종류를 가리지 않는다 — "이미지 없음"은 mp4에 거짓이 된다.
+    assert "자산 없음" in html
     assert "<img" not in html
 
 
@@ -223,7 +224,7 @@ def test_export_has_no_warning_when_approved() -> None:
 
 def test_export_without_media_says_so() -> None:
     html = render_export(_export(media_asset_id=None))
-    assert "이미지 없음" in html
+    assert "렌더 자산이 없습니다" in html
     assert "?download=1" not in html
 
 
@@ -273,3 +274,42 @@ def test_export_without_a_channel_says_so() -> None:
     html = render_export(_export(channel_mode=None))
     assert "채널을 찾지 못했습니다" in html
     assert "manual_register" not in html
+
+
+# ── 영상 자산 (mp4가 <img>로 그려지면 깨진 이미지가 뜬다) ──────────────
+
+
+def test_payload_carries_media_kind() -> None:
+    """화면이 <img>/<video>를 가를 유일한 근거 — 저장소 URL은 화면에 오지 않는다."""
+    payload = seed_done_payload(_outcome(_prepared(media_kind="video")), approve_base=_APPROVE)
+    assert payload["items"][0]["media_kind"] == "video"  # type: ignore[index]
+
+
+def test_draft_card_uses_a_video_tag_for_mp4() -> None:
+    html = render_drafts(
+        seed_done_payload(_outcome(_prepared(media_kind="video")), approve_base=_APPROVE)
+    )
+    assert "<video" in html
+    assert "/media/ma-1" in html
+    assert '<img src="/media/ma-1"' not in html
+
+
+def test_draft_card_still_uses_an_image_tag_for_png() -> None:
+    html = render_drafts(
+        seed_done_payload(_outcome(_prepared(media_kind="image")), approve_base=_APPROVE)
+    )
+    assert '<img src="/media/ma-1"' in html
+    assert "<video" not in html
+
+
+def test_export_extension_follows_the_asset_kind() -> None:
+    """확장자를 따로 실어 나르면 한쪽만 갱신돼 mp4를 .png로 내려주는 날이 온다."""
+    assert _export(media_kind="video").media_ext == "mp4"
+    assert _export().media_ext == "png"
+
+
+def test_export_offers_a_video_player_and_download() -> None:
+    html = render_export(_export(media_kind="video"))
+    assert "<video" in html
+    assert "영상 내려받기" in html
+    assert "/media/ma-1?download=1" in html
