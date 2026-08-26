@@ -28,6 +28,11 @@ uv run python scripts/run_profile_cycle.py <채널핸들> [--format card|video]
 12장 상한, FR-P6). 기본은 template이라 명시해야 켜진다 — 라우터에 안 적힌 방식은
 에이전트가 고를 수도 없다(Capability Gate).
 
+렌더 배선(렌더러·게이트·해소)은 [sns.runner.wiring]이 정본이다 — 챗봇 웹
+(run_chat_web.py)도 같은 함수를 부른다. 이 파일에 배선을 다시 적으면 한쪽만
+고쳐진다(그 사고가 실제로 있었다: 옛 블록이 `--style 3col`에서 영상 라우터를
+카드 렌더러로 덮어썼다).
+
 전제: docker compose up -d postgres · env GEMINI_API_KEY · (선택) DATABASE_URL, CARD_FONT
   영상 포맷 추가 전제: TTS 자격증명(GOOGLE_TTS_API_KEY 또는 ADC) · ffmpeg/ffprobe
   캐릭터 장면 생성(선택): 결제 켜진 키 + IMAGE_GEN_MODEL=google:<이미지 모델>
@@ -39,7 +44,6 @@ import json
 import os
 import sys
 from collections.abc import Mapping
-from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
@@ -48,25 +52,15 @@ import psycopg
 from dotenv import load_dotenv
 
 from sns.agents.models import make_model
-from sns.onboarding.character import make_scene_generate, scene_rules_for
 from sns.onboarding.profile import build_channel_brief
 from sns.onboarding.store import PgOnboardingStore
 from sns.onboarding.trends import profile_trend_service
 from sns.publish.runner import run_pending_publications
-from sns.quality.gate import QualityReport, check_card
-from sns.render.card.media import CardRenderMedia
-from sns.render.card.spec import parse_card_spec
-from sns.render.images.generate import generate_image
-from sns.render.images.resolve import ImageResolution, resolve_images
-from sns.render.video.gen.budget import ImageBudget
-from sns.render.video.gen.media import SceneRenderMedia
-from sns.render.video.gen.scenes import resolve_scenes
-from sns.render.video.media import VideoRenderMedia
-from sns.render.video.quality import make_video_gate
-from sns.render.video.router import VideoRenderRouter
-from sns.render.video.tts import synthesize_google
 from sns.runner.cycle import AssessQuality, ChannelMode, CycleTarget, ResolveMediaSpec, run_cycle
+from sns.runner.formats import PLATFORMS, parse_platform
+from sns.runner.formats import content_format_for as format_for
 from sns.runner.store import PgCycleStore
+from sns.runner.wiring import build_render_wiring, extras_only_resolve
 from sns.tools.contracts import (
     ContentFormat,
     MediaAsset,
@@ -92,8 +86,6 @@ FONT_CANDIDATES = (
 )
 
 _CHANNEL_MODES: dict[str, ChannelMode] = {"auto": "auto", "hybrid": "hybrid", "manual": "manual"}
-_PLATFORMS: dict[str, Platform] = {"instagram": "instagram", "youtube": "youtube"}
-_VIDEO_FORMAT: dict[Platform, ContentFormat] = {"instagram": "reels", "youtube": "shorts"}
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -126,20 +118,23 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def platform_of(platform: str) -> Platform:
-    """채널 플랫폼을 검증해 통과시킨다. 조용한 폴백을 두지 않는다."""
-    try:
-        return _PLATFORMS[platform]
-    except KeyError:
-        raise SystemExit(f"모르는 플랫폼: {platform!r} (허용: {sorted(_PLATFORMS)})") from None
+    """채널 플랫폼을 검증해 통과시킨다. 조용한 폴백을 두지 않는다.
+
+    매핑 자체는 [sns.runner.formats]가 정본이다 — 여기는 **CLI의 판정**만 얹는다
+    (모르는 값이면 종료). 웹 서버는 같은 매핑을 쓰되 종료하지 않는다.
+    """
+    found = parse_platform(platform)
+    if found is None:
+        raise SystemExit(f"모르는 플랫폼: {platform!r} (허용: {sorted(PLATFORMS)})")
+    return found
 
 
 def content_format_for(platform: Platform, fmt: str) -> ContentFormat:
-    """플랫폼 × 요청 포맷 → ContentFormat.
+    """플랫폼 × 요청 포맷 → ContentFormat ([sns.runner.formats] 정본에 위임).
 
-    `platform`은 `platform_of`를 통과한 값이라 여기서 다시 검증하지 않는다. 모르는
-    플랫폼을 shorts로 떨구던 폴백은 없앴다 — 플랫폼이 늘 때 조용히 틀린 포맷이 나간다.
+    `fmt`는 argparse가 card|video로 좁힌 값이라 여기서 다시 검증하지 않는다.
     """
-    return "feed_image" if fmt == "card" else _VIDEO_FORMAT[platform]
+    return format_for(platform, "card" if fmt == "card" else "video")
 
 
 def channel_mode_of(mode: str) -> ChannelMode:
@@ -321,102 +316,47 @@ def main() -> int:
         media_store = DirMediaStore(OUT)
         font = find_font(args.font)  # --font를 받아놓고 무시하지 않는다
 
-        renderer: RenderMedia
-        assess: AssessQuality | None
-        resolve: ResolveMediaSpec | None = None
+        # 배선 정본은 [sns.runner.wiring]이다 — 챗봇 웹도 같은 함수를 부른다.
+        # 예전엔 이 블록이 여기 있었고, 옛 판이 지워지지 않은 채 뒤에 남아
+        # `--format video --style 3col`이 영상 라우터를 카드 렌더러로 덮어썼다.
         methods: tuple[VideoMethod, ...] = ("template",)
+        if args.method == "generated_scene":
+            # 생성은 유료라 --method로 명시해야 등록된다(Capability Gate).
+            methods = ("template", "generated_scene")
+        wiring = build_render_wiring(
+            kind="card" if fmt == "feed_image" else "video",
+            store=media_store,
+            topic_major=profile.topic_major,
+            font=font,
+            style=args.style,
+            methods=methods,
+            character_image_url=profile.character_image_url,
+            character_style=profile.character_style,
+            ffmpeg=args.ffmpeg,
+        )
+        renderer: RenderMedia = wiring.render_media
+        assess: AssessQuality | None = wiring.assess_quality
+        resolve: ResolveMediaSpec | None = wiring.resolve_media_spec
+        methods = wiring.supported_methods
 
-        if fmt == "feed_image":
-            card_renderer = CardRenderMedia(media_store, font_path=font)
-
-            def assess_card(
-                *,
-                media_spec: Mapping[str, object],
-                media: MediaAsset,
-                content_format: ContentFormat,
-            ) -> QualityReport:
-                return check_card(parse_card_spec(media_spec), card_renderer.render(media_spec))
-
-            renderer = card_renderer
-            assess = assess_card
-        else:
-            # **라우터에 적은 것만 켜진다**(Capability Gate). 생성은 유료라 --method로
-            # 명시해야 등록된다 — resolve.py의 "기본값을 generate_image로 두면 결제가
-            # 켜진 계정에서 사이클이 조용히 돈을 쓴다"와 같은 규율이다.
-            renderers: dict[VideoMethod, RenderMedia] = {
-                "template": VideoRenderMedia(
-                    media_store,
-                    synthesize=synthesize_google,
-                    topic_major=profile.topic_major,
-                    font_path=font,
-                    ffmpeg=args.ffmpeg,
-                )
-            }
-            if args.method == "generated_scene":
-                renderers["generated_scene"] = SceneRenderMedia(
-                    media_store,
-                    synthesize=synthesize_google,
-                    topic_major=profile.topic_major,
-                    font_path=font,
-                    ffmpeg=args.ffmpeg,
-                )
-            router = VideoRenderRouter(renderers)
-            methods = router.supported_methods
-            renderer = router
-            ffprobe = (
-                str(Path(args.ffmpeg).parent / "ffprobe") if args.ffmpeg != "ffmpeg" else "ffprobe"
-            )
-            assess = make_video_gate(media_store.get, ffprobe=ffprobe, ffmpeg=args.ffmpeg)
-
-            # 캐릭터가 있으면 정사각 생성의 **레퍼런스**로 쓴다. 없으면 일반 생성 이미지로
-            # — 캐릭터 미선택이 글자만 남은 영상이 되지 않게(image_query 스톡 폴백은 그대로).
-            character_url = profile.character_image_url
-            generate = (
-                make_scene_generate(_read_file_uri(character_url))
-                if character_url is not None
-                else generate_image
-            )
-            # 예산은 사이클 하나에 하나 — 재사용하면 이전 소비가 이어져 계산이 어긋난다.
-            budget = ImageBudget()
-            rules = scene_rules_for(profile.character_style)
-            style = args.style
-
-            def _extras() -> dict[str, object]:
-                """spec에 못박는 값 — 배선으로만 넘기면 같은 media_spec이 채널마다 다른
-                mp4를 낳아 FR-M1이 깨지고, 승인 웹 재렌더가 같은 꼴로 못 돈다."""
-                extra: dict[str, object] = {}
-                if style == "motion":
-                    extra["style"] = "motion"
-                if character_url is not None:
-                    extra["character_ref"] = character_url
-                return extra
-
-            def resolve_video(spec: Mapping[str, object]) -> ImageResolution:
-                res = resolve_images(spec, store=media_store, generate=generate)
-                # 장면 해소 — generated_scene이 아니면 resolve_scenes가 그대로 통과시킨다.
-                res = resolve_scenes(
-                    res.media_spec, store=media_store, scene_rules=rules, budget=budget
-                )
-                return ImageResolution({**res.media_spec, **_extras()}, res.notes)
-
-            resolve = resolve_video
-
+        if fmt != "feed_image":
             if args.render_item:
+                # 영상 배선은 해소를 반드시 낸다 — None이면 배선이 깨진 것이라 조용히
+                # 넘기지 않는다(정지 화면만 남은 mp4가 나온다).
+                assert resolve is not None, "영상 배선에 resolve가 없다"
                 return render_item(
                     conn, args.render_item,
                     media_store=media_store, renderer=renderer, assess=assess,
-                    resolve=resolve_video, fmt=fmt,
+                    resolve=resolve, fmt=fmt,
                 )  # fmt: skip
             if args.script_only:
                 # 대본 단계는 렌더·이미지 해소(과금)를 하지 않는다 — 자리표시 자산만
                 # 적재하고, 수락 시 --render-item이 진짜 미디어로 갱신한다.
                 renderer = placeholder_render
                 assess = None
-
-                def resolve_extras_only(spec: Mapping[str, object]) -> ImageResolution:
-                    return ImageResolution({**spec, **_extras()})
-
-                resolve = resolve_extras_only
+                resolve = extras_only_resolve(
+                    style=args.style, character_image_url=profile.character_image_url
+                )
 
         # 모션 스타일이면 에이전트에게 화면 문법을 알린다 — 코드/도해 컷은 모션 화면에서
         # 그라데이션으로 강등되므로, 애초에 이미지 장면으로 쓰게 유도한다(soft 지침).
@@ -427,45 +367,6 @@ def main() -> int:
                 "컷마다 image_query(실사 검색어) 또는 image_prompt로 배경 장면을 지정하라. "
                 "화면 글자는 최소로 — subtitle은 2~4단어 키워드, narration은 짧은 한 문장."
             )
-
-            # 예산은 사이클 하나에 하나 — 재사용하면 이전 소비가 이어져 계산이 어긋난다.
-            budget = ImageBudget()
-            rules = scene_rules_for(profile.character_style)
-
-            def resolve_video(spec: Mapping[str, object]) -> ImageResolution:
-                resolved = resolve_images(spec, store=media_store)
-                # 장면 해소 — generated_scene이 아니면 resolve_scenes가 그대로 통과시킨다.
-                resolved = resolve_scenes(
-                    resolved.media_spec, store=media_store, scene_rules=rules, budget=budget
-                )
-                # 캐릭터도 image_ref와 같은 규율로 **spec에 못박는다** — 배선으로만
-                # 넘기면 같은 media_spec이 채널마다 다른 mp4를 낳아 FR-M1이 깨지고,
-                # "이 영상이 어떤 캐릭터를 썼는지"가 원장에 안 남는다.
-                if not profile.character_image_url:
-                    return resolved
-                return replace(
-                    resolved,
-                    media_spec={
-                        **resolved.media_spec,
-                        "character_ref": profile.character_image_url,
-                    },
-                )
-
-            resolve = resolve_video
-        else:
-            card_renderer = CardRenderMedia(media_store, font_path=font)
-
-            def assess_card(
-                *,
-                media_spec: Mapping[str, object],
-                media: MediaAsset,
-                content_format: ContentFormat,
-            ) -> QualityReport:
-                return check_card(parse_card_spec(media_spec), card_renderer.render(media_spec))
-
-            renderer = card_renderer
-            assess = assess_card
-            resolve = None
 
         # 프로필 맞춤 트렌드 — 조립은 온보딩 화면 6과 같은 함수를 쓴다(단일 출처).
         trends = profile_trend_service(profile)
