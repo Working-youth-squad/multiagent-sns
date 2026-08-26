@@ -27,7 +27,7 @@ from sns.agents.content import ContentRejected, run_content
 from sns.agents.topic import TopicResult, TopicSelectionError, run_topic
 from sns.publish.modes import DRAFT_STATUS, PublishMode
 from sns.quality.gate import QualityReport
-from sns.quality.safety import screen_content
+from sns.quality.safety import screen_content, screen_text, summarize
 from sns.quality.signature import MAX_CONTENT_SIMILARITY, max_similarity, spec_signature
 from sns.render.card.spec import CardSpecError
 from sns.render.images.credit import with_image_credits
@@ -123,8 +123,18 @@ def run_cycle(
     playbook_guidance: str | None = None,
     channel_brief: str | None = None,
     topic_categories: Sequence[str] | None = None,
+    seed_topic: TopicResult | None = None,
 ) -> CycleResult:
     """한 사이클 구동.
+
+    `seed_topic`은 **사람이 확정한 주제**를 밀어 넣는 자리다(FR-W5 수동 프롬프트 시드
+    발행 · 10-웹-알림 §3). 주면 Topic Agent를 부르지 않는다 — 이 경로에서 주제 선택은
+    이미 사람이 끝냈고, 여기 몫은 그 주제로 초안·렌더·게이트를 태우는 것뿐이다.
+    기본 None이면 기존 동작 그대로(에이전트가 트렌드에서 고른다).
+
+    시드 주제도 최근 주제 중복 차단(`recent_topic_titles`)을 **적용하지 않는다** —
+    그 차단은 트렌드 소스가 같은 항목을 며칠씩 노출하는 문제를 막는 장치지, 사람이
+    같은 주제를 다시 다루겠다고 고른 것을 되돌릴 근거가 아니다.
 
     실패 격리 정책(비대칭 — 의도적):
     - **도메인 오류**(콘텐츠 생성 ContentRejected · 렌더 스펙 CardSpecError/VideoSpecError)는
@@ -153,31 +163,70 @@ def run_cycle(
         )
 
         # ── 주제(사이클당 1건, 통제변수: 동일 주제 도메인) ──────────────
-        try:
-            # 최근 발행 주제는 후보에서 뺀다. 트렌드 소스는 같은 항목을 며칠씩 노출해서,
-            # 이게 없으면 어제와 같은 영상이 나간다(실제로 그랬다 — 2026-08-20/21 Cursor).
-            topic = run_topic(
-                model,
-                platform=targets[0].platform,
-                research_trends=research_trends,
-                read_stats=read_stats,
-                exclude_titles=store.recent_topic_titles(days=RECENT_TOPIC_DAYS),
-                # 온보딩 채널 프로필 주입점(기본 None = 기존 동작 무변경).
-                categories=topic_categories,
-                guidance=channel_brief,
+        if seed_topic is not None:
+            # 사람이 확정한 주제(FR-W5). 트렌드 조회·에이전트 호출을 통째로 건너뛴다.
+            #
+            # **시드는 저장 전에 검열한다**(FR-W5 "입력 프롬프트도 FR-Q7 대상").
+            # 발행 관문(아래)은 *생성된* 콘텐츠만 본다. 그것만으로는 늦다: 금지 소재
+            # 시드가 `topic` 원장에 먼저 적재되고, 막힐 초안에 LLM 비용도 쓴다.
+            seed_findings = (
+                *screen_text(seed_topic.title, where="seed_title"),
+                *screen_text(seed_topic.summary, where="seed_summary"),
             )
-        except TopicSelectionError as exc:
-            store.log_event(
-                cycle_id=cycle_id, kind="error", payload={"stage": "topic", "reason": str(exc)}
-            )
-            store.complete_cycle(cycle_id, status="failed")
-            return CycleResult(cycle_id=cycle_id, status="failed", topic_id=None, targets=())
+            if seed_findings:
+                reasons = [f.describe() for f in seed_findings]
+                store.log_event(
+                    cycle_id=cycle_id,
+                    kind="notice",
+                    payload={"gate": "seed", "reasons": reasons},
+                )
+                store.complete_cycle(cycle_id, status="failed")
+                return CycleResult(
+                    cycle_id=cycle_id,
+                    status="failed",
+                    topic_id=None,
+                    targets=tuple(
+                        TargetResult(
+                            channel_id=t.channel_id,
+                            outcome="blocked",
+                            error=summarize(seed_findings),
+                        )
+                        for t in targets
+                    ),
+                )
+            topic = seed_topic
+        else:
+            try:
+                # 최근 발행 주제는 후보에서 뺀다. 트렌드 소스는 같은 항목을 며칠씩 노출해서,
+                # 이게 없으면 어제와 같은 영상이 나간다(실제로 그랬다 — 2026-08-20/21 Cursor).
+                topic = run_topic(
+                    model,
+                    platform=targets[0].platform,
+                    research_trends=research_trends,
+                    read_stats=read_stats,
+                    exclude_titles=store.recent_topic_titles(days=RECENT_TOPIC_DAYS),
+                    # 온보딩 채널 프로필 주입점(기본 None = 기존 동작 무변경).
+                    categories=topic_categories,
+                    guidance=channel_brief,
+                )
+            except TopicSelectionError as exc:
+                store.log_event(
+                    cycle_id=cycle_id, kind="error", payload={"stage": "topic", "reason": str(exc)}
+                )
+                store.complete_cycle(cycle_id, status="failed")
+                return CycleResult(cycle_id=cycle_id, status="failed", topic_id=None, targets=())
 
         topic_id = store.save_topic(title=topic.title, summary=topic.summary, source=topic.source)
         store.log_event(
             cycle_id=cycle_id,
             kind="agent_called",
-            payload={"agent": "topic", "topic_id": topic_id, "category": topic.category},
+            payload={
+                # 시드 경로는 에이전트를 부르지 않았다 — 원장이 "에이전트가 골랐다"고
+                # 읽히면 auto vs hybrid 비교(FR-E4)의 근거가 오염된다.
+                "agent": "topic" if seed_topic is None else "seed",
+                "topic_id": topic_id,
+                "category": topic.category,
+            },
         )
 
         # ── 대상별 콘텐츠 제작·적재(도메인 오류만 격리) ─────────────────

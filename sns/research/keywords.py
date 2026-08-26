@@ -246,7 +246,8 @@ def ranking_to_dict(ranking: KeywordRanking) -> dict[str, object]:
         "pool": [stat(s) for s in ranking.pool],
         "dropped": [stat(s) for s in ranking.dropped],
         "below_min_present": [stat(s) for s in ranking.below_min_present],
-        # candidates의 **부분집합**이다(항목의 "scored": false와 같은 사실).
+        # 별도 후보가 아니라 표식이다(항목의 "scored": false와 같은 사실). 단 `top` 컷
+        # **이전** 전량에서 계산되므로 candidates보다 길 수 있다 — KeywordRanking.unscored.
         "unscored": [s.text for s in ranking.unscored],
         "excluded": [{"text": t, "keyword": k} for t, k in ranking.excluded],
     }
