@@ -20,6 +20,7 @@ from sns.runner.wiring import (
     build_render_wiring,
     extras_only_resolve,
     spec_style,
+    style_guidance,
 )
 from sns.topic_policy import DEV_MAJOR
 
@@ -150,3 +151,19 @@ def test_script_only_resolve_omits_absent_values() -> None:
     spec = extras_only_resolve(style="3col", character_image_url=None)({"slides": []}).media_spec
     assert "style" not in spec
     assert "character_ref" not in spec
+
+
+# ── 화면 문법 지침 (배선과 같은 곳에서 온다) ────────────────────────────
+
+
+def test_motion_tells_the_agent_to_use_image_scenes() -> None:
+    """모션 화면은 코드·도해 컷을 그라데이션으로 강등한다 — 애초에 쓰지 않게 유도한다."""
+    guidance = style_guidance("motion")
+    assert "image_query" in guidance
+    assert "code" in guidance
+
+
+def test_other_styles_get_no_guidance() -> None:
+    """3col은 코드 컷이 제 자리다 — 쓰지 말라고 하면 그 스타일의 쓸모가 사라진다."""
+    assert style_guidance("3col") == ""
+    assert style_guidance("clip") == ""

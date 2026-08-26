@@ -72,7 +72,7 @@ from sns.research.trends import default_service
 from sns.runner.cycle import CycleTarget, TargetResult, run_cycle
 from sns.runner.formats import FormatChoice, content_format_for, parse_platform
 from sns.runner.store import PgCycleStore
-from sns.runner.wiring import VIDEO_STYLES, build_render_wiring
+from sns.runner.wiring import VIDEO_STYLES, build_render_wiring, style_guidance
 from sns.tools.contracts import MediaKind, Platform, Publish, VideoMethod
 from sns.tools.fakes import FakeReadStats
 from sns.web.chat.app import LoadExportFn, LoadMediaFn, StartCycleFn, create_app
@@ -310,6 +310,17 @@ def make_load_export_fn(dsn: str) -> LoadExportFn:
     return load
 
 
+def playbook_guidance(profile: ChannelProfile, request: SeedRequest, style: str) -> str:
+    """Content 에이전트에게 줄 지침 — 채널 브리프 + (영상이면) 화면 문법.
+
+    프로필 CLI와 같은 조합이다. 챗봇만 화면 문법을 빼면 같은 style이 진입점에 따라
+    다른 대본을 낳는다(모션 화면에서 코드 컷이 그라데이션으로 강등된다).
+    """
+    brief = build_channel_brief(profile)
+    guidance = style_guidance(style) if request.content_format == "video" else ""
+    return f"{brief}\n{guidance}" if guidance else brief
+
+
 def make_start_cycle_fn(
     dsn: str,
     chat_store: PgChatStore,
@@ -375,6 +386,7 @@ def make_start_cycle_fn(
                     supported_methods=wiring.supported_methods,
                     channel_brief=build_channel_brief(profile),
                     topic_categories=profile.categories,
+                    playbook_guidance=playbook_guidance(profile, request, style),
                     seed_topic=topic,
                 )
                 outcome = SeedOutcome(

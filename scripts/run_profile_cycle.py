@@ -60,7 +60,7 @@ from sns.runner.cycle import AssessQuality, ChannelMode, CycleTarget, ResolveMed
 from sns.runner.formats import PLATFORMS, parse_platform
 from sns.runner.formats import content_format_for as format_for
 from sns.runner.store import PgCycleStore
-from sns.runner.wiring import build_render_wiring, extras_only_resolve
+from sns.runner.wiring import build_render_wiring, extras_only_resolve, style_guidance
 from sns.tools.contracts import (
     ContentFormat,
     MediaAsset,
@@ -358,15 +358,9 @@ def main() -> int:
                     style=args.style, character_image_url=profile.character_image_url
                 )
 
-        # 모션 스타일이면 에이전트에게 화면 문법을 알린다 — 코드/도해 컷은 모션 화면에서
-        # 그라데이션으로 강등되므로, 애초에 이미지 장면으로 쓰게 유도한다(soft 지침).
-        playbook = brief
-        if fmt != "feed_image" and args.style == "motion":
-            playbook = brief + (
-                "\n영상 화면은 모션 그래픽 스타일이다: code와 concept는 쓰지 말고, "
-                "컷마다 image_query(실사 검색어) 또는 image_prompt로 배경 장면을 지정하라. "
-                "화면 글자는 최소로 — subtitle은 2~4단어 키워드, narration은 짧은 한 문장."
-            )
+        # 화면 문법 지침도 배선과 같은 곳에서 온다([sns.runner.wiring]).
+        guidance = style_guidance(args.style) if fmt != "feed_image" else ""
+        playbook = f"{brief}\n{guidance}" if guidance else brief
 
         # 프로필 맞춤 트렌드 — 조립은 온보딩 화면 6과 같은 함수를 쓴다(단일 출처).
         trends = profile_trend_service(profile)

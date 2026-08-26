@@ -61,6 +61,23 @@ def spec_style(style: str) -> str:
     return "" if style == "3col" else style
 
 
+_MOTION_GUIDANCE = (
+    "영상 화면은 모션 그래픽 스타일이다: code와 concept는 쓰지 말고, "
+    "컷마다 image_query(실사 검색어) 또는 image_prompt로 배경 장면을 지정하라. "
+    "화면 글자는 최소로 — subtitle은 2~4단어 키워드, narration은 짧은 한 문장."
+)
+
+
+def style_guidance(style: str) -> str:
+    """Content 에이전트에게 알릴 화면 문법(soft 지침). 없으면 빈 문자열.
+
+    **배선과 같은 곳에 둔다.** 모션 화면은 코드·도해 컷을 그라데이션으로 강등하므로,
+    애초에 이미지 장면으로 쓰게 유도해야 한다. 이 지침을 진입점마다 적으면 한쪽만
+    고쳐져 같은 style이 진입점에 따라 다른 대본을 낳는다 — 배선을 모은 이유와 같다.
+    """
+    return _MOTION_GUIDANCE if style == "motion" else ""
+
+
 @dataclass(frozen=True)
 class RenderWiring:
     """`run_cycle`에 그대로 넘길 협력자 묶음.
