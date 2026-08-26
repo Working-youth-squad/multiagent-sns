@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import tempfile
 import wave
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -24,10 +25,19 @@ from PIL import Image
 from sns.render.fonts import FontNotFoundError
 from sns.render.storage import InMemoryMediaStore
 from sns.render.video import renderer as renderer_mod
+from sns.render.video.assemble import _BAR_RATIO
 from sns.render.video.media import VideoRenderMedia
 from sns.render.video.quality import check_video
-from sns.render.video.renderer import _BADGE_RATIO, _BAR_RATIO, _MARGIN_RATIO, render_video
-from sns.render.video.spec import MAX_SLIDES, VideoSpecError, parse_video_spec
+from sns.render.video.renderer import render_video
+from sns.render.video.spec import MAX_SLIDES, VideoSpec, VideoSpecError
+from sns.render.video.spec import parse_video_spec as _parse_video_spec
+from sns.topic_policy import DEV_MAJOR
+
+
+def parse_video_spec(media_spec: Mapping[str, object]) -> VideoSpec:
+    """개발 기준으로 고정한 파서 — 이 파일은 렌더 동작을 보지 주제 분기를 보지 않는다."""
+    return _parse_video_spec(media_spec, topic_major=DEV_MAJOR)
+
 
 pytestmark = pytest.mark.skipif(
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
@@ -194,7 +204,7 @@ def test_topic_band_is_black_ground() -> None:
 
 def test_media_binding_stores_mp4() -> None:
     store = InMemoryMediaStore()
-    render_media = VideoRenderMedia(store, synthesize=tone_wav)
+    render_media = VideoRenderMedia(store, synthesize=tone_wav, topic_major=DEV_MAJOR)
     asset = render_media(SPEC_DICT, "video")
     assert asset.kind == "video"
     assert asset.storage_url.endswith(".mp4")
@@ -203,7 +213,9 @@ def test_media_binding_stores_mp4() -> None:
 
 def test_media_binding_rejects_non_video_kind() -> None:
     with pytest.raises(ValueError, match="kind"):
-        VideoRenderMedia(InMemoryMediaStore(), synthesize=tone_wav)(SPEC_DICT, "image")
+        VideoRenderMedia(InMemoryMediaStore(), synthesize=tone_wav, topic_major=DEV_MAJOR)(
+            SPEC_DICT, "image"
+        )
 
 
 def test_missing_cjk_font_raises_instead_of_tofu(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -254,26 +266,6 @@ def test_image_ref_without_fetch_seam_raises() -> None:
         render_video(spec, synthesize=tone_wav)
 
 
-def test_character_ref_overlays_badge_bottom_right() -> None:
-    """캐릭터 배지는 우하단(자막 아래·진행바 위)에 매 컷 얹힌다."""
-    lime = (60, 220, 60)
-    spec = parse_video_spec({**SPEC_DICT, "character_ref": "mem://image/char.png"})
-    render = render_video(
-        spec, synthesize=tone_wav, fetch_image=lambda ref: _solid_png(lime, side=300)
-    )
-    img = _frame_at(render.mp4, render.duration_s * 0.5)
-    margin = round(spec.width * _MARGIN_RATIO)
-    size = round(spec.width * _BADGE_RATIO)
-    bar_h = max(round(spec.height * _BAR_RATIO), 4)
-    cx = spec.width - margin - size // 2
-    cy = spec.height - margin - bar_h - size // 2
-    px = img.getpixel((cx, cy))
-    assert px[1] > 150 and px[1] > px[0] + 60, f"배지 중심이 캐릭터 색이 아님: {px}"
-    # 배지가 없으면 같은 자리는 검은 바탕이다 — 유무가 프레임을 실제로 바꾼다.
-    plain = _frame_at(render_video(SPEC, synthesize=tone_wav).mp4, 0.5)
-    assert plain.getpixel((cx, cy)) == (0, 0, 0)
-
-
 def test_character_ref_without_fetch_seam_raises() -> None:
     """조용히 캐릭터 없이 렌더하면 배선 실수가 영상까지 흘러간다 — image_ref와 같은 규율."""
     spec = parse_video_spec({**SPEC_DICT, "character_ref": "mem://image/char.png"})
@@ -300,3 +292,69 @@ def test_concept_fills_the_square() -> None:
     # 그라데이션이었다면 정사각 가운데가 배경 그라데이션 색이다. 개념 그림은 액센트 글자를 낸다.
     band = [img.getpixel((x, 360 + 470)) for x in range(200, 880, 3)]
     assert any(p[2] > 150 and p[2] > p[0] + 40 for p in band), "액센트 글자가 안 보임"
+
+
+def _mascot_png(color: tuple[int, int, int] = (255, 0, 255)) -> bytes:
+    """불투명 단색 1:1 마스코트 — 프레임에서 픽셀로 찾을 수 있게 튀는 색을 쓴다."""
+    buf = io.BytesIO()
+    Image.new("RGBA", (256, 256), (*color, 255)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+_MASCOT_REF = "mem://image/mascot.png"
+
+
+def _mascot_pixels(img: Image.Image, width: int) -> int:
+    """마젠타 픽셀 표본 수.
+
+    **초록 성분을 함께 본다** — 문법 강조의 보라·분홍 토큰이 r·b만 높아 처음엔
+    코드 컷에서 캐릭터를 찾은 것처럼 나왔다. 실측: 개념 컷 1089 / 코드 컷 0.
+    """
+    return sum(
+        1
+        for x in range(0, width, 8)
+        for y in range(400, 1290, 8)
+        if (px := img.getpixel((x, y)))[0] > 200 and px[2] > 200 and px[1] < 80
+    )
+
+
+def _spec_with_mascot(**slide_extra: object) -> VideoSpec:
+    slide = {"subtitle": "부제", "narration": "한 문장입니다.", **slide_extra}
+    return _parse_video_spec(
+        {**SPEC_DICT, "slides": [slide], "character_ref": _MASCOT_REF}, topic_major=DEV_MAJOR
+    )
+
+
+def test_mascot_appears_on_a_concept_cut() -> None:
+    """캐릭터가 붙는지 — 튀는 색 픽셀이 프레임에 있어야 한다."""
+    spec = _spec_with_mascot(concept={"kind": "emphasis", "headline": "100억"})
+    render = render_video(spec, synthesize=tone_wav, fetch_image=lambda ref: _mascot_png())
+    img = _frame_at(render.mp4, render.duration_s * 0.5)
+    assert _mascot_pixels(img, spec.width) > 500, "캐릭터 픽셀을 못 찾음"
+
+
+def test_mascot_skipped_on_code_cut() -> None:
+    """코드 컷에는 안 넣는다 — 어느 모서리든 코드 줄 위라 가리면 못 읽는다."""
+    spec = _spec_with_mascot(code="x = 1\ny = 2", lang="python")
+    render = render_video(spec, synthesize=tone_wav, fetch_image=lambda ref: _mascot_png())
+    img = _frame_at(render.mp4, render.duration_s * 0.5)
+    assert _mascot_pixels(img, spec.width) == 0, "코드 컷에 캐릭터가 들어갔다"
+
+
+def test_no_mascot_without_ref_is_byte_identical() -> None:
+    """character_ref가 비면 지금까지의 프레임과 **바이트 동일**해야 한다."""
+    a = render_video(SPEC, synthesize=tone_wav)
+    b = render_video(SPEC, synthesize=tone_wav)
+    assert hashlib.sha256(a.mp4).digest() == hashlib.sha256(b.mp4).digest()
+    assert SPEC.character_ref == ""
+
+
+def test_mascot_fetch_failure_does_not_kill_the_video() -> None:
+    """저장소 오류는 캐릭터만 빼고 영상은 낸다 — 사진 해소와 같은 폴백 규율."""
+
+    def broken(ref: str) -> bytes:
+        raise OSError("저장소 오류")
+
+    spec = _spec_with_mascot(concept={"kind": "remember", "line": "기억하세요"})
+    render = render_video(spec, synthesize=tone_wav, fetch_image=broken)
+    assert check_video(render.mp4).passed

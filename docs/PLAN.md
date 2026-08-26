@@ -101,4 +101,5 @@
 | [12-비기능-테스트](plan/12-비기능-테스트.md) | NFR-1~11, 예외·엣지·테스트 케이스 |
 | [13-로드맵-리스크](plan/13-로드맵-리스크.md) | 모듈·Task 분할(DRI), 로드맵(2~3주 확정 일정), 리스크, 미결정, 외부 제약 |
 | [14-태스크분할](plan/14-태스크분할.md) | 작업 태스크 세분화(T0 공동·트랙 IG·트랙 YT·공통 C1~C11), 충돌 방지 규칙, 주차별 순서 |
+| [15-구현-이탈기록](plan/15-구현-이탈기록.md) | 구현하며 기획서와 갈린 지점 — 없던 결정·다르게 간 것·의도적 미완, 각각 **왜**와 출처 |
 | [diagrams/](diagrams/) | architecture · publish-cycle · learning-loop · keyword-ranking · user-flow · erd (Mermaid) |

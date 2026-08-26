@@ -21,6 +21,7 @@ from sns.runner.cycle import CycleTarget, run_cycle
 from sns.runner.store import InMemoryCycleStore
 from sns.tools.contracts import ContentFormat, MediaAsset
 from sns.tools.fakes import FakeReadStats, FakeRenderMedia, FakeResearchTrends
+from sns.topic_policy import DEV_MAJOR
 
 _CARD_SPEC = {"hook": "3초컷", "title": "walrus", "body": ["a := 10"], "footer": "팔로우"}
 
@@ -46,9 +47,16 @@ def _topic_script(index: int = 0, category: str = "꿀팁") -> list[AIMessage]:
 
 
 def _content_script(
-    spec: dict[str, object] = _CARD_SPEC, *, hook: str = "curiosity", body: str = "본문"
+    spec: dict[str, object] = _CARD_SPEC,
+    *,
+    hook: str = "curiosity",
+    body: str = "본문",
+    method: str | None = None,
 ) -> list[AIMessage]:
+    # 영상 포맷은 set_plan이 먼저다 — 코드가 순서를 강제한다([sns.agents.content]).
+    plan = [_tool("set_plan", {"video_method": method})] if method else []
     return [
+        *plan,
         _tool("set_hook", {"pattern": hook}),
         _tool("set_media_spec", {"spec_json": json.dumps(spec, ensure_ascii=False)}),
         AIMessage(content=body),
@@ -72,6 +80,7 @@ def _run(
     result = run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=targets,
         model=ScriptedChatModel(messages=iter(script)),
         research_trends=FakeResearchTrends(),
@@ -98,6 +107,7 @@ def test_channel_brief_and_categories_thread_to_topic(monkeypatch: pytest.Monkey
     result = run_cycle(
         store,
         goal_ref="reach_growth",
+        topic_major=DEV_MAJOR,
         targets=[_target()],
         model=ScriptedChatModel(
             messages=iter(_topic_script(category="레시피") + _content_script())
@@ -207,6 +217,7 @@ def test_topic_failure_fails_cycle() -> None:
     result = run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target()],
         model=ScriptedChatModel(messages=iter(_topic_script())),
         research_trends=failing,
@@ -264,6 +275,7 @@ def test_infra_failure_marks_failed_and_propagates() -> None:
         run_cycle(
             store,
             goal_ref="engagement_depth",
+            topic_major=DEV_MAJOR,
             targets=[_target()],
             model=ScriptedChatModel(messages=iter(_topic_script() + _content_script())),
             research_trends=FakeResearchTrends(),
@@ -318,8 +330,11 @@ def _run_video(resolve: Any) -> Any:
     run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target(fmt="shorts")],
-        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(_VIDEO_SPEC))),
+        model=ScriptedChatModel(
+            messages=iter(_topic_script() + _content_script(_VIDEO_SPEC, method="template"))
+        ),
         research_trends=FakeResearchTrends(),
         read_stats=FakeReadStats(),
         render_media=FakeRenderMedia(),
@@ -370,6 +385,7 @@ def test_recent_topics_are_excluded_from_the_next_cycle() -> None:
     run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target()],
         model=ScriptedChatModel(messages=iter(_topic_script() + _content_script())),
         research_trends=FakeResearchTrends(),
@@ -393,8 +409,11 @@ def _run_shorts(spec: dict[str, object], *, body: str = "본문", mode: str = "a
     run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target(mode=mode, fmt="shorts")],
-        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(spec, body=body))),
+        model=ScriptedChatModel(
+            messages=iter(_topic_script() + _content_script(spec, body=body, method="template"))
+        ),
         research_trends=FakeResearchTrends(),
         read_stats=FakeReadStats(),
         render_media=FakeRenderMedia(),
@@ -450,8 +469,11 @@ def test_near_duplicate_of_recent_content_is_blocked() -> None:
     run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target(fmt="shorts")],
-        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(_spec_with()))),
+        model=ScriptedChatModel(
+            messages=iter(_topic_script() + _content_script(_spec_with(), method="template"))
+        ),
         research_trends=FakeResearchTrends(),
         read_stats=FakeReadStats(),
         render_media=FakeRenderMedia(),
@@ -474,8 +496,11 @@ def test_different_content_passes_the_similarity_gate() -> None:
     run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target(fmt="shorts")],
-        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(_spec_with()))),
+        model=ScriptedChatModel(
+            messages=iter(_topic_script() + _content_script(_spec_with(), method="template"))
+        ),
         research_trends=FakeResearchTrends(),
         read_stats=FakeReadStats(),
         render_media=FakeRenderMedia(),
@@ -501,6 +526,7 @@ def _run_seeded(script: list[AIMessage], **kwargs: Any) -> Any:
     result = run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target(mode="hybrid")],
         model=ScriptedChatModel(messages=iter(script)),
         research_trends=FakeResearchTrends(),
@@ -547,6 +573,7 @@ def test_seed_topic_ignores_recent_topic_exclusion() -> None:
     result = run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target(mode="hybrid")],
         model=ScriptedChatModel(messages=iter(_content_script())),
         research_trends=FakeResearchTrends(),
@@ -572,6 +599,7 @@ def test_seed_topic_is_screened_before_it_reaches_the_ledger() -> None:
     result = run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target(mode="hybrid")],
         # 콘텐츠 스크립트를 주지 않는다 — 여기까지 오면 안 된다는 뜻이다.
         model=ScriptedChatModel(messages=iter([])),

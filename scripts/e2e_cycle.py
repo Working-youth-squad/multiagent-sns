@@ -44,6 +44,7 @@ from sns.runner.cycle import AssessQuality, CycleTarget, run_cycle
 from sns.runner.store import PgCycleStore
 from sns.tools.contracts import ContentFormat, MediaAsset, MediaKind
 from sns.tools.fakes import FakePublish, FakeReadStats
+from sns.topic_policy import DEV_MAJOR
 
 OUT = Path(__file__).parent / "out"
 ENV_FILE = Path(__file__).parent.parent / ".env"
@@ -159,6 +160,7 @@ def main() -> int:
         result = run_cycle(
             store,
             goal_ref="engagement_depth",
+            topic_major=DEV_MAJOR,
             targets=[
                 CycleTarget(
                     channel_id=channel_id,

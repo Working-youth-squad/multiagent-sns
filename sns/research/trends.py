@@ -12,7 +12,7 @@
 """
 
 import os
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
 
 from sns.tools.contracts import ResearchTrends, SourceResult, TrendDigest
@@ -27,6 +27,10 @@ ENV_NAVER_CLIENT_ID = "NAVER_CLIENT_ID"
 ENV_NAVER_CLIENT_SECRET = "NAVER_CLIENT_SECRET"
 ENV_YOUTUBE_API_KEY = "YOUTUBE_API_KEY"
 ENV_GEMINI_API_KEY = "GEMINI_API_KEY"
+# 그라운딩 모델을 코드 배포 없이 갈아끼우는 자리. 예전에 URL에 박힌 모델이 은퇴하면서
+# 소스가 조용히 죽었고(404), 고치려면 배포가 필요했다
+# ([sns.research.sources.llm_grounding.DEFAULT_MODEL]).
+ENV_GROUNDING_MODEL = "GROUNDING_MODEL"
 
 
 class ResearchTrendsService:
@@ -100,7 +104,13 @@ def _bind(fetch: Callable[..., tuple[str, ...]], **bound: object) -> SourceFetch
 
 
 def default_service(
-    timeout_s: float = DEFAULT_TIMEOUT_S, *, env: Mapping[str, str] | None = None
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    *,
+    env: Mapping[str, str] | None = None,
+    sources: Sequence[str] | None = None,
+    search_terms: Sequence[str] | None = None,
+    grounding_prompt: str | None = None,
+    extra_fetchers: Mapping[str, SourceFetcher] | None = None,
 ) -> ResearchTrendsService:
     """사용 가능한 실 fetcher를 배선한 서비스. 새 소스가 붙을 때마다 여기 등록한다.
 
@@ -109,11 +119,29 @@ def default_service(
     YouTube·LLM 그라운딩)는 env에 키가 있을 때만 등록 — 없으면 미등록이라 호출돼도
     ok=False로 격리된다(§2, 부분 가용성 허용). LLM 그라운딩은 선택이라 키가 있을
     때만 기본 소스에 합류한다.
+
+    **온보딩 채널 주입점** (셋 다 기본 None = 기존 동작 무변경):
+
+    - `sources`: 등록할 소스 이름을 좁힌다([sns.topic_policy.trend_sources_for]).
+      개발 전용 소스를 요리 채널에 남겨두면 그 트렌드에서 주제를 골라 대본이 억지가
+      된다. **`__call__`의 `sources`가 아니라 등록 시점에 거른다** — `run_topic`은
+      소스를 지정하지 않고 부르므로 등록된 전부가 대상이 된다.
+    - `search_terms`: 검색형 소스의 질의어. 첫 항목이 네이버 검색의 대표 질의어,
+      전체가 데이터랩의 추이 비교 키워드다. 프로필의 `(topic_major, *topic_subs)`가
+      그대로 들어온다 — 사람이 인터뷰에서 고른 말이 곧 검색어다.
+    - `grounding_prompt`: LLM 그라운딩 질의([sns.topic_policy.grounding_prompt_for]).
+    - `extra_fetchers`: 호출자가 이름 붙여 넘기는 소스. 질의어 키워드 랭킹처럼 **내장
+      레지스트리에 없는** 소스를 얹는 자리다([sns.onboarding.trends]). `sources` 필터를
+      타지 않는다 — 명시로 준 것이라 내장 목록에 있을 리 없고, 태우면 전부 걸러진다.
+
+    그라운딩 **모델**은 env `GROUNDING_MODEL`로 바꾼다 — 프로필이 아니라 운영 설정이라
+    자격증명과 같은 자리에서 읽는다. 모델이 은퇴해도 코드 배포 없이 넘어갈 수 있어야
+    한다(예전에 URL에 박힌 모델이 은퇴해 소스가 조용히 죽었다).
     """
     from sns.research.sources.devnews import fetch_hacker_news, fetch_lobsters
     from sns.research.sources.github_trending import fetch_github_trending
     from sns.research.sources.google_trends import fetch_google_trends
-    from sns.research.sources.llm_grounding import fetch_llm_grounding
+    from sns.research.sources.llm_grounding import fetch_llm_grounding, gemini_url
     from sns.research.sources.naver_datalab import fetch_naver_datalab
     from sns.research.sources.naver_search import fetch_naver_search
     from sns.research.sources.youtube_popular import fetch_youtube_popular
@@ -130,11 +158,16 @@ def default_service(
     naver_id = env_map.get(ENV_NAVER_CLIENT_ID)
     naver_secret = env_map.get(ENV_NAVER_CLIENT_SECRET)
     if naver_id and naver_secret:
+        # 질의어를 안 넘기면 fetcher의 개발 기본값이 쓰인다 — 소스만 갈아끼우면
+        # 도메인을 바꿔도 같은 걸 검색한다.
+        terms = tuple(search_terms or ())
+        query = {"query": terms[0]} if terms else {}
+        keywords = {"keywords": terms} if terms else {}
         fetchers["naver_search"] = _bind(
-            fetch_naver_search, client_id=naver_id, client_secret=naver_secret
+            fetch_naver_search, client_id=naver_id, client_secret=naver_secret, **query
         )
         fetchers["naver_datalab"] = _bind(
-            fetch_naver_datalab, client_id=naver_id, client_secret=naver_secret
+            fetch_naver_datalab, client_id=naver_id, client_secret=naver_secret, **keywords
         )
 
     youtube_key = env_map.get(ENV_YOUTUBE_API_KEY)
@@ -143,8 +176,22 @@ def default_service(
 
     gemini_key = env_map.get(ENV_GEMINI_API_KEY)
     if gemini_key:
-        fetchers["llm_grounding"] = _bind(fetch_llm_grounding, api_key=gemini_key)
+        # 안 넘긴 값은 바인딩에서 아예 뺀다 — fetcher의 기본값이 살아 있게.
+        bound: dict[str, object] = {"api_key": gemini_key}
+        if grounding_prompt:
+            bound["prompt"] = grounding_prompt
+        grounding_model = env_map.get(ENV_GROUNDING_MODEL)
+        if grounding_model:
+            bound["url"] = gemini_url(grounding_model)
+        fetchers["llm_grounding"] = _bind(fetch_llm_grounding, **bound)
 
+    if sources is not None:
+        # 이 주제가 안 쓰는 소스는 키가 있어도 등록하지 않는다.
+        fetchers = {k: v for k, v in fetchers.items() if k in set(sources)}
+    if extra_fetchers:
+        # **`sources` 필터를 태우지 않는다.** 호출자가 이름을 붙여 명시로 넘긴 것이라
+        # 내장 소스 목록에 있을 리가 없다 — 태우면 방금 준 것이 전부 걸러진다.
+        fetchers.update(extra_fetchers)
     return ResearchTrendsService(fetchers, timeout_s=timeout_s)
 
 

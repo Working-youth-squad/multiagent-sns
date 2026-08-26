@@ -60,3 +60,6 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# scripts/ 진입점의 순수 배선(포맷·모드 매핑)을 테스트가 import한다. 스크립트라 통째로는
+# 못 돌리지만, 매핑을 틀리면 되돌릴 수 없는 사고가 난다(manual 채널이 자동 발행되는 것처럼).
+pythonpath = ["."]

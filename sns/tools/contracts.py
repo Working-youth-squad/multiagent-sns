@@ -13,6 +13,18 @@ ContentFormat = Literal["feed_image", "reels", "shorts"]
 MediaKind = Literal["image", "video", "thumbnail", "audio"]
 PlaybookScope = Literal["global", "platform", "format", "topic"]
 
+# 영상 제작 방식. Enum이 아니라 Literal인 이유는 이 값이 media_spec(jsonb)에 그대로
+# 저장돼 DB와 LLM 툴 인자를 오가기 때문 — Enum이면 직렬화 층이 하나 는다.
+# hybrid는 다른 셋과 층위가 다르다: 별도 제작 방식이 아니라 "컷마다 방식이 다를 수
+# 있다"는 선언이라, 검증 단위는 언제나 slide.method다.
+VideoMethod = Literal["template", "generated_scene", "generated_clip", "hybrid"]
+
+# 생성 실패의 종류. quota·network는 재시도 가능, safety·provider는 불가 — 같은
+# 프롬프트는 같은 안전 판정을 받으므로 다시 부르면 돈만 쓴다. 발행 쪽 `ErrorClass`와
+# 이름을 통일하지 않는 이유는 실패의 성격이 달라서다(발행은 계정·플랫폼, 생성은
+# 프롬프트·프로바이더). 다만 **재시도 가능/불가라는 축은 같다**.
+GenerationFailureKind = Literal["quota", "safety", "network", "provider"]
+
 # 오류 분류 (FR-P4) — 미분류는 error_raw 원문 보존
 ErrorClass = Literal["auth", "quota", "spam_block", "transient", "permanent_unknown"]
 

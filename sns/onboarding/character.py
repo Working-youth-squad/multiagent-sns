@@ -42,6 +42,38 @@ _STYLE_RULES: dict[str, tuple[str, ...]] = {
     "watercolor": ("watercolor illustration mascot", "soft pastel palette", *_COMMON_RULES),
 }
 
+# 장면용 규칙 — 캐릭터용(_COMMON_RULES)과 **다르다**. 저쪽은 1:1 마스코트 한 마리를
+# 단색 배경에 세우는 규칙이라 풀블리드 장면에 그대로 쓸 수 없다.
+_SCENE_COMMON: tuple[str, ...] = (
+    "vertical 9:16 composition, full bleed",
+    "single clear subject, uncluttered composition",
+    "no text, no letters, no numbers, no watermark, no logos",
+)
+
+_SCENE_RULES: dict[str, tuple[str, ...]] = {
+    "mascot_3d": ("cute 3D rendered scene", "soft studio lighting", *_SCENE_COMMON),
+    "flat_vector": ("flat vector illustration scene", "simple geometric shapes", *_SCENE_COMMON),
+    "pixel_art": ("pixel art scene", "16-bit retro game style", *_SCENE_COMMON),
+    "watercolor": ("watercolor illustration scene", "soft pastel palette", *_SCENE_COMMON),
+    "none": ("clean photographic scene", "natural light", *_SCENE_COMMON),
+}
+
+
+def scene_rules_for(character_style: str) -> tuple[str, ...]:
+    """생성 장면 프롬프트에 붙는 고정 화풍([sns.render.video.gen]).
+
+    **인터뷰가 고른 `character_style`을 그대로 쓴다.** 영상 화풍을 따로 물으면 사람이 같은
+    질문에 두 번 답하게 되고, 두 답이 어긋나면 캐릭터와 배경이 따로 논다. 같은 스타일 키가
+    같은 화풍 낱말("pixel art", "watercolor")을 쓰므로 한 채널의 캐릭터와 장면이 붙는다.
+
+    화풍이 코드에 있는 게 요점이다([sns.render.images.generate.STYLE_RULES]와 같은 규율) —
+    매 사이클 화풍이 흔들리면 모델 비교가 화풍 비교로 오염된다.
+
+    "캐릭터 없음"을 고른 채널도 장면은 필요하므로 `none`이 폴백을 겸한다.
+    """
+    return _SCENE_RULES.get(character_style, _SCENE_RULES["none"])
+
+
 GenerateImage = Callable[..., bytes]
 
 # 캐릭터 레퍼런스 장면용 — 영상 정사각 규칙(밝은 배경·글자 없음)에 캐릭터 유지를 얹는다.

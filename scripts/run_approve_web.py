@@ -57,12 +57,16 @@ class DirMediaStore:
         return Path(url2pathname(urlparse(url).path)).read_bytes()
 
 
-def make_rerender(ffmpeg: str, font: str | None) -> RerenderVideo:
+def make_rerender(ffmpeg: str, font: str | None, topic_major: str) -> RerenderVideo:
     """컷 수정 → 재렌더 → 품질 게이트. 실패는 예외로 — 앱이 오류 메시지로 표면화한다."""
     media_store = DirMediaStore(OUT)
     ffprobe = str(Path(ffmpeg).parent / "ffprobe") if ffmpeg != "ffmpeg" else "ffprobe"
     renderer = VideoRenderMedia(
-        media_store, synthesize=synthesize_google, font_path=font, ffmpeg=ffmpeg
+        media_store,
+        synthesize=synthesize_google,
+        topic_major=topic_major,
+        font_path=font,
+        ffmpeg=ffmpeg,
     )
 
     def rerender(
@@ -80,6 +84,11 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ffmpeg", default="ffmpeg", help="ffmpeg 실행 파일 경로")
     parser.add_argument("--font", default=None, help="한글 TTF 경로 (미지정 시 자동 탐색)")
+    # 기본값을 두지 않는다 — 컷 검증(정사각 소스·개념 그림)이 주제마다 다르고, 틀리면
+    # 재렌더가 조용히 다른 규칙으로 돈다([sns.topic_policy]).
+    parser.add_argument(
+        "--topic-major", required=True, help="재렌더할 채널의 주제 대분류 (예: 개발, 요리)"
+    )
     args = parser.parse_args()
 
     load_dotenv(ENV_FILE, override=False)
@@ -94,7 +103,10 @@ def main() -> int:
     if not font:
         font = next((c for c in FONT_CANDIDATES if Path(c).exists()), None)
 
-    app = create_app(PgApprovalStore(conn), rerender_video=make_rerender(args.ffmpeg, font))
+    app = create_app(
+        PgApprovalStore(conn),
+        rerender_video=make_rerender(args.ffmpeg, font, args.topic_major),
+    )
     host = os.environ.get("APPROVE_WEB_HOST", "127.0.0.1")
     port = int(os.environ.get("APPROVE_WEB_PORT", "8001"))
     print(f"승인 화면: http://{host}:{port}/")

@@ -7,6 +7,8 @@
 상한값은 전부 실측이다(맑은고딕 기준, 상단 80px·알약 38px·자막 54px).
 """
 
+from collections.abc import Mapping
+
 import pytest
 
 from sns.render.video.spec import (
@@ -18,9 +20,22 @@ from sns.render.video.spec import (
     MAX_SLIDES,
     MAX_SUBTITLE_WIDTH,
     MAX_TOPIC_WIDTH,
+    VideoSpec,
     VideoSpecError,
-    parse_video_spec,
 )
+from sns.render.video.spec import parse_video_spec as _parse_video_spec
+from sns.topic_policy import DEV_MAJOR
+
+
+def parse_video_spec(media_spec: Mapping[str, object]) -> VideoSpec:
+    """개발 기준으로 고정한 파서.
+
+    이 파일의 테스트는 **주제 대분류 분기가 아니라 spec 문법**을 본다(치수·색·상한).
+    분기 자체는 tests/test_topic_policy.py가 본다. 호출부 40곳에 같은 인자를 반복하는
+    대신 여기서 한 번 묶는다.
+    """
+    return _parse_video_spec(media_spec, topic_major=DEV_MAJOR)
+
 
 MINIMAL: dict[str, object] = {
     "topic": "리스트에서 in 쓰지 마세요",

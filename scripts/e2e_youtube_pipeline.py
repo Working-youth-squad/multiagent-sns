@@ -40,16 +40,16 @@ from sns.adapters.youtube.publisher import YouTubePublish, split_caption
 from sns.agents.models import make_model
 from sns.publish.state_machine import run_publish
 from sns.publish.stores import InMemoryPublishAttemptStore
-from sns.quality.gate import QualityCheck, QualityReport
 from sns.render.images.resolve import resolve_images
 from sns.render.video.media import VideoRenderMedia
-from sns.render.video.quality import check_video
+from sns.render.video.quality import make_video_gate
 from sns.render.video.tts import synthesize_google
 from sns.research.trends import default_service
-from sns.runner.cycle import AssessQuality, CycleTarget, run_cycle
+from sns.runner.cycle import CycleTarget, run_cycle
 from sns.runner.store import CycleStore, InMemoryCycleStore, PgCycleStore
-from sns.tools.contracts import ContentFormat, MediaAsset, MediaKind
+from sns.tools.contracts import MediaAsset, MediaKind
 from sns.tools.fakes import FakeReadStats
+from sns.topic_policy import DEV_MAJOR
 
 ROOT = Path(__file__).parent.parent
 OUT = ROOT / "scripts" / "out" / "yt"
@@ -74,21 +74,6 @@ class DirMediaStore:
 
     def get(self, url: str) -> bytes:
         return Path(url).read_bytes()
-
-
-def make_gate(ffprobe: str, ffmpeg: str) -> AssessQuality:
-    """영상 품질 게이트를 AssessQuality 형태로 조립."""
-
-    def assess(
-        *, media_spec: Mapping[str, object], media: MediaAsset, content_format: ContentFormat
-    ) -> QualityReport:
-        report = check_video(Path(media.storage_url).read_bytes(), ffprobe=ffprobe, ffmpeg=ffmpeg)
-        checks = tuple(QualityCheck(f, False, f) for f in report.failures) or (
-            QualityCheck("video_spec", True, "규격·길이·오디오 하한 통과"),
-        )
-        return QualityReport(status="passed" if report.passed else "failed", checks=checks)
-
-    return assess
 
 
 def ensure_channel(conn: psycopg.Connection, *, handle: str) -> str:
@@ -205,7 +190,11 @@ def main() -> int:
 
     media_store = DirMediaStore(OUT)
     renderer = VideoRenderMedia(
-        media_store, synthesize=synthesize_google, font_path=args.font, ffmpeg=ffmpeg
+        media_store,
+        synthesize=synthesize_google,
+        topic_major=DEV_MAJOR,
+        font_path=args.font,
+        ffmpeg=ffmpeg,
     )
     conn = None
     store: CycleStore
@@ -237,6 +226,7 @@ def main() -> int:
     result = run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[
             CycleTarget(
                 channel_id=channel_id,
@@ -249,7 +239,7 @@ def main() -> int:
         research_trends=trends,
         read_stats=FakeReadStats(),
         render_media=renderer,
-        assess_quality=make_gate(ffprobe, ffmpeg),
+        assess_quality=make_video_gate(media_store.get, ffprobe=ffprobe, ffmpeg=ffmpeg),
         # 사진 해소 seam — PEXELS_API_KEY가 없으면 후보를 못 구해 notice만 남고
         # 그라데이션/개념 그림으로 간다(영상은 그대로 나온다).
         resolve_media_spec=lambda spec: resolve_images(spec, store=media_store),

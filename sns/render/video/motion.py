@@ -29,20 +29,22 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw
 
-from sns.render.video.quality import MAX_DURATION_S
-from sns.render.video.renderer import (
+from sns.render.video.assemble import (
     _BAR_RATIO,
     _BITEXACT,
     FPS,
-    FetchImage,
     VideoRender,
-    _assemble,
+    _run_ffmpeg,
+    concat_cuts,
+)
+from sns.render.video.quality import MAX_DURATION_S
+from sns.render.video.renderer import (
+    FetchImage,
     _character_badge,
     _font,
     _gradient,
     _hex_to_rgb,
     _pick_font,
-    _run_ffmpeg,
     _wrap,
 )
 from sns.render.video.spec import Slide, VideoSpec, VideoSpecError
@@ -213,7 +215,7 @@ def render_motion_video(
                 ),  # fmt: skip
                 workdir,
             )
-        mp4 = _assemble(
+        mp4 = concat_cuts(
             workdir, cut_count=len(spec.slides), wavs=wavs, total=total,
             width=spec.width, accent=spec.accent, bar_h=bar_h,
             ffmpeg=ffmpeg, bgm=bgm, bgm_ext=bgm_ext,

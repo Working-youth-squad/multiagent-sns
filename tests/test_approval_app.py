@@ -5,6 +5,7 @@ from dataclasses import replace
 
 from fastapi.testclient import TestClient
 
+from sns.render.video.spec import VideoSpecError
 from sns.tools.contracts import MediaAsset
 from sns.web.approve.app import create_app
 from sns.web.approve.store import InMemoryApprovalStore, PendingItem
@@ -136,13 +137,18 @@ def test_rerender_updates_spec_and_redirects_to_detail() -> None:
     assert item.quality_status == "passed"
 
 
-def test_rerender_over_width_shows_error_without_render() -> None:
-    """글자수 상한(spec 파서)이 가드레일 — 유료 렌더 전에 끊고 수정값을 유지 표시한다."""
+def test_rerender_spec_violation_is_422_with_edits_kept() -> None:
+    """spec 위반은 **사용자 입력 오류**(422)로 수정값과 함께 되돌아온다.
+
+    검증은 앱이 아니라 렌더러의 파서가 한다 — 컷 검증이 주제 대분류에 따라 달라서
+    ([sns.topic_policy]) 앱은 어느 채널인지 모른다. 유료 TTS보다 파서가 먼저 도니
+    "과금 전에 끊는다"는 성질은 렌더러 안에서 지켜진다(test_video_render).
+    """
     calls: list[object] = []
 
     def spy(spec: Mapping[str, object]) -> tuple[MediaAsset, str, None]:
         calls.append(spec)
-        raise AssertionError("호출되면 안 된다")
+        raise VideoSpecError("'slides[0]'의 'narration'이 31자를 넘음")
 
     store = InMemoryApprovalStore((VIDEO_ITEM,))
     client = TestClient(create_app(store, rerender_video=spy))
@@ -153,7 +159,7 @@ def test_rerender_over_width_shows_error_without_render() -> None:
     assert resp.status_code == 422
     assert "narration" in resp.text
     assert "너무 긴 나레이션" in resp.text  # 수정값 유지
-    assert calls == []
+    assert len(calls) == 1  # 파서까지는 갔다 — 그 앞에서 끊을 근거가 앱에는 없다
 
 
 def test_rerender_render_failure_surfaces_message() -> None:

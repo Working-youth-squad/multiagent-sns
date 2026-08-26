@@ -21,11 +21,12 @@
 
 from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import cast
+from typing import Literal, cast
 
-from sns.render.code_image import MAX_CODE_LINES
 from sns.render.concept_image import Concept, ConceptError, parse_concept
 from sns.render.text import display_width
+from sns.tools.contracts import VideoMethod
+from sns.topic_policy import concept_kinds_for, square_sources_for
 
 # 쇼츠/릴스 세로 규격 9:16 (FR-M2). spec이 명시하면 덮어쓰되 비율은 강제.
 DEFAULT_WIDTH = 1080
@@ -43,6 +44,69 @@ MAX_SUBTITLE_WIDTH = 40
 # FR-A2의 화면 전환 주기(2~4초) 안에 들어온다. 한 컷 = 한 화면이라 이게 곧 정지 시간이다.
 MAX_NARRATION_WIDTH = 62
 # 스톡 검색어 상한 — 길수록 결과가 0건으로 수렴한다(검색은 짧아야 걸린다).
+# 정사각 소스 → 그 소스가 쓰는 슬라이드 필드. **파서와 렌더러의 단일 출처**다 —
+# 따로 두면 한쪽만 갱신돼 "프롬프트는 막았는데 파서는 받는" 상태가 다시 생긴다.
+# 코드 줄 상한 — [sns.render.code_image]의 렌더 한계와 같은 값이다. 여기 복제해 두는 건
+# spec이 그 모듈(과 pygments)을 물지 않게 하기 위해서다. 어긋나면 아래 테스트가 잡는다.
+MAX_CODE_LINES = 18
+
+SQUARE_FIELDS: dict[str, tuple[str, ...]] = {
+    "code": ("code", "lang", "focus_lines"),
+    "concept": ("concept",),
+    "image": ("image_query", "image_prompt", "image_ref"),
+    "gradient": (),  # 최후 폴백 — 슬라이드 필드가 없다
+}
+
+# 해소 전(PLAN)과 해소 후(RENDER)는 필수 필드가 다르다. `parse_video_spec`이 두 시점에
+# 불리므로(set_media_spec · 렌더 직전) 평평한 허용 집합으로는 그 차이를 표현할 수 없다.
+SpecStage = Literal["plan", "render"]
+
+# 해소 실패가 기록되는 자리. 이 값이 있으면 그 컷은 RENDER 필수 필드를 면제받고
+# 폴백(그라데이션)으로 간다 — 실패 기록이 폴백을 승인하는 티켓이다.
+FAILURE_FIELD = "scene_failure"
+
+
+@dataclass(frozen=True)
+class MethodFields:
+    """method별 슬라이드 필드 규칙."""
+
+    allowed: tuple[str, ...]
+    required_plan: tuple[str, ...]
+    required_render: tuple[str, ...]
+    resolved: tuple[str, ...]
+    """해소가 채우는 필드 → **PLAN 단계에서 금지**한다.
+
+    앞의 셋만으로는 이걸 표현할 수 없다. `required_render - required_plan`으로 파생시키려
+    해도 template의 `image_ref`는 렌더에서 필수가 아니라(그라데이션 폴백) 그 뺄셈에서
+    빠져나가고, LLM이 가짜 `image_ref`를 써넣는 경로가 열린 채로 남는다.
+    """
+
+
+METHOD_FIELDS: dict[VideoMethod, MethodFields] = {
+    "template": MethodFields(
+        allowed=(
+            "code",
+            "lang",
+            "focus_lines",
+            "concept",
+            "image_query",
+            "image_prompt",
+            "image_ref",
+        ),
+        required_plan=(),  # 정사각은 비워도 그라데이션으로 간다
+        required_render=(),
+        resolved=("image_ref",),
+    ),
+    "generated_scene": MethodFields(
+        allowed=("scene_prompt", "scene_ref", FAILURE_FIELD),
+        required_plan=("scene_prompt",),
+        required_render=("scene_ref",),
+        resolved=("scene_ref", FAILURE_FIELD),
+    ),
+}
+# hybrid는 여기 항목을 두지 않는다 — 합집합으로 검증하면 아무 필드나 섞여도 통과해
+# 자물쇠가 풀린다. 검증 단위를 컷으로 내리면 합집합이라는 개념 자체가 사라진다.
+
 MAX_IMAGE_QUERY_LEN = 60
 # 생성 프롬프트 상한 — 근거가 반대다. 구도를 설명해야 하므로 문장 하나는 들어가야 하고,
 # 검색어 길이(60)를 물려 뒀더니 "무엇이 어떻게 놓였는지"를 쓸 수 없었다. 다만 무한정
@@ -75,6 +139,12 @@ class Slide:
     image_query: str = ""  # 스톡 검색어(영문). 생성 시점에 image_ref로 해소된다
     image_prompt: str = ""  # 생성 이미지 주제(영문). 유료라 기본 미배선
     image_ref: str = ""  # 해소된 사진의 저장소 URL. 렌더러가 읽는 건 이쪽뿐이다
+    # 컷의 제작 방식. spec.method가 hybrid가 아니면 코드가 spec.method로 채운다 —
+    # **검증 단위는 언제나 이쪽**이라 hybrid가 특별한 분기를 안 만든다.
+    method: VideoMethod = "template"
+    scene_prompt: str = ""  # 생성할 장면(영문 한 문장). 해소 시점에 scene_ref가 된다
+    scene_ref: str = ""  # 해소된 장면의 저장소 URL. 렌더러가 읽는 건 이쪽뿐이다
+    scene_failed: bool = False  # 해소가 실패해 폴백으로 가는 컷(사유는 media_spec에)
 
 
 @dataclass(frozen=True)
@@ -87,12 +157,23 @@ class VideoSpec:
     background: str
     background2: str
     foreground: str
+    # 렌더러는 주제 대분류를 모른다 — 파서가 채우기 우선순위를 여기 실어 보낸다
+    # ([sns.render.video.renderer]가 이 순서대로 첫 번째로 채워지는 소스를 쓴다).
+    # 같은 media_spec + 같은 topic_major → 같은 VideoSpec → 같은 mp4(FR-M1 결정론).
+    # **기본값을 두지 않는다** — 빠뜨리면 요리 채널에 개발 순서가 조용히 적용된다.
+    square_sources: tuple[str, ...]
     accent: str = DEFAULT_ACCENT
-    # 채널 캐릭터(마스코트) 이미지의 저장소 URL — 있으면 렌더러가 코너 배지로 얹는다.
-    # spec 안에 있는 이유: 렌더 입력의 자기완결성(재렌더가 채널 조립 없이 동작해야 한다).
+    # 채널 캐릭터의 저장소 URL. 비면 캐릭터 없이 렌더한다(인터뷰에서 "캐릭터 없음"을
+    # 골랐거나 생성이 실패한 채널). **배선이 아니라 spec에 있어야 한다** — 밖에서 넘기면
+    # 같은 media_spec이 채널마다 다른 mp4를 낳아 FR-M1이 깨진다. `image_ref`와 같은 규율로
+    # 해소 시점에 못박고 렌더러는 이것만 읽는다([sns.render.video.mascot]). 승인 웹
+    # 재렌더가 채널 조립 없이 도는 근거이기도 하다.
     character_ref: str = ""
-    # 화면 문법 선택: "" = 3단 레이아웃(현행), "motion" = 모션 그래픽
-    # ([sns.render.video.motion]). spec에 있어야 승인 웹 재렌더가 같은 스타일로 돈다.
+    # **축이 둘이다.** 섞으면 "이 영상이 어떻게 만들어졌나"의 답이 둘이 되고 어긋난다.
+    #   method — 어느 트랙인가(재료 출처). 비용·AI 표기·Capability Gate가 여기 걸린다.
+    #   style  — 그 트랙 안의 화면 문법. spec에 있어야 승인 웹 재렌더가 같은 꼴로 돈다.
+    # hybrid면 method가 컷마다 다를 수 있어 검증 단위는 slide.method다.
+    method: VideoMethod = "template"
     style: str = ""
     _unused: tuple[()] = field(default=(), repr=False, compare=False)
 
@@ -153,7 +234,7 @@ def _parse_image_text(
     return query
 
 
-def _parse_concept(raw: Mapping[str, object], where: str) -> Concept | None:
+def _parse_concept(raw: Mapping[str, object], where: str, kinds: tuple[str, ...]) -> Concept | None:
     """개념 그림 — 검증은 [sns.render.concept_image]에 위임하고 예외만 갈아 끼운다."""
     value = raw.get("concept")
     if value is None:
@@ -161,21 +242,115 @@ def _parse_concept(raw: Mapping[str, object], where: str) -> Concept | None:
     if not isinstance(value, Mapping):
         raise VideoSpecError(f"{where}'concept'는 매핑이어야 함: {value!r}")
     try:
-        return parse_concept(value)
+        return parse_concept(value, kinds=kinds)
     except ConceptError as exc:
         raise VideoSpecError(f"{where}'concept'가 잘못됨 — {exc}") from exc
 
 
-def _parse_slide(raw: object, index: int) -> Slide:
+def _reject_unused_square_fields(
+    raw: Mapping[str, object], where: str, sources: tuple[str, ...]
+) -> None:
+    """팩이 안 쓰는 정사각 소스의 필드는 거부한다.
+
+    프롬프트에서 안내를 빼는 것만으로는 1차 방어선뿐이다. 에이전트가 안내를 무시하거나
+    옛 spec을 재사용하면 그 필드가 그대로 렌더까지 간다 — 코드를 안 쓰는 도메인의 영상에
+    파이썬 코드가 나온다. 사유에 어느 소스인지 적어 에이전트가 고칠 수 있게 한다.
+    """
+    for source, fields in SQUARE_FIELDS.items():
+        if source in sources:
+            continue
+        for key in fields:
+            if raw.get(key):
+                raise VideoSpecError(
+                    f"{where}'{key}'는 이 도메인이 쓰지 않는 정사각 소스({source})다 — "
+                    f"쓸 수 있는 소스: {list(sources)}"
+                )
+
+
+def _parse_method(value: object, where: str) -> VideoMethod:
+    if value is None:
+        return "template"  # method 없는 기존 media_spec은 템플릿이다
+    if not isinstance(value, str) or value not in METHOD_FIELDS:
+        raise VideoSpecError(f"{where}'method'는 {sorted(METHOD_FIELDS)} 중 하나여야 함: {value!r}")
+    # `in METHOD_FIELDS`가 이미 VideoMethod로 좁혀준다 — cast를 쓰면 mypy가 중복이라 잡는다.
+    return value
+
+
+def _check_lifecycle(
+    raw: Mapping[str, object], where: str, method: VideoMethod, stage: SpecStage
+) -> None:
+    """단계별 필드 검증 — 해소 전후로 필수가 다르다.
+
+    PLAN에서 `resolved` 필드를 금지하는 이유는 둘이다. 해소되지 않은 spec임을 구조로
+    못박고, **LLM이 저장소 URL을 환각으로 써넣는 것**을 막는다. 지어낸 URL이 통과하면
+    그 컷은 남의 자산을 가리키거나 렌더에서 알 수 없는 오류로 죽는다.
+    """
+    rules = METHOD_FIELDS[method]
+    if stage == "plan":
+        for key in rules.required_plan:
+            if not raw.get(key):
+                raise VideoSpecError(f"{where}'{key}'가 없음 — {method}는 이 필드가 필수다")
+        for key in rules.resolved:
+            if raw.get(key):
+                raise VideoSpecError(
+                    f"{where}'{key}'는 해소가 채우는 필드다 — 생성 시점에 쓸 수 없다"
+                )
+        return
+    for key in rules.required_render:
+        # 실패가 기록된 컷은 면제한다 — 그 컷은 폴백으로 간다(실패 기록이 폴백 티켓).
+        if not raw.get(key) and not raw.get(FAILURE_FIELD):
+            raise VideoSpecError(
+                f"{where}'{key}'가 없음 — 해소를 돌리지 않았거나 실패 기록이 빠졌다"
+            )
+
+
+def _reject_fields_outside_method(
+    raw: Mapping[str, object], where: str, method: VideoMethod
+) -> None:
+    """이 method가 안 쓰는 필드는 거부한다 — 선언과 실제가 어긋나는 유일한 실패 모드다."""
+    allowed = set(METHOD_FIELDS[method].allowed)
+    for other, rules in METHOD_FIELDS.items():
+        if other == method:
+            continue
+        for key in rules.allowed:
+            if key not in allowed and raw.get(key):
+                raise VideoSpecError(
+                    f"{where}'{key}'는 {method}가 쓰지 않는 필드다({other}의 것) — "
+                    f"쓸 수 있는 것: {sorted(allowed)}"
+                )
+
+
+def _parse_slide(
+    raw: object,
+    index: int,
+    kinds: tuple[str, ...],
+    sources: tuple[str, ...],
+    method: VideoMethod,
+    stage: SpecStage,
+) -> Slide:
     where = f"'slides[{index}]'의 "
     if not isinstance(raw, Mapping):
         raise VideoSpecError(f"'slides[{index}]'는 매핑이어야 함: {raw!r}")
+    slide_method = _parse_method(raw.get("method"), where) if method == "hybrid" else method
+    _reject_fields_outside_method(raw, where, slide_method)
+    _check_lifecycle(raw, where, slide_method, stage)
+    if slide_method != "template":
+        # 정사각 자물쇠는 template 안에서만 의미가 있다 — 풀블리드 장면엔 정사각이 없다.
+        return Slide(
+            subtitle=_require_text(raw, "subtitle", where, MAX_SUBTITLE_WIDTH),
+            narration=_require_text(raw, "narration", where, MAX_NARRATION_WIDTH),
+            method=slide_method,
+            scene_prompt=_optional_str(raw, "scene_prompt", where),
+            scene_ref=_optional_str(raw, "scene_ref", where),
+            scene_failed=bool(raw.get(FAILURE_FIELD)),
+        )
+    _reject_unused_square_fields(raw, where, sources)
     code = _optional_str(raw, "code", where)
     if code.strip() and len(code.rstrip().split("\n")) > MAX_CODE_LINES:
         raise VideoSpecError(
             f"{where}'code'는 {MAX_CODE_LINES}줄 이하여야 함: {len(code.rstrip().split(chr(10)))}줄"
         )
-    concept = _parse_concept(raw, where)
+    concept = _parse_concept(raw, where, kinds)
     if concept is not None and (code.strip() or raw.get("image_query") or raw.get("image_prompt")):
         raise VideoSpecError(
             f"{where}'concept'는 'code'·'image_query'·'image_prompt'와 함께 쓸 수 없음"
@@ -190,6 +365,7 @@ def _parse_slide(raw: object, index: int) -> Slide:
         image_query=_parse_image_text(raw, "image_query", where, code, MAX_IMAGE_QUERY_LEN),
         image_prompt=_parse_image_text(raw, "image_prompt", where, code, MAX_IMAGE_PROMPT_LEN),
         image_ref=_optional_str(raw, "image_ref", where),
+        method=slide_method,
     )
 
 
@@ -213,14 +389,24 @@ def _reject_generated_images_in_code_videos(slides: tuple[Slide, ...]) -> None:
         )
 
 
-def _parse_slides(spec: Mapping[str, object]) -> tuple[Slide, ...]:
+def _parse_slides(
+    spec: Mapping[str, object],
+    kinds: tuple[str, ...],
+    sources: tuple[str, ...],
+    method: VideoMethod,
+    stage: SpecStage,
+) -> tuple[Slide, ...]:
     value = spec.get("slides")
     if not isinstance(value, list) or not value:
         raise VideoSpecError(f"'slides'는 비지 않은 리스트여야 함: {value!r}")
     if len(value) > MAX_SLIDES:
         raise VideoSpecError(f"'slides'는 {MAX_SLIDES}장 이하여야 함: {len(value)}장")
-    slides = tuple(_parse_slide(raw, i) for i, raw in enumerate(value))
-    _reject_generated_images_in_code_videos(slides)
+    slides = tuple(
+        _parse_slide(raw, i, kinds, sources, method, stage) for i, raw in enumerate(value)
+    )
+    if "code" in sources and method == "template":
+        # 코드를 안 쓰는 도메인엔 "코드 영상"이라는 개념 자체가 없다.
+        _reject_generated_images_in_code_videos(slides)
     return slides
 
 
@@ -257,6 +443,7 @@ def _parse_voice(spec: Mapping[str, object]) -> str:
     return value
 
 
+# 화면 문법 — `method`와 직교한다([sns.render.video.media]의 `_RENDERERS`).
 VIDEO_STYLES = ("", "motion")
 
 
@@ -267,22 +454,33 @@ def _parse_style(spec: Mapping[str, object]) -> str:
     return value
 
 
-def parse_video_spec(media_spec: Mapping[str, object]) -> VideoSpec:
-    """`media_spec` → `VideoSpec`. 누락·형식 오류는 `VideoSpecError`."""
+def parse_video_spec(
+    media_spec: Mapping[str, object], *, topic_major: str, stage: SpecStage = "render"
+) -> VideoSpec:
+    """`media_spec` → `VideoSpec`. 누락·형식 오류는 `VideoSpecError`.
+
+    `topic_major`는 **필수다.** 기본값을 두면 새 호출부가 인자를 빠뜨렸을 때 요리 채널에
+    개발 규칙(코드 정사각·terminal 그림)이 조용히 적용된다 — 그 사고는 렌더가 끝난 뒤에야
+    드러난다. 하위 호환은 호출부가 `DEV_MAJOR`를 명시해서 얻는다([sns.topic_policy]).
+    """
     width = _parse_dimension(media_spec, "width", DEFAULT_WIDTH)
     height = _parse_dimension(media_spec, "height", DEFAULT_HEIGHT)
     if width * 16 != height * 9:
         raise VideoSpecError(f"쇼츠/릴스는 세로 9:16이어야 함: {width}×{height}")
+    sources = square_sources_for(topic_major)
+    method = _parse_method(media_spec.get("method"), "")
     return VideoSpec(
         width=width,
         height=height,
         topic=_require_text(media_spec, "topic", "", MAX_TOPIC_WIDTH),
-        slides=_parse_slides(media_spec),
+        slides=_parse_slides(media_spec, concept_kinds_for(topic_major), sources, method, stage),
         voice=_parse_voice(media_spec),
         background=_parse_color(media_spec, "background", DEFAULT_BACKGROUND),
         background2=_parse_color(media_spec, "background2", DEFAULT_BACKGROUND2),
         foreground=_parse_color(media_spec, "foreground", DEFAULT_FOREGROUND),
         accent=_parse_color(media_spec, "accent", DEFAULT_ACCENT),
+        square_sources=sources,
         character_ref=_optional_str(media_spec, "character_ref", ""),
+        method=method,
         style=_parse_style(media_spec),
     )

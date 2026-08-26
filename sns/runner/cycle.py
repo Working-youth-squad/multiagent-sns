@@ -25,6 +25,7 @@ from langchain_core.language_models import BaseChatModel
 
 from sns.agents.content import ContentRejected, run_content
 from sns.agents.topic import TopicResult, TopicSelectionError, run_topic
+from sns.publish.disclosure import with_ai_disclosure
 from sns.publish.modes import DRAFT_STATUS, PublishMode
 from sns.quality.gate import QualityReport
 from sns.quality.safety import screen_content, screen_text, summarize
@@ -42,6 +43,7 @@ from sns.tools.contracts import (
     ReadStats,
     RenderMedia,
     ResearchTrends,
+    VideoMethod,
 )
 
 # 발행 모드 3분류([sns.publish.modes] 정본): auto·hybrid·manual
@@ -121,6 +123,8 @@ def run_cycle(
     assess_quality: AssessQuality | None = None,
     resolve_media_spec: ResolveMediaSpec | None = None,
     playbook_guidance: str | None = None,
+    topic_major: str,
+    supported_methods: Sequence[VideoMethod] = ("template",),
     channel_brief: str | None = None,
     topic_categories: Sequence[str] | None = None,
     seed_topic: TopicResult | None = None,
@@ -263,6 +267,8 @@ def run_cycle(
                         resolve_media_spec=resolve_media_spec,
                         recent_signatures=recent_signatures,
                         playbook_guidance=playbook_guidance,
+                        topic_major=topic_major,
+                        supported_methods=supported_methods,
                     )
                 )
             except (ContentRejected, CardSpecError, VideoSpecError) as exc:
@@ -326,11 +332,18 @@ def _prepare_target(
     resolve_media_spec: ResolveMediaSpec | None,
     recent_signatures: tuple[frozenset[str], ...],
     playbook_guidance: str | None,
+    topic_major: str,
+    supported_methods: Sequence[VideoMethod],
 ) -> TargetResult:
     fmt = target.content_format
 
     content = run_content(
-        model, topic=topic, content_format=fmt, playbook_guidance=playbook_guidance
+        model,
+        topic=topic,
+        content_format=fmt,
+        playbook_guidance=playbook_guidance,
+        topic_major=topic_major,
+        supported_methods=supported_methods,
     )
     store.log_event(
         cycle_id=cycle_id,
@@ -384,6 +397,9 @@ def _prepare_target(
                 kind="notice",
                 payload={"tool": "resolve_images", "notes": list(resolution.notes)},
             )
+    # AI 생성 표기 — **해소 후 spec을 본다.** if 블록 밖에 두는 이유는 해소기가 없는
+    # 배선에서도 표기가 붙어야 하기 때문이다. 빠지면 표기 없는 합성 영상이 나간다.
+    body = with_ai_disclosure(body, media_spec)
 
     kind = _FORMAT_KIND[fmt]
     media = render_media(media_spec, kind)

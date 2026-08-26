@@ -22,20 +22,20 @@
 """
 
 import io
-import subprocess
-import tempfile
-import wave
 from collections.abc import Callable
-from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from sns.render.code_image import render_code_square
 from sns.render.concept_image import render_concept_square
 from sns.render.fonts import FONT_CANDIDATES, pick_font
 from sns.render.text import wrap_balanced
+from sns.render.video.assemble import (
+    VideoRender,
+    VideoRenderError,
+    assemble_video,
+)
+from sns.render.video.mascot import place_mascot
 from sns.render.video.quality import MAX_DURATION_S
 from sns.render.video.spec import Slide, VideoSpec, VideoSpecError
 from sns.render.video.tts import Synthesize, wav_duration_s
@@ -43,8 +43,10 @@ from sns.render.video.tts import Synthesize, wav_duration_s
 # 쇼츠 최대 길이(초)는 품질 게이트와 **같은 상수**를 쓴다([sns.render.video.quality]).
 # 예전엔 여기에 180.0을 따로 두어, 한쪽만 고치면 렌더는 통과시키고 게이트가 떨어뜨리는
 # 조합이 만들어질 수 있었다.
-__all__ = ["MAX_DURATION_S", "VideoRender", "render_video"]
-FPS = 30
+# VideoRender·VideoRenderError는 [sns.render.video.assemble]로 옮겼지만 여기서 재수출한다
+# — 기존 import 경로(from sns.render.video.renderer import VideoRenderError)가 살아 있어야
+# 호출부·테스트가 안 깨진다.
+__all__ = ["MAX_DURATION_S", "VideoRender", "VideoRenderError", "assemble_video", "render_video"]
 
 # 저장된 사진 바이트를 읽는 seam(FR-M3). 렌더러는 저장소 구현을 모른다 — `synthesize`와 같은 규율.
 FetchImage = Callable[[str], bytes]
@@ -60,22 +62,8 @@ _PILL_PAD_Y_DIV = 60.0
 _LINE_SPACING = 1.2
 _MARGIN_RATIO = 0.065
 _GROUND = (0, 0, 0)
-# 진행바 높이(px, 1080 기준 비율로 환산).
-_BAR_RATIO = 12 / 1920
 # 폰트 후보는 카드와 공유한다([sns.render.fonts]) — 테스트가 monkeypatch로 비우는 지점.
 _FONT_CANDIDATES = FONT_CANDIDATES
-
-
-@dataclass(frozen=True)
-class VideoRender:
-    mp4: bytes
-    duration_s: float
-    # 컷(=슬라이드=화면) 단위 길이. 합이 곧 오디오 길이다.
-    cut_durations_s: tuple[float, ...]
-
-
-class VideoRenderError(RuntimeError):
-    """ffmpeg 합성 실패."""
 
 
 def _pick_font(font_path: str | None) -> tuple[str, str]:
@@ -125,33 +113,45 @@ def _gradient(width: int, height: int, top: str, bottom: str) -> Image.Image:
 
 def _square(slide: Slide, side: int, spec: VideoSpec, mono_path: str | None,
             font_path: str, fetch_image: FetchImage | None) -> Image.Image:  # fmt: skip
-    """가운데 칸 — 코드 → 개념 그림 → 주제 사진 → 그라데이션 순.
+    """가운데 칸 — **팩이 정한 순서**대로 첫 번째로 채워지는 소스를 쓴다(`spec.square_sources`).
 
-    앞의 셋은 우리가 그리거나 못박은 것이라 저작권·네트워크 리스크가 없다. 실사 사진이
-    마지막인 건 추상 개념을 못 그리기 때문이다 — "list vs set"에 전선 사진이 왔다.
+    개발 도메인의 기본 순서는 코드 → 개념 그림 → 주제 사진 → 그라데이션이다. 앞의 셋은
+    우리가 그리거나 못박은 것이라 저작권·네트워크 리스크가 없고, 실사 사진이 마지막인 건
+    추상 개념을 못 그리기 때문이다 — "list vs set"에 전선 사진이 왔다.
+
+    순서를 팩에서 받는 이유: 코드가 없는 도메인은 그 칸이 아예 없고, 사진이 1순위인
+    도메인도 있을 수 있다. 렌더러가 팩을 직접 알지 않도록 파서가 spec에 실어 보낸다.
     """
-    if slide.code.strip():
-        png = render_code_square(
-            slide.code, lang=slide.lang or None, size=side,
-            focus_lines=slide.focus_lines, mono_path=mono_path, font_path=font_path,
-        )  # fmt: skip
-        return Image.open(io.BytesIO(png)).convert("RGB")
-    if slide.concept is not None:
-        png = render_concept_square(
-            slide.concept, size=side, font_path=font_path, mono_path=mono_path
-        )
-        return Image.open(io.BytesIO(png)).convert("RGB")
-    if slide.image_ref:
-        if fetch_image is None:
-            raise VideoSpecError(
-                f"'image_ref'({slide.image_ref})가 있는데 fetch_image seam이 없음 — "
-                "조용히 그라데이션으로 떨어지지 않는다"
+    for source in spec.square_sources:
+        if source == "code" and slide.code.strip():
+            # 지연 import — 코드를 쓰지 않는 도메인이 pygments를 물지 않게 한다
+            # ([sns.render.video.tts]의 google.cloud 지연 import와 같은 규율).
+            from sns.render.code_image import render_code_square
+
+            png = render_code_square(
+                slide.code, lang=slide.lang or None, size=side,
+                focus_lines=slide.focus_lines, mono_path=mono_path, font_path=font_path,
+            )  # fmt: skip
+            return Image.open(io.BytesIO(png)).convert("RGB")
+        if source == "concept" and slide.concept is not None:
+            png = render_concept_square(
+                slide.concept, size=side, font_path=font_path, mono_path=mono_path
             )
-        photo = Image.open(io.BytesIO(fetch_image(slide.image_ref))).convert("RGB")
-        # 저장된 건 이미 정사각이지만, 해상도가 다른 spec에서도 슬롯을 정확히 채우게 맞춘다.
-        if photo.size != (side, side):
-            photo = photo.resize((side, side), Image.Resampling.LANCZOS)
-        return photo
+            return Image.open(io.BytesIO(png)).convert("RGB")
+        if source == "image" and slide.image_ref:
+            if fetch_image is None:
+                raise VideoSpecError(
+                    f"'image_ref'({slide.image_ref})가 있는데 fetch_image seam이 없음 — "
+                    "조용히 그라데이션으로 떨어지지 않는다"
+                )
+            photo = Image.open(io.BytesIO(fetch_image(slide.image_ref))).convert("RGB")
+            # 저장된 건 이미 정사각이지만, 해상도가 다른 spec에서도 슬롯을 정확히 채우게 맞춘다.
+            if photo.size != (side, side):
+                photo = photo.resize((side, side), Image.Resampling.LANCZOS)
+            return photo
+        if source == "gradient":
+            break
+    # 팩이 gradient를 안 적었어도 빈 칸으로 두지 않는다 — 화면에 구멍이 나는 것보다 낫다.
     return _gradient(side, side, spec.background, spec.background2)
 
 
@@ -166,13 +166,44 @@ def _character_badge(png: bytes, size: int) -> Image.Image:
     return badge
 
 
-# 배지 크기·여백 (가로 대비 비율, 1080 → 173px). 우하단 = 자막 아래·진행바 위.
-_BADGE_RATIO = 0.16
+def _paste_mascot(canvas: Image.Image, slide: Slide, spec: VideoSpec, square_x: int,
+                  square_y: int, side: int, fetch_image: FetchImage | None) -> None:  # fmt: skip
+    """채널 캐릭터를 컷 성격에 맞는 자리에 **원형 배지**로 얹는다.
+
+    두 갈래가 합쳐진 자리다: 모양은 `_character_badge`(단색 배경이 상자로 보이는 걸
+    원형 마스크로 없앤다), 자리는 [sns.render.video.mascot]의 컷 성격별 배치다.
+    우하단 고정이 아닌 이유는 정사각 내용이 컷마다 달라서다.
+
+    **코드가 있는 컷은 건너뛴다.** 정사각의 어느 모서리든 코드 줄 위라, 가리면 못 읽는다.
+    사진·개념 그림은 가려도 되지만 코드는 정보 밀도가 다르다.
+
+    캐릭터가 없거나(인터뷰에서 "캐릭터 없음") 되읽기가 실패하면 조용히 건너뛴다 —
+    사진 해소와 같은 폴백 규율이다. 캐릭터 때문에 영상이 죽지 않는다.
+    """
+    if not spec.character_ref or slide.code:
+        return
+    if fetch_image is None:
+        # **배선 실수는 조용히 넘기지 않는다.** 아래 폴백은 런타임 실패(깨진 이미지·저장소
+        # 오류)의 몫이고, seam이 아예 없는 건 부르는 쪽이 틀린 것이다.
+        raise VideoSpecError(
+            f"'character_ref'({spec.character_ref})가 있는데 fetch_image seam이 없음 — "
+            "조용히 캐릭터 없이 렌더하지 않는다"
+        )
+    spot = place_mascot(
+        slide.concept.kind if slide.concept else None,
+        square_x=square_x,
+        square_y=square_y,
+        side=side,
+    )
+    try:
+        badge = _character_badge(fetch_image(spec.character_ref), spot.size)
+    except Exception:
+        return  # 저장소 오류·깨진 이미지 — 캐릭터만 빠지고 영상은 나간다
+    canvas.paste(badge, (spot.x, spot.y), badge)
 
 
 def _frame_png(slide: Slide, spec: VideoSpec, font_path: str, mono_path: str | None,
-               fetch_image: FetchImage | None,
-               character: Image.Image | None = None) -> bytes:  # fmt: skip
+               fetch_image: FetchImage | None) -> bytes:  # fmt: skip
     """컷 1장 — 알약·주제·정사각·자막(+캐릭터 배지)을 검은 바탕에 그린다."""
     width, height = spec.width, spec.height
     top_h = round(height * _TOP_RATIO)
@@ -181,10 +212,9 @@ def _frame_png(slide: Slide, spec: VideoSpec, font_path: str, mono_path: str | N
     fg, accent = _hex_to_rgb(spec.foreground), _hex_to_rgb(spec.accent)
 
     canvas = Image.new("RGB", (width, height), _GROUND)
-    canvas.paste(
-        _square(slide, side, spec, mono_path, font_path, fetch_image),
-        ((width - side) // 2, top_h),
-    )
+    square_x = (width - side) // 2
+    canvas.paste(_square(slide, side, spec, mono_path, font_path, fetch_image), (square_x, top_h))
+    _paste_mascot(canvas, slide, spec, square_x, top_h, side, fetch_image)
     draw = ImageDraw.Draw(canvas)
 
     topic_font = _font(round(width / _TOPIC_DIV), font_path)
@@ -214,50 +244,9 @@ def _frame_png(slide: Slide, spec: VideoSpec, font_path: str, mono_path: str | N
         round(cap_font.size * 1.33), fg,
     )  # fmt: skip
 
-    if character is not None:
-        # 우하단, 진행바 위 — 자막은 하단 밴드 위쪽부터 채우므로 겹칠 일이 거의 없다.
-        bar_h = max(round(height * _BAR_RATIO), 4)
-        x = width - character.width - margin
-        y = height - character.height - margin - bar_h
-        canvas.paste(character, (x, y), character)
-
     buf = io.BytesIO()
     canvas.save(buf, format="PNG", optimize=False, compress_level=6)
     return buf.getvalue()
-
-
-def _concat_wavs(wavs: list[bytes]) -> bytes:
-    """같은 포맷의 WAV들을 프레임 이어붙이기 — ffmpeg 오디오 concat 불필요."""
-    first_params = None
-    frames = b""
-    for wav in wavs:
-        with wave.open(io.BytesIO(wav)) as f:
-            params = (f.getnchannels(), f.getsampwidth(), f.getframerate())
-            if first_params is None:
-                first_params = params
-            elif params != first_params:
-                raise VideoRenderError(f"TTS WAV 포맷 불일치: {first_params} vs {params}")
-            frames += f.readframes(f.getnframes())
-    assert first_params is not None
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as out:
-        out.setnchannels(first_params[0])
-        out.setsampwidth(first_params[1])
-        out.setframerate(first_params[2])
-        out.writeframes(frames)
-    return buf.getvalue()
-
-
-_BITEXACT = (
-    "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact",
-    "-bitexact", "-map_metadata", "-1", "-threads", "1",
-)  # fmt: skip
-
-
-def _run_ffmpeg(cmd: list[str], workdir: Path) -> None:
-    result = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise VideoRenderError(f"ffmpeg 실패(exit {result.returncode}): {result.stderr.strip()}")
 
 
 def render_video(
@@ -279,114 +268,9 @@ def render_video(
         raise VideoSpecError(f"총 길이 {total:.1f}s — 쇼츠 규격(0~{MAX_DURATION_S:.0f}s) 위반")
 
     resolved_font, _ = _pick_font(font_path)
-    bar_h = max(round(spec.height * _BAR_RATIO), 4)
-
-    character: Image.Image | None = None
-    if spec.character_ref:
-        if fetch_image is None:
-            raise VideoSpecError(
-                f"'character_ref'({spec.character_ref})가 있는데 fetch_image seam이 없음 — "
-                "조용히 캐릭터 없이 렌더하지 않는다"
-            )
-        # 컷마다 재호출하지 않는다 — 캐릭터는 영상 내내 같은 배지다.
-        character = _character_badge(
-            fetch_image(spec.character_ref), round(spec.width * _BADGE_RATIO)
-        )
-
-    with tempfile.TemporaryDirectory() as tmp:
-        workdir = Path(tmp)
-
-        # 1패스: 컷당 정지 영상. 줌이 없으므로 오버스캔도 세그먼트 등분도 없다.
-        for i, (slide, duration) in enumerate(zip(spec.slides, durations, strict=True)):
-            (workdir / f"f{i}.png").write_bytes(
-                _frame_png(slide, spec, resolved_font, mono_path, fetch_image, character)
-            )
-            _run_ffmpeg(
-                [
-                    ffmpeg,
-                    "-y",
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-loop",
-                    "1",
-                    "-t",
-                    f"{duration:.3f}",
-                    "-i",
-                    f"f{i}.png",
-                    "-vf",
-                    "format=yuv420p",
-                    "-r",
-                    str(FPS),
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "veryfast",
-                    "-an",
-                    *_BITEXACT,
-                    f"cut{i}.mp4",
-                ],  # fmt: skip
-                workdir,
-            )
-
-        mp4 = _assemble(
-            workdir, cut_count=len(spec.slides), wavs=wavs, total=total,
-            width=spec.width, accent=spec.accent, bar_h=bar_h,
-            ffmpeg=ffmpeg, bgm=bgm, bgm_ext=bgm_ext,
-        )  # fmt: skip
-
-    return VideoRender(mp4=mp4, duration_s=total, cut_durations_s=tuple(durations))
-
-
-def _assemble(
-    workdir: Path,
-    *,
-    cut_count: int,
-    wavs: list[bytes],
-    total: float,
-    width: int,
-    accent: str,
-    bar_h: int,
-    ffmpeg: str,
-    bgm: bytes | None,
-    bgm_ext: str,
-) -> bytes:
-    """2패스 공용부: cut{i}.mp4 → concat + 진행바 + 오디오. 3단·모션 두 템플릿이 쓴다.
-
-    목록은 반드시 1패스가 만든 컷 수와 같아야 한다 — 적게 쓰면 영상만 조용히 잘리고
-    오디오는 그대로라 뒷부분이 정지 화면이 된다.
-    """
-    (workdir / "list.txt").write_text(
-        "".join(f"file 'cut{i}.mp4'\n" for i in range(cut_count)), encoding="utf-8"
+    cut_pngs = [
+        _frame_png(slide, spec, resolved_font, mono_path, fetch_image) for slide in spec.slides
+    ]
+    return assemble_video(
+        cut_pngs, durations, wavs, spec=spec, ffmpeg=ffmpeg, bgm=bgm, bgm_ext=bgm_ext
     )
-    (workdir / "audio.wav").write_bytes(_concat_wavs(wavs))
-
-    cmd = [
-        ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-        "-f", "concat", "-safe", "0", "-i", "list.txt",
-        "-i", "audio.wav",
-        "-f", "lavfi", "-t", f"{total:.3f}",
-        "-i", f"color=c=0x{accent[1:]}:s={width}x{bar_h}:r={FPS}",
-    ]  # fmt: skip
-    # 진행바: 화면 폭짜리 색 소스를 왼쪽 밖에서 밀어넣어 차오르게 한다. drawbox로는
-    # 안 된다 — drawbox 표현식의 `t`는 타임스탬프가 아니라 **선 두께**라 매 프레임
-    # 같은 값이 나와 바가 처음부터 꽉 찬 채로 멈춘다. overlay의 `x`는 `t`가 시각이다.
-    chain = f"[0:v][2:v]overlay=x='-W+W*t/{total:.3f}':y=H-{bar_h}:shortest=1,format=yuv420p[v]"
-    if bgm is not None:
-        (workdir / f"bgm.{bgm_ext}").write_bytes(bgm)
-        cmd += ["-stream_loop", "-1", "-i", f"bgm.{bgm_ext}"]
-        cmd += [
-            "-filter_complex",
-            f"{chain};[1:a]volume=1.0[nar];[3:a]volume=0.12[bg];"
-            "[nar][bg]amix=inputs=2:duration=first:normalize=0[a]",
-            "-map", "[v]", "-map", "[a]",
-        ]  # fmt: skip
-    else:
-        cmd += ["-filter_complex", chain, "-map", "[v]", "-map", "1:a"]
-    cmd += [
-        "-r", str(FPS), "-c:v", "libx264", "-preset", "veryfast",
-        "-c:a", "aac", "-t", f"{total:.3f}",
-        *_BITEXACT, "out.mp4",
-    ]  # fmt: skip
-    _run_ffmpeg(cmd, workdir)
-    return (workdir / "out.mp4").read_bytes()

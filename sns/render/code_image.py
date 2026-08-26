@@ -23,7 +23,10 @@ from pygments.util import ClassNotFound
 
 from sns.render.fonts import FONT_CANDIDATES, MONO_CANDIDATES, pick_font
 
-DEFAULT_SIZE = 940  # 3단 레이아웃의 정사각 변 (1080 - 좌우 여백 70×2)
+# 슬롯 규격은 [sns.render.square]가 정한다 — 여기 두면 개발 전용 모듈이 중립 모듈들의
+# 의존성 뿌리가 된다(코드 없는 도메인도 pygments를 물었다).
+from sns.render.square import BACKGROUND, DEFAULT_SIZE, EDGE
+
 MAX_CODE_LINES = 18  # 이 이상은 정사각에서 읽을 수 없는 크기가 된다
 # 상한이 40일 때 짧은 스니펫(4줄)이 940 정사각의 세로 25%만 쓰고 나머지를 비웠다.
 # 폭이 실제 제약이라(가장 긴 줄) 상한을 올려도 긴 코드는 그대로 작아진다 — 짧은 코드만
@@ -34,8 +37,6 @@ _PAD_RATIO = 0.058  # 정사각 대비 안쪽 여백
 _LINE_SPACING = 1.55
 _DIM_STRENGTH = 0.62  # 초점 밖 줄을 배경 쪽으로 섞는 비율
 
-BACKGROUND = (13, 17, 23)
-EDGE = (48, 58, 72)
 PLAIN = (230, 237, 243)
 
 # github-dark 계열. 없는 토큰은 부모를 타고 올라가 PLAIN으로 수렴한다.

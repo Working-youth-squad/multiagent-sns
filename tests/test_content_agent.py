@@ -11,9 +11,10 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 
-from sns.agents.content import ContentRejected, run_content
+from sns.agents.content import ContentRejected, _system_prompt, run_content
 from sns.agents.topic import TopicResult
 from sns.tools.contracts import ContentFormat
+from sns.topic_policy import DEV_MAJOR
 
 _TOPIC = TopicResult(
     title="파이썬 walrus 연산자",
@@ -57,9 +58,16 @@ def _tool(name: str, args: dict[str, Any]) -> AIMessage:
 
 
 def _full_script(
-    spec: dict[str, object], *, hook: str = "curiosity", body: str = "본문 #개발"
+    spec: dict[str, object],
+    *,
+    hook: str = "curiosity",
+    body: str = "본문 #개발",
+    method: str | None = None,
 ) -> list[AIMessage]:
+    # 영상 포맷은 set_plan이 먼저다 — 실행 방식을 몰래 정하지 못하게 코드가 강제한다.
+    plan = [_tool("set_plan", {"video_method": method})] if method else []
     return [
+        *plan,
         _tool("set_hook", {"pattern": hook}),
         _tool("set_media_spec", {"spec_json": json.dumps(spec, ensure_ascii=False)}),
         AIMessage(content=body),
@@ -67,14 +75,50 @@ def _full_script(
 
 
 def _run(
-    script: list[AIMessage], *, fmt: ContentFormat = "feed_image", guidance: str | None = None
+    script: list[AIMessage],
+    *,
+    fmt: ContentFormat = "feed_image",
+    guidance: str | None = None,
+    methods: tuple[str, ...] = ("template",),
 ) -> Any:
     return run_content(
         ScriptedChatModel(messages=iter(script)),
         topic=_TOPIC,
         content_format=fmt,
         playbook_guidance=guidance,
+        topic_major=DEV_MAJOR,
+        supported_methods=methods,  # type: ignore[arg-type]
     )
+
+
+def test_prompt_drops_code_guidance_for_non_dev_major() -> None:
+    """요리 채널 프롬프트가 코드를 안내하면 정사각에 파이썬이 렌더된다."""
+    dev = _system_prompt(DEV_MAJOR)
+    cooking = _system_prompt("요리")
+
+    assert "pygments" in dev
+    assert "pygments" not in cooking
+    assert "list vs set" in dev
+    assert "list vs set" not in cooking
+
+
+def test_generic_majors_share_policy_but_keep_their_label() -> None:
+    """모르는 주제도 범용 정책을 받되, 프롬프트에는 자기 이름이 들어가야 한다."""
+    cooking = _system_prompt("요리")
+    knitting = _system_prompt("뜨개질")
+
+    for prompt in (cooking, knitting):  # 정책은 같다
+        assert "terminal" not in prompt, "terminal은 개발 전용이다"
+        assert "pygments" not in prompt
+        assert "compare" in prompt  # 범용 개념 그림은 남는다
+
+    assert "요리" in cooking and "뜨개질" not in cooking  # 라벨은 각자다
+    assert "뜨개질" in knitting and "요리" not in knitting
+
+
+def test_prompt_reflects_each_major() -> None:
+    """팩 시절 test_topic_prompt_is_built_from_the_pack이 지키던 계약."""
+    assert "개발자" in _system_prompt(DEV_MAJOR)
 
 
 def test_card_content_ok() -> None:
@@ -85,7 +129,7 @@ def test_card_content_ok() -> None:
 
 
 def test_video_content_ok() -> None:
-    result = _run(_full_script(_VIDEO_SPEC), fmt="shorts")
+    result = _run(_full_script(_VIDEO_SPEC, method="template"), fmt="shorts")
     assert result.hook_pattern == "curiosity"
     assert result.media_spec["slides"]  # type: ignore[index]
 
@@ -143,3 +187,49 @@ def test_video_spec_rejected_for_card_format() -> None:
     ]
     with pytest.raises(ContentRejected):
         _run(script)
+
+
+# ── 제작 방식 확정 (Capability Gate의 에이전트 쪽) ────────────────────
+
+
+def test_plan_error_refuses_unwired_method() -> None:
+    """라우터에 없는 방식은 **대본을 태우기 전에** 끊는다."""
+    from sns.agents.content import _plan_error
+
+    assert _plan_error("generated_scene", ("template",))
+    assert _plan_error("template", ("template", "generated_scene")) is None
+
+
+def test_video_spec_needs_a_plan_first() -> None:
+    """실행 방식을 몰래 정하지 못하게 순서를 강제한다."""
+    script = [
+        _tool("set_hook", {"pattern": "curiosity"}),
+        _tool("set_media_spec", {"spec_json": json.dumps(_VIDEO_SPEC, ensure_ascii=False)}),
+        AIMessage(content="본문 #개발"),
+    ]
+    with pytest.raises(ContentRejected):
+        _run(script, fmt="shorts")
+
+
+def test_card_format_needs_no_plan() -> None:
+    """카드에는 제작 방식이라는 개념이 없다 — 영상에만 순서를 건다."""
+    assert _run(_full_script(_CARD_SPEC)).media_spec == _CARD_SPEC
+
+
+def test_code_stamps_the_method_not_the_llm() -> None:
+    """LLM이 media_spec에 method를 또 쓰면 진실이 둘이 된다 — 코드가 찍는다."""
+    script = [
+        _tool("set_plan", {"video_method": "template"}),
+        _tool("set_hook", {"pattern": "curiosity"}),
+        _tool("set_media_spec", {"spec_json": json.dumps(_VIDEO_SPEC, ensure_ascii=False)}),
+        AIMessage(content="본문 #개발"),
+    ]
+    assert _run(script, fmt="shorts").media_spec["method"] == "template"
+
+
+def test_prompt_lists_only_wired_methods() -> None:
+    """프롬프트는 안내이고 자물쇠는 set_plan이다 — 다만 안내가 틀리면 헛돈다."""
+    from sns.agents.content import _system_prompt
+
+    assert "generated_scene" not in _system_prompt(DEV_MAJOR)
+    assert "scene_prompt" in _system_prompt(DEV_MAJOR, ("template", "generated_scene"))

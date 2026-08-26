@@ -23,7 +23,7 @@ from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 
-from sns.render.video.spec import VideoSpecError, parse_video_spec
+from sns.render.video.spec import VideoSpecError
 from sns.tools.contracts import MediaAsset
 from sns.web.approve.render import render_detail, render_list, render_not_found
 from sns.web.approve.store import ApprovalNotFound, ApprovalStore
@@ -131,18 +131,18 @@ def create_app(store: ApprovalStore, rerender_video: RerenderVideo | None = None
         new_spec = _edited_spec(item.media_spec, dict(form))
         edited_item = replace(item, media_spec=new_spec)  # 오류 시 수정값 유지 재표시
         try:
-            parse_video_spec(new_spec)  # 글자수 상한 등 — 렌더(유료 TTS) 전에 끊는다
-        except VideoSpecError as exc:
-            return HTMLResponse(
-                render_detail(edited_item, rerender_enabled=True, error=str(exc)),
-                status_code=422,
-            )
-
-        try:
             # 렌더·TTS·게이트 어느 실패든 사용자의 수정값과 함께 화면에 표면화한다 —
             # 스택트레이스 500으로 수정 내용을 잃게 하지 않는다.
             asset, quality_status, quality_report = await run_in_threadpool(
                 rerender_video, new_spec
+            )
+        except VideoSpecError as exc:
+            # spec 위반은 **사용자 입력 오류**다(422). 검증을 여기서 흉내내지 않는 이유는
+            # 컷 검증이 주제 대분류에 따라 달라서다([sns.topic_policy]) — 앱은 어느
+            # 채널인지 모르고, 렌더러는 안다. 파서는 TTS보다 먼저 도니 과금도 안 난다.
+            return HTMLResponse(
+                render_detail(edited_item, rerender_enabled=True, error=str(exc)),
+                status_code=422,
             )
         except Exception as exc:  # noqa: BLE001
             return HTMLResponse(
