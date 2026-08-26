@@ -5,7 +5,8 @@ spec에 `style: "motion"`이면 [sns.render.video.media]가 이쪽으로 디스�
 
 화면 문법 (1080×1920):
   - 배경: 해소된 사진/생성 이미지를 풀블리드 크롭, 없으면 그라데이션. 느린 줌(zoompan)
-  - 텍스트: 부제 = 큰 키워드 타이포(중앙 상단), 주제 = 상단 라벨, 나레이션 = 작은 자막
+  - 텍스트: 하단 자막(나레이션) **하나뿐** — 주제·키워드까지 세 군데 얹었더니 화면이
+    글로 덮였다. 내용은 나레이션·음성이, 화면은 이미지가 맡는다
   - 캐릭터(`character_ref`): 우하단에서 바운스 — 결제를 켜고 장면 생성이 붙으면
     배경 자체가 캐릭터 장면이 된다(B 확장: 코드 변경 없이 이미지 소스만 바뀐다)
   - 키워드는 페이드+라이즈로 등장 — 전부 ffmpeg 표현식이라 추가 의존성 0
@@ -49,13 +50,11 @@ from sns.render.video.tts import Synthesize, wav_duration_s
 
 __all__ = ["render_motion_video"]
 
-# 타이포 크기 계수 (가로 ÷ 계수). 키워드가 화면의 주인공이라 3단 주제(13.5)보다 크다.
-_TOPIC_DIV = 24.0  # 상단 라벨 (1080 → 45px)
-_KEYWORD_DIV = 9.0  # 키워드 타이포 (1080 → 120px)
-_CAPTION_DIV = 30.0  # 하단 자막 (1080 → 36px) — 3단(54px)보다 눌러 글 인상을 줄인다
+# 글자는 하단 자막 **하나뿐**이다 — 주제 라벨·키워드 타이포까지 세 군데에 얹었더니
+# 화면이 글로 덮였다(실사용 피드백). 내용 전달은 나레이션이, 화면은 이미지가 맡는다.
+_CAPTION_DIV = 21.0  # 하단 자막 (1080 → 51px) — 유일한 글자라 잘 보이게 키운다
 _MARGIN_RATIO = 0.065
-_KEYWORD_Y = 0.24  # 키워드 블록 시작 높이 비율
-_CAPTION_Y = 0.80
+_CAPTION_Y = 0.76  # 쇼츠 하단 UI(진행바·버튼) 가림 영역 위
 _BADGE_RATIO = 0.20  # 모션 템플릿의 캐릭터는 배지가 아니라 출연자라 3단(0.16)보다 크다
 # 모션 파라미터 — 전부 ffmpeg 표현식 상수.
 _ZOOM_AMOUNT = 0.08  # 컷 동안 1.0 → 1.08
@@ -101,25 +100,16 @@ def _shadowed(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: str, font: o
 
 
 def _text_png(slide: Slide, spec: VideoSpec, font_path: str) -> bytes:
-    """투명 텍스트 레이어 — 통째로 라이즈+페이드되므로 한 장이다."""
+    """투명 텍스트 레이어 — 하단 자막(나레이션) 한 덩어리뿐이다.
+
+    subtitle·topic은 그리지 않는다: spec에는 남아 있지만(3단 템플릿·승인 웹 편집이
+    쓴다) 이 화면 문법에서는 자막 하나가 가독성이 가장 좋았다.
+    """
     width, height = spec.width, spec.height
     margin = round(width * _MARGIN_RATIO)
-    fg, accent = _hex_to_rgb(spec.foreground), _hex_to_rgb(spec.accent)
+    fg = _hex_to_rgb(spec.foreground)
     layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
-
-    topic_font = _font(round(width / _TOPIC_DIV), font_path)
-    left, _, right, _ = draw.textbbox((0, 0), spec.topic, font=topic_font)
-    _shadowed(draw, ((width - round(right - left)) // 2, round(height * 0.055)),
-              spec.topic, topic_font, accent)  # fmt: skip
-
-    kw_font = _font(round(width / _KEYWORD_DIV), font_path)
-    y = round(height * _KEYWORD_Y)
-    line_h = round(kw_font.size * 1.15)
-    for line in _wrap(draw, slide.subtitle, kw_font, width - margin * 2):
-        left, _, right, _ = draw.textbbox((0, 0), line, font=kw_font)
-        _shadowed(draw, ((width - round(right - left)) // 2, y), line, kw_font, fg)
-        y += line_h
 
     cap_font = _font(round(width / _CAPTION_DIV), font_path)
     y = round(height * _CAPTION_Y)

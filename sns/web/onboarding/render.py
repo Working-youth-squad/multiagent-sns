@@ -10,6 +10,7 @@
 
 import json
 from collections.abc import Mapping
+from dataclasses import dataclass
 from html import escape
 
 from sns.goals import GOAL_PRESETS
@@ -24,6 +25,28 @@ from sns.onboarding.store import ChannelRow
 
 TOTAL_STEPS = 5
 SUBS_SEP = "|"  # hidden input에서 세부 주제를 잇는 구분자(쉼표는 직접 입력에 쓰인다)
+
+
+@dataclass(frozen=True)
+class VideoItemView:
+    """영상 관리 탭의 항목 1건 — 대본(script)에서 시작해 렌더를 거쳐 영상(done)이 된다."""
+
+    item_id: str
+    topic: str
+    state: str  # "script"(대본 승인 대기) | "rendering" | "done" | "failed"
+    slides: tuple[tuple[str, str], ...] = ()  # (부제, 나레이션) — 대본 표시용
+    body: str = ""  # 캡션(발행 본문)
+    video_path: str = ""  # done일 때 mp4 로컬 경로 — 앱이 media 라우트로 서빙
+    log_tail: str = ""  # failed일 때 원인
+
+
+@dataclass(frozen=True)
+class ScriptJobView:
+    """새 대본 생성 작업(사이클) 상태 — 아직 DB 항목이 없는 구간의 표시용."""
+
+    state: str  # "running" | "failed"
+    log_tail: str = ""
+
 
 _STYLE = """<style>
 body{font-family:system-ui,-apple-system,"Malgun Gothic",sans-serif;max-width:640px;
@@ -285,8 +308,7 @@ def _summary_card(profile: ChannelProfile) -> str:
         f"<p>주제: {escape(profile.topic_major)} — {escape(', '.join(profile.topic_subs))}<br>"
         f"톤: {escape(TONES[profile.tone])}<br>"
         f"목표: {escape(goal_label)}<br>"
-        f"캐릭터: {escape(CHARACTER_STYLES[profile.character_style])}</p>"
-        f"{_character_block(profile)}</div>"
+        f"캐릭터: {escape(CHARACTER_STYLES[profile.character_style])}</p></div>"
     )
 
 
@@ -355,13 +377,64 @@ def render_create(
     return _page("온보딩 — 컨셉 확정", f"<h1>이렇게 계정을 시작할게요</h1>{body}")
 
 
-def render_channel(channel: ChannelRow, profile: ChannelProfile) -> str:
-    """만들어진 계정의 프로필 화면 — 이후 미세조정은 여기서."""
+_PRE_STYLE = (
+    'style="overflow-x:auto;background:#f6f8fa;padding:.8rem;border-radius:6px;font-size:.8rem"'
+)
+# body 안 meta refresh는 비표준이지만 주요 브라우저 전부에서 동작한다.
+_AUTO_REFRESH = '<meta http-equiv="refresh" content="10">'
+
+
+def _character_card(channel_id: str, profile: ChannelProfile, error: str | None) -> str:
+    """캐릭터 카드 — 현재 이미지 표시 + 스타일 지정 (재)생성."""
+    parts = ['<div class="card"><h3>캐릭터</h3>']
+    if error:
+        parts.append(f'<p class="error">{escape(error)}</p>')
+    if profile.character_image_url is not None:
+        parts.append(
+            f'<img src="/channels/{channel_id}/character/image" alt="채널 캐릭터" '
+            'style="width:180px;border-radius:8px">'
+        )
+        button = "다시 만들기"
+    else:
+        parts.append("<p class='meta'>아직 캐릭터가 없어요. 없으면 영상 배경은 주제에 맞는 "
+                     "이미지로 대체됩니다.</p>")  # fmt: skip
+        button = "캐릭터 만들기"
+    styles = "".join(
+        f'<label class="choice"><input type="radio" name="style" '
+        f'value="{key}"{" checked" if key == profile.character_style else ""}>'
+        f"{escape(label)}</label>"
+        for key, label in CHARACTER_STYLES.items()
+        if key != "none"
+    )
+    parts.append(
+        f'<form method="post" action="/channels/{channel_id}/character"{_SLOW_SUBMIT}>'
+        f'{styles}<button type="submit">{button}</button></form></div>'
+    )
+    return "".join(parts)
+
+
+def render_channel(
+    channel: ChannelRow,
+    profile: ChannelProfile,
+    *,
+    video_enabled: bool = False,
+    character_error: str | None = None,
+) -> str:
+    """만들어진 계정의 프로필 화면 — 캐릭터·미세조정, 영상은 관리 탭으로."""
     note = f"<p>운영자 지침: {escape(profile.note)}</p>" if profile.note else ""
+    video_tab = (
+        f'<a href="/channels/{channel.channel_id}/videos">'
+        '<button type="button">영상 관리</button></a> '
+        if video_enabled
+        else ""
+    )
     body = (
         f'<p class="meta">{escape(channel.platform)} · {escape(channel.handle)} · '
         f"{escape(channel.mode)}</p>"
-        f"{_summary_card(profile)}{_recommendation_block(profile.recommendation)}{note}"
+        f"{video_tab}"
+        f"{_summary_card(profile)}"
+        f"{_character_card(channel.channel_id, profile, character_error)}"
+        f"{_recommendation_block(profile.recommendation)}{note}"
         '<div class="card"><h3>미세 조정</h3>'
         "<p class='meta'>바꾸고 싶은 점을 한 줄로 적어주세요. 프로필에 반영됩니다.</p>"
         f'<form method="post" action="/channels/{channel.channel_id}/refine">'
@@ -373,10 +446,75 @@ def render_channel(channel: ChannelRow, profile: ChannelProfile) -> str:
     return _page(f"계정 — {channel.handle}", f"<h1>계정이 만들어졌어요</h1>{body}")
 
 
-def _character_block(profile: ChannelProfile) -> str:
-    if profile.character_image_url is None:
-        return ""
-    return f'<p class="meta">캐릭터 이미지: {escape(profile.character_image_url)}</p>'
+def _script_card(item: VideoItemView, channel_id: str) -> str:
+    """항목 1건 카드 — 대본은 표로, 완성 영상은 플레이어로."""
+    parts = [f'<div class="card"><h3>{escape(item.topic)}</h3>']
+    if item.state == "script":
+        parts.append("<p class='meta'>대본 승인 대기 — 확인 후 영상으로 만드세요.</p>")
+    elif item.state == "rendering":
+        parts.append("<p>영상 렌더 중… 10초마다 자동 새로고침됩니다.</p>")
+    elif item.state == "failed":
+        parts.append('<p class="error">렌더 실패 — 로그 끝부분:</p>')
+        parts.append(f"<pre {_PRE_STYLE}>{escape(item.log_tail)}</pre>")
+    if item.slides:
+        rows = "".join(
+            f"<tr><td style='padding:.3rem .6rem;white-space:nowrap'><b>{escape(s)}</b></td>"
+            f"<td style='padding:.3rem .6rem'>{escape(n)}</td></tr>"
+            for s, n in item.slides
+        )
+        parts.append(f"<table style='border-collapse:collapse'>{rows}</table>")
+    if item.body:
+        parts.append(f'<p class="meta">캡션: {escape(item.body[:200])}</p>')
+    if item.state == "done":
+        parts.append(
+            f'<video controls style="width:100%;max-height:480px" '
+            f'src="/channels/{channel_id}/videos/{item.item_id}/media"></video>'
+        )
+    if item.state in ("script", "failed"):
+        label = "영상 만들기" if item.state == "script" else "다시 렌더"
+        parts.append(
+            f'<form method="post" action="/channels/{channel_id}/videos/{item.item_id}/render">'
+            f'<button type="submit">{label}</button></form>'
+        )
+    parts.append("</div>")
+    return "".join(parts)
+
+
+def render_videos(
+    channel: ChannelRow,
+    items: tuple[VideoItemView, ...],
+    script_job: ScriptJobView | None,
+) -> str:
+    """영상 관리 탭 — 새 대본 생성부터 대본 승인 → 렌더 → 완성 영상까지 한 화면."""
+    parts = []
+    refreshing = script_job is not None and script_job.state == "running"
+    refreshing = refreshing or any(i.state == "rendering" for i in items)
+    if refreshing:
+        parts.append(_AUTO_REFRESH)
+    parts.append('<div class="card"><h3>새 대본 만들기</h3>')
+    if script_job is not None and script_job.state == "running":
+        parts.append("<p>대본 생성 중… (트렌드 조사 + 에이전트, 1~2분)</p>")
+    else:
+        if script_job is not None and script_job.state == "failed":
+            parts.append('<p class="error">대본 생성 실패 — 로그 끝부분:</p>')
+            parts.append(f"<pre {_PRE_STYLE}>{escape(script_job.log_tail)}</pre>")
+        parts.append(
+            "<p class='meta'>영상을 바로 만들지 않아요 — 대본이 먼저 나오고, "
+            "확인 후 영상으로 만듭니다.</p>"
+        )
+    disabled = " disabled" if script_job is not None and script_job.state == "running" else ""
+    parts.append(
+        f'<form method="post" action="/channels/{channel.channel_id}/videos/script">'
+        f'<button type="submit"{disabled}>새 대본 만들기</button></form></div>'
+    )
+    if not items:
+        parts.append('<p class="empty">아직 만든 대본이 없습니다.</p>')
+    parts.extend(_script_card(i, channel.channel_id) for i in items)
+    parts.append(
+        f'<a href="/channels/{channel.channel_id}">'
+        '<button class="secondary" type="button">← 계정으로</button></a>'
+    )
+    return _page(f"영상 관리 — {channel.handle}", f"<h1>영상 관리</h1>{''.join(parts)}")
 
 
 def _recommendation_block(recommendation: Mapping[str, object] | None) -> str:

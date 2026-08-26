@@ -19,14 +19,20 @@
 import json
 from collections.abc import Callable, Mapping
 from dataclasses import replace
+from pathlib import Path
+from typing import Protocol
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 from fastapi import FastAPI, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from sns.onboarding.profile import ChannelProfile, ProfileError, parse_profile
-from sns.onboarding.store import OnboardingStore
+from sns.onboarding.store import ChannelRow, OnboardingStore
 from sns.web.onboarding.render import (
     SUBS_SEP,
+    ScriptJobView,
+    VideoItemView,
     render_channel,
     render_channels,
     render_create,
@@ -34,11 +40,25 @@ from sns.web.onboarding.render import (
     render_link,
     render_not_found,
     render_step,
+    render_videos,
 )
 
 RecommendFn = Callable[[ChannelProfile], Mapping[str, object] | None]
 RefineFn = Callable[[ChannelProfile, str], ChannelProfile]
 CharacterFn = Callable[[ChannelProfile], ChannelProfile]
+
+
+class VideoManager(Protocol):
+    """영상 관리 탭의 백엔드 — 대본 생성·렌더 기동과 항목 조회. 배선은 호출자 몫.
+
+    start_*는 이미 돌고 있으면 무시(중복 클릭·새로고침 재전송 방어). 항목의
+    video_path만 파일 서빙에 쓴다 — 사용자 입력 경로를 서빙하는 통로가 없다.
+    """
+
+    def start_script(self, handle: str) -> None: ...
+    def start_render(self, handle: str, item_id: str) -> None: ...
+    def items(self, handle: str) -> tuple[VideoItemView, ...]: ...
+    def script_job(self, handle: str) -> ScriptJobView | None: ...
 
 
 def _account_state(platform: str, handle: str) -> dict[str, str]:
@@ -68,8 +88,12 @@ def create_app(
     recommend_fn: RecommendFn | None = None,
     refine_fn: RefineFn | None = None,
     ensure_character_fn: CharacterFn | None = None,
+    video_manager: VideoManager | None = None,
 ) -> FastAPI:
     app = FastAPI(title="온보딩 인터뷰")
+
+    def _find_channel(channel_id: str) -> ChannelRow | None:
+        return next((c for c in store.list_channels() if c.channel_id == channel_id), None)
 
     @app.get("/", response_class=HTMLResponse)
     def entry() -> HTMLResponse:
@@ -271,11 +295,105 @@ def create_app(
 
     @app.get("/channels/{channel_id}", response_model=None)
     def channel_detail(channel_id: str) -> HTMLResponse | RedirectResponse:
-        channel = next((c for c in store.list_channels() if c.channel_id == channel_id), None)
+        channel = _find_channel(channel_id)
         profile = store.latest_profile(channel_id)
         if channel is None or profile is None:
             return HTMLResponse(render_not_found(), status_code=404)
-        return HTMLResponse(render_channel(channel, profile))
+        return HTMLResponse(
+            render_channel(channel, profile, video_enabled=video_manager is not None)
+        )
+
+    @app.post("/channels/{channel_id}/character", response_model=None)
+    def make_character(channel_id: str, style: str = Form(...)) -> HTMLResponse | RedirectResponse:
+        """캐릭터 (재)생성 — 사용자가 스타일을 지정한다. 실패는 화면에 표면화한다."""
+        channel = _find_channel(channel_id)
+        profile = store.latest_profile(channel_id)
+        if channel is None or profile is None or ensure_character_fn is None:
+            return HTMLResponse(render_not_found(), status_code=404)
+        # URL을 비워야 ensure가 재생성한다 — 재생성은 이 명시적 경로로만.
+        blank = replace(
+            profile, character_style=style, character_image_url=None, character_checksum=None
+        )
+        try:
+            updated = ensure_character_fn(blank)
+        except (ProfileError, KeyError) as e:
+            return HTMLResponse(
+                render_channel(
+                    channel,
+                    profile,
+                    video_enabled=video_manager is not None,
+                    character_error=f"잘못된 스타일: {e}",
+                ),  # fmt: skip
+                status_code=422,
+            )
+        except Exception as e:  # 유료 생성 실패(키·할당량·게이트) — 조용히 삼키지 않는다
+            return HTMLResponse(
+                render_channel(
+                    channel,
+                    profile,
+                    video_enabled=video_manager is not None,
+                    character_error=f"캐릭터 생성 실패 — {e}",
+                ),  # fmt: skip
+                status_code=502,
+            )
+        store.save_profile(channel_id, updated)  # 새 revision
+        return RedirectResponse(f"/channels/{channel_id}", status_code=303)
+
+    @app.get("/channels/{channel_id}/character/image", response_model=None)
+    def character_image(channel_id: str) -> FileResponse | HTMLResponse:
+        """캐릭터 PNG 서빙 — 브라우저는 file:// URI를 못 연다(승인 웹 media와 같은 이유)."""
+        profile = store.latest_profile(channel_id)
+        url = profile.character_image_url if profile is not None else None
+        if url is None:
+            return HTMLResponse(render_not_found(), status_code=404)
+        path = Path(url2pathname(urlparse(url).path)) if url.startswith("file://") else Path(url)
+        if not path.exists():
+            return HTMLResponse(render_not_found(), status_code=404)
+        return FileResponse(path, media_type="image/png")
+
+    @app.get("/channels/{channel_id}/videos", response_model=None)
+    def videos_tab(channel_id: str) -> HTMLResponse:
+        channel = _find_channel(channel_id)
+        if channel is None or video_manager is None:
+            return HTMLResponse(render_not_found(), status_code=404)
+        return HTMLResponse(
+            render_videos(
+                channel,
+                video_manager.items(channel.handle),
+                video_manager.script_job(channel.handle),
+            )
+        )
+
+    @app.post("/channels/{channel_id}/videos/script", response_model=None)
+    def start_script(channel_id: str) -> HTMLResponse | RedirectResponse:
+        """새 대본 생성 — 영상은 만들지 않는다(대본 승인 후 렌더)."""
+        channel = _find_channel(channel_id)
+        if channel is None or video_manager is None:
+            return HTMLResponse(render_not_found(), status_code=404)
+        video_manager.start_script(channel.handle)
+        return RedirectResponse(f"/channels/{channel_id}/videos", status_code=303)
+
+    @app.post("/channels/{channel_id}/videos/{item_id}/render", response_model=None)
+    def start_render(channel_id: str, item_id: str) -> HTMLResponse | RedirectResponse:
+        """대본 수락 → 해당 항목만 영상으로 렌더."""
+        channel = _find_channel(channel_id)
+        if channel is None or video_manager is None:
+            return HTMLResponse(render_not_found(), status_code=404)
+        if not any(i.item_id == item_id for i in video_manager.items(channel.handle)):
+            return HTMLResponse(render_not_found(), status_code=404)
+        video_manager.start_render(channel.handle, item_id)
+        return RedirectResponse(f"/channels/{channel_id}/videos", status_code=303)
+
+    @app.get("/channels/{channel_id}/videos/{item_id}/media", response_model=None)
+    def serve_video(channel_id: str, item_id: str) -> FileResponse | HTMLResponse:
+        """완성 항목의 mp4 서빙 — 경로는 사용자 입력이 아니라 매니저 항목에서 온다."""
+        channel = _find_channel(channel_id)
+        if channel is None or video_manager is None:
+            return HTMLResponse(render_not_found(), status_code=404)
+        item = next((i for i in video_manager.items(channel.handle) if i.item_id == item_id), None)
+        if item is None or not item.video_path or not Path(item.video_path).exists():
+            return HTMLResponse(render_not_found(), status_code=404)
+        return FileResponse(Path(item.video_path), media_type="video/mp4")
 
     @app.post("/channels/{channel_id}/refine", response_model=None)
     def refine(channel_id: str, note: str = Form(default="")) -> HTMLResponse | RedirectResponse:

@@ -84,8 +84,11 @@ def test_motion_character_bounces() -> None:
     y = spec.height - margin - bar_h - 14  # 정지 시 배지 하단에서 14px 안쪽
     rest = _frame_at(render.mp4, 0.81).getpixel((x, y))
     lifted = _frame_at(render.mp4, 0.40).getpixel((x, y))
-    assert rest[1] > 150, f"정지 시점에 배지가 없음: {rest}"
-    assert lifted[1] < 120, f"최고점에도 배지가 그대로 — 움직임 없음: {lifted}"
+    # 라임 판정: 초록이 지배(G 높고 R 낮음). 배경 팔레트가 바뀌어도 흔들리지 않는다.
+    assert rest[1] > 150 and rest[0] < 120, f"정지 시점에 배지가 없음: {rest}"
+    assert not (lifted[1] > 150 and lifted[0] < 120), (
+        f"최고점에도 배지가 그대로 — 움직임 없음: {lifted}"
+    )
 
 
 def test_media_binding_dispatches_by_style() -> None:

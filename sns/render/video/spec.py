@@ -50,11 +50,12 @@ MAX_IMAGE_QUERY_LEN = 60
 MAX_IMAGE_PROMPT_LEN = 200
 
 DEFAULT_VOICE = "ko-KR-Chirp3-HD-Charon"
-# 코드가 없는 컷의 정사각을 채우는 그라데이션 + 텍스트/액센트 (다크 브랜드 팔레트).
-DEFAULT_BACKGROUND = "#0d1117"
-DEFAULT_BACKGROUND2 = "#1b2a4a"
-DEFAULT_FOREGROUND = "#e6edf3"
-DEFAULT_ACCENT = "#58a6ff"
+# 코드가 없는 컷의 정사각을 채우는 그라데이션 + 텍스트/액센트 (화이트 모드 기본).
+# 다크 팔레트는 classic 템플릿([sns.render.video.classic.spec])에 보존돼 있다.
+DEFAULT_BACKGROUND = "#ffffff"
+DEFAULT_BACKGROUND2 = "#dbe4f0"
+DEFAULT_FOREGROUND = "#1f2328"
+DEFAULT_ACCENT = "#0969da"
 
 
 class VideoSpecError(ValueError):

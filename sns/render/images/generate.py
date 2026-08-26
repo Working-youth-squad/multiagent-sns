@@ -51,11 +51,11 @@ DEFAULT_MODEL = "google:gemini-3.1-flash-lite-image"
 MAX_IMAGE_BYTES = 12_000_000
 TIMEOUT_S = 120.0  # 이미지 생성은 텍스트보다 훨씬 느리다
 
-# 우리 화면에 맞는 화풍 — 940 정사각, 어두운 배경, 글자 없음.
+# 우리 화면에 맞는 화풍 — 940 정사각, 밝은 배경(화이트 모드), 글자 없음.
 STYLE_RULES: Sequence[str] = (
     "square 1:1 composition",
     "flat vector illustration",
-    "dark background #0d1117",
+    "clean white background",
     "muted blue and grey palette with one accent",
     "minimal, no text, no letters, no numbers, no watermark, no logos",
 )

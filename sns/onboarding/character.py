@@ -44,22 +44,36 @@ _STYLE_RULES: dict[str, tuple[str, ...]] = {
 
 GenerateImage = Callable[..., bytes]
 
-# 캐릭터 레퍼런스 장면용 — 영상 정사각 규칙(다크 배경·글자 없음)에 캐릭터 유지를 얹는다.
+# 캐릭터 레퍼런스 장면용 — 영상 정사각 규칙(밝은 배경·글자 없음)에 캐릭터 유지를 얹는다.
 SCENE_RULES: tuple[str, ...] = (
     "feature the exact mascot character from the reference image as the main subject",
     "keep the character's design, colors and proportions identical to the reference",
     "square 1:1 composition",
-    "dark background #0d1117",
+    "clean white background",
     "minimal, no text, no letters, no numbers, no watermark, no logos",
 )
 
 
+# 게이트([sns.render.images.gate])가 영문만 받는다 — 고정 대분류의 영문 매핑.
+_MAJOR_EN: dict[str, str] = {
+    "개발": "programming and tech",
+    "요리": "cooking and food",
+    "음악": "music",
+    "춤": "dance",
+}
+
+
 def character_subject(profile: ChannelProfile) -> str:
-    """생성 프롬프트의 주제부 — 채널 주제가 캐릭터 정체성에 스며들게."""
-    return (
-        f"{profile.topic_major} 주제({', '.join(profile.topic_subs)}) SNS 채널을 "
-        "대표하는 마스코트 캐릭터"
-    )
+    """생성 프롬프트의 주제부 — **영문**이어야 한다.
+
+    실사고: 한글 subject가 게이트("검색어는 영문이어야 함")에 막혀 캐릭터 생성이
+    온보딩 내내 조용히 실패했다. 고정 대분류는 매핑, 직접 입력 주제는 영문이면
+    그대로, 한글이면 일반 문구로 폴백한다.
+    """
+    major = profile.topic_major
+    theme = _MAJOR_EN.get(major) or (major if major.isascii() else None)
+    about = f" for a {theme} social media channel" if theme else " for a social media channel"
+    return f"a cute original mascot character{about}"
 
 
 def ensure_character(

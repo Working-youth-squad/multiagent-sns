@@ -24,6 +24,8 @@ instagram→reels) — 조립은 scripts/e2e_youtube_pipeline.py에서 검증된
 """
 
 import argparse
+import hashlib
+import json
 import os
 import sys
 from collections.abc import Mapping
@@ -42,6 +44,7 @@ from sns.publish.runner import run_pending_publications
 from sns.quality.gate import QualityCheck, QualityReport, check_card
 from sns.render.card.media import CardRenderMedia
 from sns.render.card.spec import parse_card_spec
+from sns.render.images.generate import generate_image
 from sns.render.images.resolve import ImageResolution, resolve_images
 from sns.render.video.media import VideoRenderMedia
 from sns.render.video.quality import check_video
@@ -51,6 +54,7 @@ from sns.runner.cycle import AssessQuality, CycleTarget, ResolveMediaSpec, run_c
 from sns.runner.store import PgCycleStore
 from sns.tools.contracts import ContentFormat, MediaAsset, MediaKind, RenderMedia
 from sns.tools.fakes import FakePublish, FakeReadStats
+from sns.web.approve.store import ApprovalNotFound, PgApprovalStore
 
 OUT = Path(__file__).parent / "out"
 ENV_FILE = Path(__file__).parent.parent / ".env"
@@ -108,6 +112,62 @@ def make_video_gate(media_store: DirMediaStore, ffprobe: str, ffmpeg: str) -> As
     return assess
 
 
+# 대본 단계의 자리표시 자산 URL — --render-item이 진짜 미디어로 갱신하기 전의 표식.
+PENDING_URL = "pending://script-approval"
+
+
+def placeholder_render(media_spec: Mapping[str, object], kind: MediaKind) -> MediaAsset:
+    """--script-only의 렌더 자리표시 — 렌더 없이 원장 FK 사슬(자산→발행)만 세운다."""
+    checksum = hashlib.sha256(
+        json.dumps(media_spec, sort_keys=True, ensure_ascii=False).encode()
+    ).hexdigest()
+    return MediaAsset(kind=kind, storage_url=PENDING_URL, checksum=checksum)
+
+
+def render_item(
+    conn: psycopg.Connection,
+    item_id: str,
+    *,
+    media_store: "DirMediaStore",
+    renderer: RenderMedia,
+    assess: AssessQuality | None,
+    resolve: ResolveMediaSpec,
+    fmt: ContentFormat,
+) -> int:
+    """수락된 대본 1건 → 이미지 해소 → 렌더 → 게이트 → 원장 갱신 (사이클 없음)."""
+    row = conn.execute("SELECT media_spec FROM content_item WHERE id = %s", (item_id,)).fetchone()
+    if row is None or not isinstance(row[0], Mapping):
+        print(f"중단: content_item {item_id!r} 없음 또는 media_spec 비어 있음")
+        return 1
+
+    resolution = resolve(row[0])
+    for note in resolution.notes:
+        print(f"  ⚠ {note}")
+    media = renderer(resolution.media_spec, "video")
+    report: Mapping[str, object] | None = None
+    quality_status = "needs_review"
+    if assess is not None:
+        gate = assess(media_spec=resolution.media_spec, media=media, content_format=fmt)
+        quality_status, report = gate.status, gate.to_json()
+    try:
+        # 승인 웹 재렌더와 같은 원장 경로 — 항목은 종결되지 않고 다시 승인 대기가 된다.
+        PgApprovalStore(conn).update_media(
+            item_id,
+            media_spec=resolution.media_spec,
+            storage_url=media.storage_url,
+            checksum=media.checksum,
+            quality_status=quality_status,
+            quality_report=report,
+        )
+    except ApprovalNotFound:
+        print(f"중단: {item_id!r}가 승인 대기 목록에 없음 — 이미 처리됐거나 hybrid가 아님")
+        return 1
+    print(f"  품질: {quality_status}")
+    for p in media_store.saved:
+        print(f"  렌더 산출물: {p}")
+    return 0 if quality_status == "passed" else 1
+
+
 def main() -> int:
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
@@ -126,6 +186,14 @@ def main() -> int:
     )  # fmt: skip
     parser.add_argument("--ffmpeg", default="ffmpeg", help="ffmpeg 실행 파일 경로")
     parser.add_argument("--font", default=None, help="한글 TTF 경로 (미지정 시 자동 탐색)")
+    parser.add_argument(
+        "--script-only", action="store_true",
+        help="대본까지만 만든다 — 렌더·이미지 해소(과금) 없이 content_item을 승인 대기로 적재",
+    )  # fmt: skip
+    parser.add_argument(
+        "--render-item", default=None, metavar="CONTENT_ITEM_ID",
+        help="--script-only로 만든 대본을 영상으로 렌더해 원장을 갱신한다 (사이클 없음)",
+    )  # fmt: skip
     args = parser.parse_args()
     handle = args.handle
 
@@ -161,10 +229,14 @@ def main() -> int:
         print(f"캐릭터: {profile.character_image_url or '없음'}")
         print(f"brief :\n{brief}\n")
 
+        if (args.script_only or args.render_item) and fmt == "feed_image":
+            print("중단: --script-only / --render-item은 영상 포맷 전용입니다")
+            return 1
+
         media_store = DirMediaStore(OUT)
         font = find_font(args.font)
         renderer: RenderMedia
-        assess: AssessQuality
+        assess: AssessQuality | None
         resolve_spec: ResolveMediaSpec | None = None
 
         if fmt == "feed_image":
@@ -188,24 +260,43 @@ def main() -> int:
             )
             assess = make_video_gate(media_store, ffprobe, ffmpeg)
 
-            # 캐릭터가 있으면: 장면 생성 레퍼런스 + spec에 character_ref(코너 배지) 주입.
+            # 캐릭터가 있으면 장면 생성 레퍼런스 + spec에 character_ref(코너 배지) 주입,
+            # 없으면 **일반 생성 이미지로 대체**한다 — 캐릭터 미선택이 글자만 남은
+            # 영상(그라데이션 배경)이 되지 않게(image_query의 스톡 폴백은 그대로).
             character_url = profile.character_image_url
-            generate = None
             if character_url is not None:
                 generate = make_scene_generate(_read_file_uri(character_url))
+            else:
+                generate = generate_image
 
             style = args.style
 
             def resolve_video_spec(spec: Mapping[str, object]) -> ImageResolution:
                 res = resolve_images(spec, store=media_store, generate=generate)
+                return ImageResolution({**res.media_spec, **_extras()}, res.notes)
+
+            def _extras() -> dict[str, object]:
                 extra: dict[str, object] = {}
                 if style == "motion":
                     extra["style"] = "motion"
                 if character_url is not None:
                     extra["character_ref"] = character_url
-                return ImageResolution({**res.media_spec, **extra}, res.notes)
+                return extra
 
             resolve_spec = resolve_video_spec
+
+            if args.render_item:
+                return render_item(
+                    conn, args.render_item,
+                    media_store=media_store, renderer=renderer, assess=assess,
+                    resolve=resolve_video_spec, fmt=fmt,
+                )  # fmt: skip
+            if args.script_only:
+                # 대본 단계는 렌더·이미지 해소(과금)를 하지 않는다 — 자리표시 자산만
+                # 적재하고, 수락 시 --render-item이 진짜 미디어로 갱신한다.
+                renderer = placeholder_render
+                assess = None
+                resolve_spec = lambda spec: ImageResolution({**spec, **_extras()})  # noqa: E731
 
         # 모션 스타일이면 에이전트에게 화면 문법을 알린다 — 코드/도해 컷은 모션 화면에서
         # 그라데이션으로 강등되므로, 애초에 이미지 장면으로 쓰게 유도한다(soft 지침).
@@ -213,7 +304,8 @@ def main() -> int:
         if fmt != "feed_image" and args.style == "motion":
             playbook = brief + (
                 "\n영상 화면은 모션 그래픽 스타일이다: code와 concept는 쓰지 말고, "
-                "컷마다 image_query(실사 검색어) 또는 image_prompt로 배경 장면을 지정하라."
+                "컷마다 image_query(실사 검색어) 또는 image_prompt로 배경 장면을 지정하라. "
+                "화면 글자는 최소로 — subtitle은 2~4단어 키워드, narration은 짧은 한 문장."
             )
 
         # 프로필 맞춤 트렌드 조립은 트렌드 담당 몫 — 완성되면 이 줄만 교체한다.
