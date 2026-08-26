@@ -1,5 +1,6 @@
-%% multiagent-sns — 운영자 유저 플로우 (코드 기준 · main 19f1466 · 2026-08-26 동기화)
-%% 실제 화면은 둘뿐이다: 온보딩 인터뷰 웹(:8002)과 hybrid 승인 웹(:8001).
+%% multiagent-sns — 운영자 유저 플로우 (코드 기준 · main b020a84 · 2026-08-27 동기화)
+%% 화면은 셋이다: 온보딩 인터뷰 웹(:8002) · hybrid 승인 웹(:8001) · 키워드 챗봇(:8003).
+%% 셋은 별개 프로세스라 주소가 다르다 — 포트는 설계가 아니라 만들어진 순서다.
 %% 나머지 운영 동작은 CLI(scripts/)와 Discord 알림으로 이뤄진다.
 %% 점선(planned) = 아직 코드가 없는 계획 항목.
 flowchart TD
@@ -28,6 +29,9 @@ flowchart TD
 
     DETAIL --> OPS{"운영 — 상시 스케줄러 없음, CLI로 사이클을 부른다"}
     OPS --> CYCLE["uv run python scripts/run_profile_cycle.py 핸들<br/>최신 프로필 → goal_ref·categories·brief를 사이클에 주입"]
+    OPS --> CHAT["키워드 챗봇 :8003 — run_chat_web.py<br/>대화로 키워드 좁히기 → 포맷·제작방식 확정 (FR-W6)"]
+    CHAT -->|"주제 확정 = 시드 (FR-W5)"| CYCLE
+    CHAT --> EXPORT["GET /export/:id — 사람이 직접 올릴 원고<br/>캡션 전문 + 미디어 첨부 (승인 전이면 경고)"]
     CYCLE --> MODE{"채널 mode"}
 
     MODE -->|"auto"| AUTORUN["초안 자동 approved → 발행 러너가 종결까지"]
@@ -38,6 +42,9 @@ flowchart TD
     APPROVE -->|"반려"| REJECTED["content_item=rejected + publication=skipped<br/>즉시 종결"]
     APPROVED --> RUNNER
     AUTORUN --> RUNNER["run_pending_publications — auto·hybrid만"]
+    RUNNER --> METRICS["run_metrics_poll.py — 발행 후 6·24·72h<br/>작업 스케줄러가 시간마다 부른다 (상주 아님)"]
+    METRICS --> REWARD["run_reward_batch.py → reward · topic_stats"]
+    REWARD --> NOTE["run_analysis_note.py → analysis_note · playbook<br/>검증기 통과분만 저장"]
 
     ASSIGN --> HUMAN["사람이 직접 작성 → 플랫폼 앱에서 직접 발행"]
     HUMAN --> REGISTER["manual_register.py --external-post-id<br/>manual 채널에만 등록 · 같은 post id 재등록은 멱등"]
