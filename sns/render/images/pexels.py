@@ -14,7 +14,7 @@ import urllib.parse
 import urllib.request
 from urllib.parse import urlparse
 
-from sns.net.http import DEFAULT_OPENER, Opener, fetch_bytes
+from sns.net.http import DEFAULT_OPENER, USER_AGENT, Opener, fetch_bytes
 from sns.render.images.gate import StockImage, screen_query
 
 ENV_PEXELS_API_KEY = "PEXELS_API_KEY"
@@ -26,8 +26,8 @@ MAX_IMAGE_BYTES = 12_000_000
 DEFAULT_LIMIT = 15
 TIMEOUT_S = 15.0
 # Cloudflare가 urllib 기본 UA("Python-urllib/3.x")를 error 1010으로 막는다. 키가 맞아도
-# 403이 떨어져 "키가 잘못됐나"로 오해하기 딱 좋은 실패라, UA를 명시해 못박는다.
-USER_AGENT = "multiagent-sns/0.1 (+https://github.com/Working-youth-squad/multiagent-sns)"
+# 403이 떨어져 "키가 잘못됐나"로 오해하기 딱 좋은 실패라, UA를 명시해 못박는다
+# (값은 [sns.net.http] 단일 출처).
 # 940 정사각에 쓸 거라 original(10MB+)까지 갈 이유가 없다. 앞에서부터 있는 것을 쓴다.
 _SRC_PREFERENCE = ("large2x", "large", "original", "medium")
 

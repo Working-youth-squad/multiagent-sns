@@ -16,15 +16,15 @@ Reddit도 후보였지만 무인증 요청이 403으로 막힌다(실측) — OA
 import json
 from collections.abc import Iterable
 
-from sns.net.http import DEFAULT_OPENER, MAX_RESPONSE_BYTES, Opener, fetch_bytes
+from sns.net.http import DEFAULT_OPENER, MAX_RESPONSE_BYTES, USER_AGENT, Opener, fetch_bytes
 
 HN_URL = "https://hn.algolia.com/api/v1/search"
 LOBSTERS_URL = "https://lobste.rs/hottest.json"
 # 앞면에 갓 올라온 저점수 글은 트렌드가 아니다 — 주제로 쓰면 아무도 모르는 얘기가 된다.
 MIN_HN_POINTS = 100
 TIMEOUT_S = 10.0
-# Lobsters는 UA 없는 요청을 차단하고, Algolia도 명시하는 편이 안전하다.
-USER_AGENT = "multiagent-sns/0.1 (+https://github.com/Working-youth-squad/multiagent-sns)"
+# Lobsters는 UA 없는 요청을 차단하고, Algolia도 명시하는 편이 안전하다
+# (값은 [sns.net.http] 단일 출처).
 
 
 def _ordered_unique(titles: Iterable[str]) -> tuple[str, ...]:
