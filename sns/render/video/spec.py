@@ -145,6 +145,7 @@ class Slide:
     scene_prompt: str = ""  # 생성할 장면(영문 한 문장). 해소 시점에 scene_ref가 된다
     scene_ref: str = ""  # 해소된 장면의 저장소 URL. 렌더러가 읽는 건 이쪽뿐이다
     scene_failed: bool = False  # 해소가 실패해 폴백으로 가는 컷(사유는 media_spec에)
+    clip_ref: str = ""  # 생성 클립(mp4)의 저장소 URL — style="clip" 전용 배경
 
 
 @dataclass(frozen=True)
@@ -366,6 +367,7 @@ def _parse_slide(
         image_prompt=_parse_image_text(raw, "image_prompt", where, code, MAX_IMAGE_PROMPT_LEN),
         image_ref=_optional_str(raw, "image_ref", where),
         method=slide_method,
+        clip_ref=_optional_str(raw, "clip_ref", where),
     )
 
 
@@ -444,7 +446,7 @@ def _parse_voice(spec: Mapping[str, object]) -> str:
 
 
 # 화면 문법 — `method`와 직교한다([sns.render.video.media]의 `_RENDERERS`).
-VIDEO_STYLES = ("", "motion")
+VIDEO_STYLES = ("", "motion", "clip")
 
 
 def _parse_style(spec: Mapping[str, object]) -> str:

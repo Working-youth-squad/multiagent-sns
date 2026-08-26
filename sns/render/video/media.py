@@ -9,6 +9,7 @@ import hashlib
 from collections.abc import Mapping
 
 from sns.render.storage import InMemoryMediaStore, MediaStore
+from sns.render.video.clip import render_clip_video
 from sns.render.video.motion import render_motion_video
 from sns.render.video.renderer import VideoRender, render_video
 from sns.render.video.spec import parse_video_spec
@@ -22,6 +23,7 @@ from sns.topic_policy import DEV_MAJOR
 _RENDERERS = {
     "": render_video,  # 3단 레이아웃
     "motion": render_motion_video,  # 모션 그래픽
+    "clip": render_clip_video,  # 완전 생성 클립(팀 4방향 중 ①) — 배경이 영상
 }
 
 
