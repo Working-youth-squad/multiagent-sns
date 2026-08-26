@@ -6,18 +6,27 @@
 **개발 DB는 건드리지 않는다**: `DATABASE_URL`을 그대로 쓰지 않고 dbname에 `_test`를
 붙인 별도 DB를 쓴다([dbguard]). 없으면 만든다 — 팀원이 환경변수를 따로 외우거나
 compose에 서비스를 더할 필요가 없다. 파괴적 작업 직전에 가드를 한 번 더 확인한다.
+
+**DSN은 워크트리의 `.env`에서 온다**(셸 환경변수가 있으면 그쪽이 이긴다). 워크트리를
+여럿 두고 병렬로 작업할 때 각자 다른 DB를 보게 하는 손잡이가 이것이다 — 같은 DB를
+보면 한쪽의 `DROP SCHEMA`/`TRUNCATE`가 다른 쪽 테스트를 한복판에서 지운다. 워크트리
+`.env`의 `DATABASE_URL`을 `.../sns_b`처럼 갈라 두면 테스트는 `sns_b_test`를 쓴다.
 """
 
 import os
 import uuid
 from collections.abc import Callable, Iterator
+from pathlib import Path
 
 import psycopg
 import pytest
+from dotenv import load_dotenv
 
 from sns.db.migrate import apply_migrations
 from tests.dbguard import admin_dsn_for, database_name, derive_test_dsn, require_test_dsn
 
+# override=False — 이미 셸에 있는 값(CI·일회성 실행)을 .env가 덮지 않는다.
+load_dotenv(Path(__file__).parent.parent / ".env", override=False)
 DSN = derive_test_dsn(os.environ.get("DATABASE_URL", "postgresql://sns:sns@localhost:5432/sns"))
 
 # playbook은 FK가 없어 CASCADE로 딸려 오지 않는다 — 학습 테이블은 이름을 다 적는다.
