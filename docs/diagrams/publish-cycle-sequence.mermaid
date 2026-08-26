@@ -1,4 +1,4 @@
-%% multiagent-sns — 발행 사이클 시퀀스 (코드 기준 · main e5b809d · 2026-08-26 동기화)
+%% multiagent-sns — 발행 사이클 시퀀스 (코드 기준 · main 19f1466 · 2026-08-26 동기화)
 %% 실체는 **두 개의 독립 실행**이다. 기획서의 단일 루프가 아니다.
 %%   ① sns.runner.cycle.run_cycle              — 기획→제작→publication(pending)까지만
 %%   ② sns.publish.runner.run_pending_publications — pending 원장을 종결까지 전진
@@ -28,6 +28,7 @@ sequenceDiagram
     RUN->>TOP: run_topic(exclude_titles=최근 14일 제목, categories, guidance)
     TOP->>TR: research_trends 툴 — 소스 병렬 조회
     TR-->>TOP: 다이제스트 + 소스별 ok/실패 (실패 소스만 격리)
+    Note over TOP,TR: 사이클이 쓰는 것은 고정 피드 갈래다. 질의어 기반 키워드 랭킹은<br/>같은 서비스를 재사용하는 별도 갈래이고 사이클에 배선돼 있지 않다 (keyword-ranking-sequence)
     TOP->>ST: read_stats 툴 (운영 구현 없음 — 현재 Fake 주입)
     alt 근거 있는 후보에서 선택 성공
         TOP-->>RUN: TopicResult(title, category, source)
@@ -48,7 +49,7 @@ sequenceDiagram
         else mode = auto 또는 hybrid
             RUN->>CON: run_content(topic, format, playbook_guidance)
             CON-->>RUN: body + media_spec + hook_pattern
-            RUN->>GATE: 금지 소재 + 직전 50건 유사도 (렌더 **전**)
+            RUN->>GATE: 금지 소재 + 직전 50건 유사도 — 렌더보다 앞이다
             alt 관문 차단
                 GATE-->>RUN: 사유 목록 (유사도 상한 0.8 초과 포함)
                 RUN->>ST: run_event(notice) + content_item(status=needs_review)

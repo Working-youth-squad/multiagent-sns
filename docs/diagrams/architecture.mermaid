@@ -1,4 +1,4 @@
-%% multiagent-sns — 시스템 아키텍처 (코드 기준 · main e5b809d · 2026-08-26 동기화)
+%% multiagent-sns — 시스템 아키텍처 (코드 기준 · main 19f1466 · 2026-08-26 동기화)
 %% 기획서(v2 2026-08-11)의 예정도가 아니라 레포에 **실재하는 모듈**을 그린다.
 %% 점선 테두리 = 아직 코드가 없는 계획 항목. 실선 = 구현·테스트됨.
 %% 척추는 둘: ① run_cycle(기획→제작→pending) ② run_pending_publications(발행 종결).
@@ -10,6 +10,7 @@ flowchart TB
         S_WEB["run_approve_web.py :8001<br/>run_onboarding_web.py :8002"]
         S_MAN["manual_register.py<br/>manual_notify_assignments.py"]
         S_AN["e2e_analyst.py<br/>e2e_youtube_pipeline.py"]
+        S_KW["rank_keywords.py<br/>질의어 → 키워드 랭킹 (무인증)"]
         SCHED["슬롯 스케줄러 · 발행 러너 상시 구동<br/>미구현"]
     end
 
@@ -29,10 +30,18 @@ flowchart TB
 
     subgraph SIDE["에이전트가 읽는 바깥"]
         direction TB
-        TREND["research.trends.ResearchTrendsService<br/>무인증 4: google_trends·github_trending·hacker_news·lobsters<br/>키 필요 4: naver_search·naver_datalab·youtube_popular·llm_grounding<br/>소스별 10s 타임아웃 · 실패는 그 소스만 ok=false"]
+        TREND["research.trends — 고정 피드 갈래<br/>ResearchTrendsService(default_service 배선)<br/>무인증 4: google_trends·github_trending·hacker_news·lobsters<br/>키 필요 4: naver_search·naver_datalab·youtube_popular·llm_grounding<br/>소스별 10s 타임아웃 · 실패는 그 소스만 ok=false"]
         STATS["read_stats — 운영 구현 없음<br/>스크립트가 FakeReadStats 주입"]
         MODELS["agents.models — BaseChatModel 주입 seam<br/>실물 = Gemini (GEMINI_API_KEY · GEMINI_MODEL)"]
         CONTRACT["동결 계약 6종 sns.tools.contracts<br/>ResearchTrends·RenderMedia·Publish<br/>PollMetrics·ReadStats·WritePlaybook<br/>가짜 = sns.tools.fakes"]
+    end
+
+    subgraph KEYWORD["research.keywords — 질의어 갈래 (챗봇 경로 · 사이클 미배선)"]
+        direction TB
+        KW_SRC["자동완성 3소스 — 전부 무인증<br/>naver_autocomplete · google_suggest · youtube_suggest<br/>고정 피드와 달리 질의어를 받는다"]
+        KW_RANK["research.ranking — 순수 계산<br/>백분위 등수(등수 ÷ 길이+1) · 결측은 분산에서 제외<br/>rank_std=None은 0.0이 아니다 (관측 1건 = 잴 수 없음)"]
+        KW_API["rank_keywords(query) — 유일한 진입점<br/>토글 5종 · ranking_to_dict = 프로세스 경계 JSON"]
+        KW_SRC --> KW_RANK --> KW_API
     end
 
     DB[("PostgreSQL — 마이그 001·002·003<br/>channel·channel_profile·cycle·topic·content_item<br/>media_asset·publication·publish_attempt·run_event<br/>topic_stats·metric_*·reward·playbook·analysis_note = 쓰기 경로 없음")]
@@ -80,6 +89,9 @@ flowchart TB
     SCHED -.구동 예정.-> PUBRUN
 
     A_TOPIC -->|"research_trends"| TREND
+    S_KW --> KW_API
+    KEYWORD -.오케스트레이션 재사용<br/>동시 실행·타임아웃·실패 격리.-> TREND
+    KW_API -.DB 저장 없음 · 사이클 주제 선정과 미연결.-> DB
     A_TOPIC -->|"read_stats"| STATS
     PIPE -.모델 주입.-> MODELS
     PIPE -.계약 위에서만.-> CONTRACT
