@@ -1,10 +1,15 @@
-%% multiagent-sns — 질의어 기반 키워드 랭킹 (코드 기준 · main 19f1466 · 2026-08-26)
-%% sns.research.keywords.rank_keywords — 챗봇이 넣은 키워드 하나를 근거 있는 연관 키워드
-%% 목록으로. 사이클(고정 피드 research_trends)과 **다른 갈래**이고 DB에 아무것도 남기지
-%% 않는다 — 순수 계산 1회 응답이다.
+%% multiagent-sns — 질의어 기반 키워드 랭킹 (코드 기준 · main bfdf3d5 · 2026-08-27 동기화)
+%% sns.research.keywords.rank_keywords — 질의어 하나를 근거 있는 연관 키워드 목록으로.
+%% 계산 자체는 여전히 **순수 1회 응답**이지만, 소비자가 셋으로 늘었다:
+%%   ① CLI            scripts/rank_keywords.py — 사람이 표로 본다
+%%   ② 키워드 챗봇     chat.agent의 search_keywords 툴 → 결과 **전량**이 chat_message(role=ranking)
+%%                    payload에 원본 그대로 박제된다. 반올림·요약하지 않는다
+%%   ③ 사이클          onboarding.trends.profile_trend_service가 세부 주제마다 이 랭킹을
+%%                    트렌드 소스 하나로 얹는다(extra_fetchers "keywords:세부주제")
+%% ③ 덕분에 "사이클에 미배선"이던 시절은 끝났다 — 고정 피드와 같은 다이제스트에 합류한다.
 sequenceDiagram
     autonumber
-    participant CB as 챗봇 · scripts/rank_keywords.py
+    participant CB as CLI · 챗봇 툴 · profile_trend_service
     participant RK as rank_keywords
     participant KS as keyword_service
     participant SVC as ResearchTrendsService
@@ -57,4 +62,13 @@ sequenceDiagram
 
     AG->>AG: 정렬 (-present_count, observed_mean, text) → top 컷
     AG-->>RK: KeywordRanking(candidates · pool · dropped · below_min_present · unscored · excluded)
-    RK-->>CB: 사람용 표 또는 ranking_to_dict JSON (프로세스 경계)
+
+    alt ① CLI
+        RK-->>CB: 사람용 표 또는 ranking_to_dict JSON (프로세스 경계)
+    else ② 챗봇 툴
+        RK-->>CB: 코드가 전량을 포착 → chat_message(role=ranking).payload에 원본 박제
+        Note over CB: **LLM에게는 숫자를 주지 않는다** — 이름·소스 수·필터 상태 문장뿐.<br/>rank_std=None을 "0.00, 완전 일치"로 옮겨 적는 실패가 관측됐다.<br/>표는 화면이 payload 원본에서 직접 그린다(web.chat.render)
+    else ③ 사이클 트렌드 소스
+        RK-->>CB: candidates의 text만 → 소스 이름 "keywords:세부주제"로 다이제스트에 합류
+        Note over CB: 세부 주제마다 소스 하나. 대분류("요리")는 일반명사만 나오기 쉽다.<br/>무인증이라 호출 비용이 0이고, 니치별로 나눠 두면 Topic 에이전트가 출처를 구분해서 본다
+    end

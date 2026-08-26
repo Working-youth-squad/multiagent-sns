@@ -1,4 +1,4 @@
-%% multiagent-sns — 운영자 유저 플로우 (코드 기준 · main b020a84 · 2026-08-27 동기화)
+%% multiagent-sns — 운영자 유저 플로우 (코드 기준 · main bfdf3d5 · 2026-08-27 동기화)
 %% 화면은 셋이다: 온보딩 인터뷰 웹(:8002) · hybrid 승인 웹(:8001) · 키워드 챗봇(:8003).
 %% 셋은 별개 프로세스라 주소가 다르다 — 포트는 설계가 아니라 만들어진 순서다.
 %% 나머지 운영 동작은 CLI(scripts/)와 Discord 알림으로 이뤄진다.
@@ -15,7 +15,7 @@ flowchart TD
     STEP4 --> STEP5["5. 캐릭터 스타일<br/>3D·플랫벡터·픽셀·수채화·없음"]
     STEP5 --> FINISH["POST /interview/finish<br/>parse_profile 검증"]
     FINISH -->|"ProfileError"| STEP5
-    FINISH --> REC["추천안 조회 recommend_fn<br/>트렌드 근거 위 이름·미세조정 제안"]
+    FINISH --> REC["추천안 조회 recommend_fn<br/>그 채널 주제의 트렌드 근거 위에 이름·미세조정 제안"]
     REC -->|"실패해도 온보딩을 막지 않는다"| CONFIRM["컨셉 확정 화면<br/>추천안 확인 + 줄글로 미세조정 입력"]
 
     CONFIRM --> CREATE["POST /channels — 여기서 처음 계정이 생긴다"]
@@ -26,27 +26,32 @@ flowchart TD
     SAVE --> DETAIL["GET /channels/:id 채널 상세"]
     DETAIL -->|"줄글 개정"| REV["POST /channels/:id/refine<br/>UPDATE 아님 — 새 revision (FR-W2 이력 보존)"]
     REV --> DETAIL
+    DETAIL -->|"영상 탭"| VTAB["GET /channels/:id/videos<br/>대본 생성 → 사람이 확인 → 컷별 렌더 → 화면에서 재생<br/>캐릭터가 컷 성격에 따라 자리를 바꾼다"]
+    VTAB --> DETAIL
 
     DETAIL --> OPS{"운영 — 상시 스케줄러 없음, CLI로 사이클을 부른다"}
-    OPS --> CYCLE["uv run python scripts/run_profile_cycle.py 핸들<br/>최신 프로필 → goal_ref·categories·brief를 사이클에 주입"]
-    OPS --> CHAT["키워드 챗봇 :8003 — run_chat_web.py<br/>대화로 키워드 좁히기 → 포맷·제작방식 확정 (FR-W6)"]
-    CHAT -->|"주제 확정 = 시드 (FR-W5)"| CYCLE
-    CHAT --> EXPORT["GET /export/:id — 사람이 직접 올릴 원고<br/>캡션 전문 + 미디어 첨부 (승인 전이면 경고)"]
+    OPS --> CYCLE["uv run python scripts/run_profile_cycle.py 핸들<br/>최신 프로필 → goal_ref·categories·brief·트렌드 소스를 사이클에 주입"]
+    OPS --> CHAT["키워드 챗봇 :8003 — run_chat_web.py<br/>대화로 키워드 좁히기 (FR-W6)"]
+    CHAT --> PICK{"대화에서 확정하는 것 셋"}
+    PICK -->|"주제"| SEED
+    PICK -->|"포맷 = 카드 또는 영상"| SEED
+    PICK -->|"영상이면 제작 방식"| SEED["SeedRequest → 백그라운드로 사이클 기동 (FR-W5)<br/>릴스/쇼츠 갈림은 채널 플랫폼이 정한다"]
+    SEED --> CYCLE
+    SEED --> DRAFT["대화 화면에 초안 카드/영상<br/>video 태그로 재생 · /media?download=1 로 파일 내려받기"]
+    DRAFT --> EXPORT["GET /export/:id — 사람이 직접 올릴 원고<br/>캡션 전문 + caption.txt + 미디어 (승인 전이면 경고)"]
     CYCLE --> MODE{"채널 mode"}
 
     MODE -->|"auto"| AUTORUN["초안 자동 approved → 발행 러너가 종결까지"]
-    MODE -->|"hybrid"| APPROVE["승인 웹 :8001 — run_approve_web.py<br/>목록 → 상세 → 본문 수정"]
+    MODE -->|"hybrid"| APPROVE["승인 웹 :8001 — run_approve_web.py<br/>목록 → 상세 → 본문 수정 · 컷 편집 후 재렌더"]
     MODE -->|"manual"| ASSIGN["run_event(manual_assignment)<br/>manual_notify_assignments.py → Discord 배정 알림"]
 
     APPROVE -->|"승인"| APPROVED["content_item=approved + media_asset=passed<br/>본문 수정 시 edited_by_human=true"]
     APPROVE -->|"반려"| REJECTED["content_item=rejected + publication=skipped<br/>즉시 종결"]
     APPROVED --> RUNNER
-    AUTORUN --> RUNNER["run_pending_publications — auto·hybrid만"]
-    RUNNER --> METRICS["run_metrics_poll.py — 발행 후 6·24·72h<br/>작업 스케줄러가 시간마다 부른다 (상주 아님)"]
-    METRICS --> REWARD["run_reward_batch.py → reward · topic_stats"]
-    REWARD --> NOTE["run_analysis_note.py → analysis_note · playbook<br/>검증기 통과분만 저장"]
+    AUTORUN --> RUNNER["run_pending_publications — auto·hybrid만<br/>미배선 플랫폼은 pending 유지(루프가 끊기지 않는다)"]
 
     ASSIGN --> HUMAN["사람이 직접 작성 → 플랫폼 앱에서 직접 발행"]
+    EXPORT -.수동 발행 원고.-> HUMAN
     HUMAN --> REGISTER["manual_register.py --external-post-id<br/>manual 채널에만 등록 · 같은 post id 재등록은 멱등"]
 
     RUNNER --> RESULT{"발행 결과"}
@@ -58,9 +63,14 @@ flowchart TD
     WAIT --> APPROVE
     REGISTER --> LEDGER
 
-    LEDGER --> LOOK{"성과 확인"}
-    LOOK --> SQL["현재는 DB 직접 조회 · run_event 덤프 · e2e_analyst.py 수동 실행"]
-    LOOK -.계획.-> INSIGHT["인사이트 탭 FR-W3<br/>추이·기울기 · auto vs hybrid vs manual 비교<br/>미구현"]
+    LEDGER --> METRICS["run_metrics_poll.py — 발행 후 6·24·72h<br/>작업 스케줄러가 시간마다 부른다 (상주 아님)<br/>유예를 넘긴 창은 지어내지 않고 놓친 창으로 남는다"]
+    METRICS --> REWARD["run_reward_batch.py → reward · topic_stats<br/>대표 창 72h · 표본 부족은 NULL(0이 아니다)"]
+    REWARD --> NOTE["run_analysis_note.py → analysis_note · playbook<br/>검증기 통과분만 저장 · 거부되면 지침도 안 남는다"]
+    NOTE -->|"playbook guidance"| CYCLE
+
+    NOTE --> LOOK{"성과 확인"}
+    LOOK --> SQL["현재는 DB 직접 조회 · run_event 덤프 · 배치 리포트 콘솔 출력"]
+    LOOK -.계획.-> INSIGHT["인사이트 탭 FR-W3<br/>추이·기울기 · auto vs hybrid vs manual 비교<br/>미구현 — 원장 관측이 아직 0건이라 화면을 만들려면 시드가 먼저다"]
 
     classDef planned stroke-dasharray: 6 4,stroke-width:1px,color:#888
     classDef note fill:#f7f7f7,stroke:#ccc,color:#555

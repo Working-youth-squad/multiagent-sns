@@ -1,58 +1,76 @@
-%% multiagent-sns — 시스템 아키텍처 (코드 기준 · main b020a84 · 2026-08-27 동기화)
+%% multiagent-sns — 시스템 아키텍처 (코드 기준 · main bfdf3d5 · 2026-08-27 동기화)
 %% 기획서(v2 2026-08-11)의 예정도가 아니라 레포에 **실재하는 모듈**을 그린다.
 %% 점선 테두리 = 아직 코드가 없는 계획 항목. 실선 = 구현·테스트됨.
 %% 척추는 셋: ① run_cycle(기획→제작→pending) ② run_pending_publications(발행 종결)
-%% ③ 학습 배치(폴링 → reward → 분석글) — 전부 사람이 부르는 배치다.
-%% 둘을 잇는 상시 스케줄러가 없어서 사람이 scripts/를 순서대로 부른다.
+%% ③ 학습 배치(폴링 → reward → 분석글).
+%% 셋 다 사람·작업 스케줄러가 부르는 **배치**다. 상주하는 것은 웹 3종뿐이고,
+%% 셋을 잇는 슬롯 스케줄러는 아직 없다.
 flowchart TB
     subgraph ENTRY["실행 진입점 — scripts/"]
         direction LR
-        S_CYCLE["e2e_cycle.py<br/>run_profile_cycle.py"]
+        S_CYCLE["e2e_cycle.py · run_profile_cycle.py<br/>e2e_youtube_pipeline.py · e2e_youtube_shorts.py"]
         S_WEB["run_approve_web.py :8001<br/>run_onboarding_web.py :8002<br/>run_chat_web.py :8003"]
         S_MAN["manual_register.py<br/>manual_notify_assignments.py"]
-        S_AN["e2e_analyst.py<br/>e2e_youtube_pipeline.py"]
+        S_AN["e2e_analyst.py — 분석 1회 관통"]
         S_MET["run_metrics_poll.py — 창 6·24·72h<br/>run_reward_batch.py<br/>run_analysis_note.py"]
         S_KW["rank_keywords.py<br/>질의어 → 키워드 랭킹 (무인증)"]
+        S_PRE["preview_*.py · render_classic.py<br/>렌더 단품 확인 — 사이클·DB 없이"]
         SCHED["슬롯 스케줄러 · 발행 러너 상시 구동<br/>미구현"]
     end
 
     subgraph PIPE["① sns.runner.cycle.run_cycle — 결정론 코드 오케스트레이션 (에이전트 아님)"]
         direction TB
-        A_TOPIC["Topic 에이전트 deepagents<br/>근거 밖 제목 거부 · 카테고리 5종 · 최근 14일 주제 제외"]
-        A_CONTENT["Content 에이전트 deepagents<br/>body + media_spec + hook_pattern 5종"]
+        A_TOPIC["Topic 에이전트 deepagents<br/>근거 밖 제목 거부 · 최근 14일 주제 제외<br/>카테고리는 topic_policy 파생 — 개발 5종 · 그 외 5종"]
+        SEED["seed_topic — 사람이 확정한 주제 FR-W5<br/>주어지면 Topic 에이전트를 건너뛴다 · 관문은 그대로 통과"]
+        A_CONTENT["Content 에이전트 deepagents<br/>body + media_spec + hook_pattern 5종<br/>topic_major 필수 · supported_methods 안에서만 method 선택"]
         G_TEXT["관문 (렌더 전) — LLM 0<br/>quality.safety 금지소재 + quality.signature 유사도 0.8"]
-        R_RES["render.images.resolve<br/>image_query → image_ref 못박기 · 실패는 그라데이션 폴백"]
-        R_MEDIA["render_media 계약 구현<br/>card: Pillow PNG · video: 3단 ffmpeg + classic + TTS"]
+        WIRE["runner.wiring.build_render_wiring — 배선 정본<br/>card = 카드 렌더러 + 카드 게이트<br/>video = 영상 라우터 + 영상 게이트 + 해소<br/>Capability Gate = 라우터에 적힌 method만 고를 수 있다"]
+        R_RES["해소 — 렌더 전 1회<br/>images.resolve: image_query → image_ref<br/>video.gen.scenes: scene_prompt → scene_ref<br/>Cost Gate = gen.budget.ImageBudget 사이클당 12장"]
+        R_MEDIA["render_media 계약 구현<br/>card: Pillow PNG<br/>video: video.router → template · generated_scene<br/>style 축은 method와 직교 — 3col · motion · clip"]
         G_MEDIA["품질 게이트<br/>quality.gate.check_card · render.video.quality · render.images.gate"]
+        TXT["발행 본문 후처리 — **코드가 붙인다, LLM 아님**<br/>images.credit 크레딧 + publish.disclosure AI 생성 표기<br/>표기는 생성 트랙에만 · 재실행 멱등"]
         STORE["CycleStore<br/>content_item · media_asset · publication(pending, mode) · run_event"]
+        SEED --> A_CONTENT
         A_TOPIC --> A_CONTENT --> G_TEXT
-        G_TEXT -->|"통과분만 렌더"| R_RES --> R_MEDIA --> G_MEDIA --> STORE
+        G_TEXT -->|"통과분만 렌더"| R_RES --> R_MEDIA --> G_MEDIA --> TXT --> STORE
         G_TEXT -.차단 = 렌더 안 함.-> STORE
+        WIRE -.협력자 3종 주입.-> R_RES
     end
 
     subgraph SIDE["에이전트가 읽는 바깥"]
         direction TB
-        TREND["research.trends — 고정 피드 갈래<br/>ResearchTrendsService(default_service 배선)<br/>무인증 4: google_trends·github_trending·hacker_news·lobsters<br/>키 필요 4: naver_search·naver_datalab·youtube_popular·llm_grounding<br/>소스별 10s 타임아웃 · 실패는 그 소스만 ok=false"]
-        STATS["read_stats = MetricStore.read_topic_stats<br/>운영 구현 있음 (표본은 아직 0건)"]
+        TREND["research.trends.ResearchTrendsService<br/>조립 정본 = onboarding.trends.profile_trend_service<br/>무인증 4: google_trends·github_trending·hacker_news·lobsters<br/>키 필요 4: naver_search·naver_datalab·youtube_popular·llm_grounding<br/>소스별 10s 타임아웃 · 실패는 그 소스만 ok=false"]
+        POLICY["topic_policy — 주제 대분류 파생값의 단일 출처<br/>카테고리 · 개념그림 종류 · 정사각 소스 · 트렌드 소스 · 그라운딩 질의<br/>도메인 팩은 철거됨 — 조용한 개발 기본값 제거"]
+        STATS["read_stats 계약<br/>운영 구현 = learning.stores.MetricStore.read_topic_stats<br/>분석 배치에는 배선 · **사이클 진입점은 아직 FakeReadStats**"]
         MODELS["agents.models — BaseChatModel 주입 seam<br/>실물 = Gemini (GEMINI_API_KEY · GEMINI_MODEL)"]
         CONTRACT["동결 계약 6종 sns.tools.contracts<br/>ResearchTrends·RenderMedia·Publish<br/>PollMetrics·ReadStats·WritePlaybook<br/>가짜 = sns.tools.fakes"]
     end
 
-    subgraph KEYWORD["research.keywords — 질의어 갈래 (챗봇 경로 · 사이클 미배선)"]
+    subgraph KEYWORD["research.keywords — 질의어 갈래"]
         direction TB
         KW_SRC["자동완성 3소스 — 전부 무인증<br/>naver_autocomplete · google_suggest · youtube_suggest<br/>고정 피드와 달리 질의어를 받는다"]
-        KW_RANK["research.ranking — 순수 계산<br/>백분위 등수(등수 ÷ 길이+1) · 결측은 분산에서 제외<br/>rank_std=None은 0.0이 아니다 (관측 1건 = 잴 수 없음)"]
+        KW_RANK["research.ranking — 순수 계산<br/>백분위 등수 = 등수+1 ÷ 길이+1 · 결측은 분산에서 제외<br/>rank_std=None은 0.0이 아니다 — 관측 1건은 잴 수 없다"]
         KW_API["rank_keywords(query) — 유일한 진입점<br/>토글 5종 · ranking_to_dict = 프로세스 경계 JSON"]
         KW_SRC --> KW_RANK --> KW_API
     end
 
-    DB[("PostgreSQL — 마이그 001·002·003·004<br/>channel·channel_profile·cycle·topic·content_item<br/>media_asset·publication·publish_attempt·run_event<br/>chat_conversation·chat_message<br/>topic_stats·metric_*·reward·playbook·analysis_note ← learning.stores.MetricStore")]
+    subgraph CHAT["sns.chat — 키워드 챗봇 FR-W6"]
+        direction TB
+        C_AG["chat.agent.run_chat_turn — deepagents 툴 2종<br/>search_keywords · confirm_topic<br/>**LLM에 통계 숫자를 주지 않는다** — 이름·소스 수·필터 상태만"]
+        C_ST["chat.store — chat_conversation · chat_message (append-only)<br/>랭킹 원본은 role=ranking payload에 박제"]
+        C_DR["chat.drafts — 시드 결과 · 초안 카드/영상 · 내보내기<br/>seed_started · done · no_target · failed · crashed · unwired"]
+        C_AG --> C_ST
+        C_AG -->|"SeedRequest — 주제 + 포맷 + 제작방식"| C_DR
+    end
+
+    DB[("PostgreSQL — 마이그 001·002·003·004<br/>channel·channel_profile·cycle·topic·content_item<br/>media_asset·publication·publish_attempt·run_event<br/>chat_conversation·chat_message<br/>topic_stats·metric_observation·metric_value·reward·playbook·analysis_note<br/>← learning.stores.PgMetricStore가 쓴다")]
 
     subgraph PUBRUN["② sns.publish.runner.run_pending_publications — 기계 발행은 auto·hybrid만"]
         direction TB
         P_RUN["게이트 배선<br/>quality_status=passed + hybrid는 content_item=approved까지"]
         P_SM["publish.state_machine.run_publish<br/>멱등(key=publication_id) · IG container_id 보존"]
-        P_RUN --> P_SM
+        P_ROUTE["publish.router.PlatformPublishRouter — 발행판 Capability Gate<br/>미배선 플랫폼은 **예외가 아니라 transient**<br/>그 건만 pending으로 남고 루프는 끊기지 않는다"]
+        P_RUN --> P_SM --> P_ROUTE
     end
 
     subgraph ADAPT["채널 어댑터 — 공식 API"]
@@ -64,8 +82,9 @@ flowchart TB
 
     subgraph HUMAN["사람이 끼는 자리"]
         direction TB
-        W_ON["web.onboarding — 인터뷰 5단계 + 컨셉 확정<br/>onboarding: profile·recommend·character·store"]
-        W_AP["web.approve — hybrid 승인/반려<br/>승인 = content_item approved + media_asset passed"]
+        W_ON["web.onboarding :8002 — 인터뷰 5단계 + 컨셉 확정 + 채널 상세<br/>캐릭터 1회 생성 · **영상 탭**: 대본 승인 → 렌더 → 재생<br/>onboarding: profile·recommend·character·trends·store"]
+        W_AP["web.approve :8001 — hybrid 승인/반려 + 본문 수정 + 컷 재렌더<br/>승인 = content_item approved + media_asset passed"]
+        W_CH["web.chat :8003 — 대화 화면 + 초안 카드/영상 재생<br/>/media 내려받기 · /export 수동 발행용 원고(캡션 전문)"]
         P_MAN["publish.manual — 수동 발행 후 external_post_id 등록<br/>manual 채널에만 · 재등록 멱등"]
         W_IN["인사이트 탭 FR-W3 — auto/hybrid/manual 비교 화면<br/>미구현"]
     end
@@ -73,20 +92,21 @@ flowchart TB
     subgraph OBS["관측·학습·알림"]
         direction TB
         YT_MET["youtube.metrics — Analytics v2<br/>결측=missing · 오류는 raise"]
-        IG_MET["instagram.metrics — Graph Insights<br/>결측=missing · 오류는 raise"]
+        IG_MET["instagram.metrics — Graph media insights<br/>공용/릴스 전용 2배치 분할 호출 · 결측=missing · 오류는 raise"]
+        POLL["learning.poller + learning.schedule<br/>기한 된 창만 · 유예 넘긴 창은 missed로 세기만 한다<br/>한 건의 실패가 훑기를 끊지 않는다"]
+        STORED["learning.observations.StoredMetrics<br/>분석·보상은 **저장된 관측**을 읽는다 — API 재호출 0"]
         A_AN["Analyst 에이전트 + signals.scoreboard<br/>수치는 코드가 계산 · 계정 자체 중앙값 대비"]
         VAL["learning.validator<br/>insufficient_evidence는 코드가 결정"]
-        POLL["learning.poller + schedule<br/>기한 된 창만 · 늦은 창은 안 찍는다 · 실패는 그 건만"]
-        STORED["learning.observations.StoredMetrics<br/>분석은 저장된 관측을 읽는다 (API 재호출 0)"]
-        LEARN["learning.reward v0-unweighted → reward · topic_stats 차분<br/>learning.report → playbook · analysis_note<br/>계수 사전등록 전 · 실 관측 0건"]
+        RW["learning.reward — FORMULA_VERSION v0-unweighted+goal<br/>대표 창 72h · 결측은 제외(0 아님) · 1차 항 절반 미만이면 NULL<br/>save_reward가 topic_stats 차분까지 한 트랜잭션"]
+        RP["learning.report — 검증 통과분만 원장으로<br/>거부되면 글도 지침도 남기지 않는다 (_DeferredPlaybook)"]
         BANDIT["Growth 밴딧 FR-L3<br/>미구현 — 발행 50건 축적 후"]
         NOTIFY["notify.dispatch → cause(LLM 1줄) → Discord<br/>적재 먼저 · 어떤 실패도 호출자로 전파 안 함"]
         YT_MET --> POLL
         IG_MET --> POLL
-        POLL --> STORED --> A_AN
-        STORED --> LEARN
-        A_AN --> VAL --> LEARN
-        LEARN -.표본 50건.-> BANDIT
+        POLL --> STORED
+        STORED --> RW
+        STORED --> A_AN --> VAL --> RP
+        RW -.표본 50건.-> BANDIT
     end
 
     S_CYCLE --> PIPE
@@ -95,33 +115,45 @@ flowchart TB
     S_MAN --> NOTIFY
     S_AN --> OBS
     S_MET --> OBS
+    S_PRE -.렌더만 단품 실행.-> R_MEDIA
     SCHED -.구동 예정.-> PUBRUN
 
     A_TOPIC -->|"research_trends"| TREND
     S_KW --> KW_API
     KEYWORD -.오케스트레이션 재사용<br/>동시 실행·타임아웃·실패 격리.-> TREND
-    KW_API -.DB 저장 없음 · 사이클 주제 선정과 미연결.-> DB
+    KW_API -->|"extra_fetchers · 세부 주제마다 소스 하나"| TREND
     A_TOPIC -->|"read_stats"| STATS
     PIPE -.모델 주입.-> MODELS
     PIPE -.계약 위에서만.-> CONTRACT
+    POLICY --> TREND
+    POLICY -.대분류 파생값.-> PIPE
+
+    W_CH --> C_AG
+    C_AG --> KW_API
+    C_DR -->|"seed_topic + 포맷 + 제작방식"| PIPE
+    C_ST --> DB
 
     STORE --> DB
     DB --> P_RUN
-    P_SM --> IG_PUB
-    P_SM --> YT_PUB
-    P_SM --> FAKEP
+    P_ROUTE --> IG_PUB
+    P_ROUTE --> YT_PUB
+    P_ROUTE --> FAKEP
     P_SM -.실패 분류.-> NOTIFY
     PIPE -.사이클 오류 · manual 배정.-> NOTIFY
     NOTIFY --> DB
 
     W_ON -->|"channel_profile 새 revision"| DB
     DB -.최신 프로필 주입.-> PIPE
+    W_ON -.profile_trend_service.-> TREND
     W_AP -->|"발행 게이트 반전"| DB
     P_MAN --> DB
     YT_PUB -.발행 후 지표.-> YT_MET
-    LEARN -->|"playbook 지침"| PIPE
-    LEARN --> DB
+    IG_PUB -.발행 후 지표.-> IG_MET
+    RP -->|"playbook 지침 → 다음 사이클"| PIPE
+    RP --> DB
+    RW --> DB
     POLL --> DB
+    STORED -.published_items 색인.-> DB
     W_IN -.계획.-> DB
 
     classDef planned stroke-dasharray: 6 4,stroke-width:1px,color:#888
