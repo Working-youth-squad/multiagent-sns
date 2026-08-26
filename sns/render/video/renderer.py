@@ -22,19 +22,19 @@
 """
 
 import io
-import subprocess
-import tempfile
-import wave
 from collections.abc import Callable
-from dataclasses import dataclass
 from functools import lru_cache
-from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
 from sns.render.concept_image import render_concept_square
 from sns.render.fonts import FONT_CANDIDATES, pick_font
 from sns.render.text import wrap_balanced
+from sns.render.video.assemble import (
+    VideoRender,
+    VideoRenderError,
+    assemble_video,
+)
 from sns.render.video.mascot import place_mascot
 from sns.render.video.quality import MAX_DURATION_S
 from sns.render.video.spec import Slide, VideoSpec, VideoSpecError
@@ -43,8 +43,10 @@ from sns.render.video.tts import Synthesize, wav_duration_s
 # 쇼츠 최대 길이(초)는 품질 게이트와 **같은 상수**를 쓴다([sns.render.video.quality]).
 # 예전엔 여기에 180.0을 따로 두어, 한쪽만 고치면 렌더는 통과시키고 게이트가 떨어뜨리는
 # 조합이 만들어질 수 있었다.
-__all__ = ["MAX_DURATION_S", "VideoRender", "render_video"]
-FPS = 30
+# VideoRender·VideoRenderError는 [sns.render.video.assemble]로 옮겼지만 여기서 재수출한다
+# — 기존 import 경로(from sns.render.video.renderer import VideoRenderError)가 살아 있어야
+# 호출부·테스트가 안 깨진다.
+__all__ = ["MAX_DURATION_S", "VideoRender", "VideoRenderError", "assemble_video", "render_video"]
 
 # 저장된 사진 바이트를 읽는 seam(FR-M3). 렌더러는 저장소 구현을 모른다 — `synthesize`와 같은 규율.
 FetchImage = Callable[[str], bytes]
@@ -60,22 +62,8 @@ _PILL_PAD_Y_DIV = 60.0
 _LINE_SPACING = 1.2
 _MARGIN_RATIO = 0.065
 _GROUND = (0, 0, 0)
-# 진행바 높이(px, 1080 기준 비율로 환산).
-_BAR_RATIO = 12 / 1920
 # 폰트 후보는 카드와 공유한다([sns.render.fonts]) — 테스트가 monkeypatch로 비우는 지점.
 _FONT_CANDIDATES = FONT_CANDIDATES
-
-
-@dataclass(frozen=True)
-class VideoRender:
-    mp4: bytes
-    duration_s: float
-    # 컷(=슬라이드=화면) 단위 길이. 합이 곧 오디오 길이다.
-    cut_durations_s: tuple[float, ...]
-
-
-class VideoRenderError(RuntimeError):
-    """ffmpeg 합성 실패."""
 
 
 def _pick_font(font_path: str | None) -> tuple[str, str]:
@@ -240,40 +228,6 @@ def _frame_png(slide: Slide, spec: VideoSpec, font_path: str, mono_path: str | N
     return buf.getvalue()
 
 
-def _concat_wavs(wavs: list[bytes]) -> bytes:
-    """같은 포맷의 WAV들을 프레임 이어붙이기 — ffmpeg 오디오 concat 불필요."""
-    first_params = None
-    frames = b""
-    for wav in wavs:
-        with wave.open(io.BytesIO(wav)) as f:
-            params = (f.getnchannels(), f.getsampwidth(), f.getframerate())
-            if first_params is None:
-                first_params = params
-            elif params != first_params:
-                raise VideoRenderError(f"TTS WAV 포맷 불일치: {first_params} vs {params}")
-            frames += f.readframes(f.getnframes())
-    assert first_params is not None
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as out:
-        out.setnchannels(first_params[0])
-        out.setsampwidth(first_params[1])
-        out.setframerate(first_params[2])
-        out.writeframes(frames)
-    return buf.getvalue()
-
-
-_BITEXACT = (
-    "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact",
-    "-bitexact", "-map_metadata", "-1", "-threads", "1",
-)  # fmt: skip
-
-
-def _run_ffmpeg(cmd: list[str], workdir: Path) -> None:
-    result = subprocess.run(cmd, cwd=workdir, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise VideoRenderError(f"ffmpeg 실패(exit {result.returncode}): {result.stderr.strip()}")
-
-
 def render_video(
     spec: VideoSpec,
     *,
@@ -293,79 +247,9 @@ def render_video(
         raise VideoSpecError(f"총 길이 {total:.1f}s — 쇼츠 규격(0~{MAX_DURATION_S:.0f}s) 위반")
 
     resolved_font, _ = _pick_font(font_path)
-    bar_h = max(round(spec.height * _BAR_RATIO), 4)
-
-    with tempfile.TemporaryDirectory() as tmp:
-        workdir = Path(tmp)
-
-        # 1패스: 컷당 정지 영상. 줌이 없으므로 오버스캔도 세그먼트 등분도 없다.
-        for i, (slide, duration) in enumerate(zip(spec.slides, durations, strict=True)):
-            (workdir / f"f{i}.png").write_bytes(
-                _frame_png(slide, spec, resolved_font, mono_path, fetch_image)
-            )
-            _run_ffmpeg(
-                [
-                    ffmpeg,
-                    "-y",
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-loop",
-                    "1",
-                    "-t",
-                    f"{duration:.3f}",
-                    "-i",
-                    f"f{i}.png",
-                    "-vf",
-                    "format=yuv420p",
-                    "-r",
-                    str(FPS),
-                    "-c:v",
-                    "libx264",
-                    "-preset",
-                    "veryfast",
-                    "-an",
-                    *_BITEXACT,
-                    f"cut{i}.mp4",
-                ],  # fmt: skip
-                workdir,
-            )
-
-        # 2패스: concat + 진행바 + 오디오. 목록은 반드시 1패스가 만든 컷 수와 같아야 한다
-        # — 적게 쓰면 영상만 조용히 잘리고 오디오는 그대로라 뒷부분이 정지 화면이 된다.
-        (workdir / "list.txt").write_text(
-            "".join(f"file 'cut{i}.mp4'\n" for i in range(len(spec.slides))), encoding="utf-8"
-        )
-        (workdir / "audio.wav").write_bytes(_concat_wavs(wavs))
-
-        cmd = [
-            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
-            "-f", "concat", "-safe", "0", "-i", "list.txt",
-            "-i", "audio.wav",
-            "-f", "lavfi", "-t", f"{total:.3f}",
-            "-i", f"color=c=0x{spec.accent[1:]}:s={spec.width}x{bar_h}:r={FPS}",
-        ]  # fmt: skip
-        # 진행바: 화면 폭짜리 색 소스를 왼쪽 밖에서 밀어넣어 차오르게 한다. drawbox로는
-        # 안 된다 — drawbox 표현식의 `t`는 타임스탬프가 아니라 **선 두께**라 매 프레임
-        # 같은 값이 나와 바가 처음부터 꽉 찬 채로 멈춘다. overlay의 `x`는 `t`가 시각이다.
-        chain = f"[0:v][2:v]overlay=x='-W+W*t/{total:.3f}':y=H-{bar_h}:shortest=1,format=yuv420p[v]"
-        if bgm is not None:
-            (workdir / f"bgm.{bgm_ext}").write_bytes(bgm)
-            cmd += ["-stream_loop", "-1", "-i", f"bgm.{bgm_ext}"]
-            cmd += [
-                "-filter_complex",
-                f"{chain};[1:a]volume=1.0[nar];[3:a]volume=0.12[bg];"
-                "[nar][bg]amix=inputs=2:duration=first:normalize=0[a]",
-                "-map", "[v]", "-map", "[a]",
-            ]  # fmt: skip
-        else:
-            cmd += ["-filter_complex", chain, "-map", "[v]", "-map", "1:a"]
-        cmd += [
-            "-r", str(FPS), "-c:v", "libx264", "-preset", "veryfast",
-            "-c:a", "aac", "-t", f"{total:.3f}",
-            *_BITEXACT, "out.mp4",
-        ]  # fmt: skip
-        _run_ffmpeg(cmd, workdir)
-        mp4 = (workdir / "out.mp4").read_bytes()
-
-    return VideoRender(mp4=mp4, duration_s=total, cut_durations_s=tuple(durations))
+    cut_pngs = [
+        _frame_png(slide, spec, resolved_font, mono_path, fetch_image) for slide in spec.slides
+    ]
+    return assemble_video(
+        cut_pngs, durations, wavs, spec=spec, ffmpeg=ffmpeg, bgm=bgm, bgm_ext=bgm_ext
+    )

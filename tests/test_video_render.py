@@ -25,9 +25,10 @@ from PIL import Image
 from sns.render.fonts import FontNotFoundError
 from sns.render.storage import InMemoryMediaStore
 from sns.render.video import renderer as renderer_mod
+from sns.render.video.assemble import _BAR_RATIO
 from sns.render.video.media import VideoRenderMedia
 from sns.render.video.quality import check_video
-from sns.render.video.renderer import _BAR_RATIO, render_video
+from sns.render.video.renderer import render_video
 from sns.render.video.spec import MAX_SLIDES, VideoSpec, VideoSpecError
 from sns.render.video.spec import parse_video_spec as _parse_video_spec
 from sns.topic_policy import DEV_MAJOR
