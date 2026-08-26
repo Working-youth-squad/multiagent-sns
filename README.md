@@ -9,7 +9,7 @@
 
 - 📘 [docs/PLAN.md](docs/PLAN.md) — **총괄**: 개요·배경·개발 원칙·성공 기준(DoD/S1~S5/kill criteria)·문서 목차
 - 📂 [docs/plan/](docs/plan/) — 기능별 상세 13편: 실험설계 · 아키텍처-스택 · 멀티에이전트 · 트렌드조사 · 콘텐츠생성-품질게이트 · 미디어렌더 · 발행 · 지표-학습 · 알고리즘-신호-최적화 · 웹-알림 · 데이터모델 · 비기능-테스트 · 로드맵-리스크
-- 📊 [docs/diagrams/](docs/diagrams/) — 아키텍처·발행 사이클·학습 루프·유저 플로우·ERD (Mermaid)
+- 📊 [docs/diagrams/](docs/diagrams/) — 아키텍처·발행 사이클·학습 루프·키워드 랭킹·유저 플로우·ERD (Mermaid)
   — **기획서가 아니라 현재 코드를 그린다.** 계획만 있고 코드가 없는 항목은 점선/`미구현`으로 표시한다.
 
 > 구 SPEC.md·ERD.md의 내용은 전부 docs/plan/ 하위 문서로 이관됨 (유실 없음).
