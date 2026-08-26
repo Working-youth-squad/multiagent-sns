@@ -18,6 +18,7 @@
 | 겹 | 무엇 | 누가 정하나 |
 |---|---|---|
 | 저장 | `MetricStore`(`sns/learning/stores.py`) | **동결됨(이 PR)** — 변경은 PR + 상대 리뷰 |
+| 읽기 | `StoredMetrics`·`as_metric_map`(`sns/learning/observations.py`) | **동결됨(이 PR)** — B·C 공용 |
 | 수집 | `PollMetrics`(`sns/tools/contracts.py`) | 이미 동결(T0-3) |
 
 저장소가 **정책을 담지 않는 것**이 분할의 핵심이다. `published_items()`가 "무엇이 발행됐고
@@ -48,7 +49,7 @@
 | | |
 |---|---|
 | 소유 파일 | `sns/learning/reward.py`(신설) · `scripts/run_reward_batch.py`(신설) · `tests/test_reward.py` |
-| 읽는 계약 | `MetricStore.published_items` / `read_observation` / `save_reward`, `sns/goals.py`, `sns/signals/scoreboard.py` |
+| 읽는 계약 | `MetricStore.published_items` / `save_reward`, `sns/learning/observations.py`(관측 읽기), `sns/goals.py`, `sns/signals/scoreboard.py` |
 | 하는 일 | 관측창 → `float` 또는 `None`. goal별 가중합(공식 신호 정렬), 조회수는 log 보조, 데이터 부족이면 **None**(학습 제외) |
 | 반드시 지킬 것 | ① `save_reward`가 `topic_stats`를 알아서 갱신한다 — **호출부에서 따로 더하지 말 것**(중복 집계) ② `None`과 0.0을 섞지 말 것: 전자는 표본 아님, 후자는 "성과가 0" ③ `formula_version`은 상수로 못박아 사전등록한다 |
 | 결정할 것 | **계수**. 기획서가 "M1 실측 후 사전등록"(FR-L2)이라 임의로 정하면 안 된다. **제안: `v0-unweighted`로 뼈대만 넣고 계수는 상수 블록 하나에 모아 두기** — 실측 후 그 블록만 교체 |
@@ -59,9 +60,9 @@
 | | |
 |---|---|
 | 소유 파일 | `sns/learning/report.py`(신설) · `scripts/run_analysis_note.py`(신설) · `tests/test_analysis_report.py` · `scripts/e2e_analyst.py`(실 store 전환) |
-| 읽는 계약 | `MetricStore.read_topic_stats`(=`ReadStats`) / `save_playbook`(=`WritePlaybook`) / `save_analysis_note`, `sns/agents/analyst.py`, `sns/learning/validator.py`, `sns/signals/scoreboard.py` |
+| 읽는 계약 | `MetricStore.read_topic_stats`(=`ReadStats`) / `save_playbook`(=`WritePlaybook`) / `save_analysis_note`, **`StoredMetrics`**(= analyst의 `poll_metrics` 자리), `sns/learning/validator.py`, `sns/signals/scoreboard.py` |
 | 하는 일 | 관측 → 스코어보드 JSON → Analyst 에이전트 → **검증기 통과분만** 적재 |
-| 반드시 지킬 것 | ① 검증기 거부는 저장하지 않고 `run_event('error')`로 남긴다 — 지어낸 인용이 원장에 들어가면 그게 다음 사이클의 근거가 된다 ② 수치는 코드가 계산하고 LLM은 서술만(FR-L5) |
+| 반드시 지킬 것 | ⓪ `run_analysis`의 `poll_metrics`에 **실 어댑터를 물리지 말 것** — `StoredMetrics`를 넘긴다(안 그러면 분석마다 API를 다시 때리고, 폴링 시점과 값이 갈린다) ① 검증기 거부는 저장하지 않고 `run_event('error')`로 남긴다 — 지어낸 인용이 원장에 들어가면 그게 다음 사이클의 근거가 된다 ② 수치는 코드가 계산하고 LLM은 서술만(FR-L5) |
 | 현황 | `scripts/e2e_analyst.py`가 `FakeReadStats`/`FakeWritePlaybook`으로 돌고 있다("DB 없음 — 러너 연결은 후속"). 그 두 자리에 `PgMetricStore`의 메서드를 그대로 넣으면 된다 |
 | DoD | 검증기 거부 시나리오에서 `analysis_note` 0건 + `run_event` 1건 |
 
@@ -81,7 +82,8 @@
 ## 2. 충돌 지도
 
 ```
-sns/learning/stores.py   ← 동결(이 PR). 넷 다 읽기만
+sns/learning/stores.py        ← 동결(이 PR). 넷 다 읽기만
+sns/learning/observations.py  ← 동결(이 PR). B·C가 읽기만 (관측 → 지표)
    ├── A  schedule.py · poller.py · scripts/run_metrics_poll.py
    ├── B  reward.py           · scripts/run_reward_batch.py
    ├── C  report.py           · scripts/run_analysis_note.py
@@ -116,7 +118,16 @@ A~D가 끝나야 화면이 읽을 것이 생긴다. 화면은 기존 3앱과 같
 템플릿 엔진 없음)이고, 4구역은 `docs/plan/10-웹-알림.md` §2에 있다. 수치는 코드 집계,
 서술은 `sns/learning/validator.py`를 통과한 것만.
 
-## 5. 미결정 (팀)
+## 5. 정해진 것 / 미결정 (팀)
+
+**정해짐(2026-08-26)**
+
+- **reward 대표 창 = 72h(`REWARD_WINDOW_INDEX = 2`)**. 초기 확산이 대체로 끝난 시점이고,
+  6·24h는 조기 판정(FR-A3) 전용으로 남긴다. B와 C가 **같은 창**을 봐야 보상과 리포트가
+  같은 사실을 말한다 — 각자 정하면 갈린다.
+- **관측 읽기는 `sns/learning/observations.py` 하나**(§0). B·C가 각자 만들지 않는다.
+
+**미결정**
 
 1. **reward 계수 사전등록** — B의 블로커가 아니라 B의 마지막 한 줄이다(§1-B).
 2. **폴링 지평** — 제안 14일(§1-A).

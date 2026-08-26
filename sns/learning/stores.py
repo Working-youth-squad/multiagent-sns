@@ -247,7 +247,9 @@ class InMemoryMetricStore:
         self, *, publication_id: str, window_index: int
     ) -> tuple[MetricValue, ...]:
         found = self.observations.get((publication_id, window_index))
-        return () if found is None else found[1]
+        # metric_key 순 — Pg가 ORDER BY로 주는 순서와 맞춘다. 두 구현이 순서로
+        # 갈리면 인메모리에서 통과한 비교가 운영에서 뒤집힌다.
+        return () if found is None else tuple(sorted(found[1], key=lambda v: v.metric_key))
 
     def save_reward(
         self, *, publication_id: str, reward_value: float | None, formula_version: str
