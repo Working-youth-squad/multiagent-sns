@@ -30,6 +30,8 @@ EXPECTED_TABLES = {
     "playbook",
     "analysis_note",
     "run_event",
+    "chat_conversation",
+    "chat_message",
 }
 
 # channel~publication FK 체인을 한 번에 만들고 publication id를 돌려준다

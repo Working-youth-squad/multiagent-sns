@@ -109,9 +109,14 @@ class KeywordRanking:
     pool: tuple[KeywordStat, ...]
     dropped: tuple[KeywordStat, ...]
     unscored: tuple[KeywordStat, ...] = ()
-    """rank_std가 정의되지 않아 밴드 판정을 받지 않은 후보 — **candidates의 부분집합**이다.
+    """rank_std가 정의되지 않아 밴드 판정을 받지 않은 후보 — 별도 목록이 아니라 표식이다.
 
-    별도 목록이 아니라 표식이라, `len(candidates) + len(unscored)`는 아무 뜻이 없다.
+    `len(candidates) + len(unscored)`는 아무 뜻이 없다.
+
+    정확히는 **`top` 컷 이전 전량에서** 계산된다. `candidates`는 `kept[:top]`이므로
+    unscored가 candidates의 부분집합인 것은 컷이 일어나지 않았을 때뿐이고, 잘린 경우
+    `len(unscored) > len(candidates)`가 될 수 있다(실측: 후보 10건에 미판정 23건).
+    "후보 N건 중 M건" 식으로 표시하려는 소비자는 `candidates`와 교집합을 먼저 낼 것.
     """
     excluded: tuple[tuple[str, str], ...] = ()
     """(걸린 표기, 걸린 제외 키워드). 호출자가 `exclude`를 준 경우만."""

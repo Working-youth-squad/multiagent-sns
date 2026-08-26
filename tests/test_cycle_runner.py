@@ -15,6 +15,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool
 
+from sns.agents.topic import TopicResult
 from sns.quality.gate import QualityReport
 from sns.runner.cycle import CycleTarget, run_cycle
 from sns.runner.store import InMemoryCycleStore
@@ -506,3 +507,116 @@ def test_different_content_passes_the_similarity_gate() -> None:
         assess_quality=_passing_quality,
     )
     assert len(store.media_assets) == 1
+
+
+# ── 시드 주제 주입 (FR-W5 · 챗봇 확정 주제) ────────────────────────────
+
+
+_SEED = TopicResult(
+    title="개발자 연봉 협상 3가지",
+    category="꿀팁",
+    source="chat_seed",
+    summary="협상 전 준비할 것",
+    reason="사용자가 대화에서 직접 확정",
+)
+
+
+def _run_seeded(script: list[AIMessage], **kwargs: Any) -> Any:
+    store = InMemoryCycleStore()
+    result = run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target(mode="hybrid")],
+        model=ScriptedChatModel(messages=iter(script)),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+        **kwargs,
+    )
+    return store, result
+
+
+def test_seed_topic_skips_the_topic_agent() -> None:
+    """스크립트에 주제 선택분이 **없어도** 완주해야 한다 — 에이전트를 안 부른다는 증거."""
+    store, result = _run_seeded(_content_script(), seed_topic=_SEED)
+
+    assert result.status == "completed"
+    assert len(result.prepared) == 1
+    assert store.topics[result.topic_id]["title"] == "개발자 연봉 협상 3가지"  # type: ignore[index]
+
+
+def test_seed_topic_is_recorded_as_seed_not_agent_choice() -> None:
+    """원장이 '에이전트가 골랐다'고 읽히면 auto vs hybrid 비교(FR-E4)가 오염된다."""
+    store, _ = _run_seeded(_content_script(), seed_topic=_SEED)
+
+    called = [e for e in store.events if e["kind"] == "agent_called"]
+    topic_event = next(e for e in called if e["payload"].get("topic_id"))
+    assert topic_event["payload"]["agent"] == "seed"
+
+
+def test_without_seed_topic_the_agent_still_chooses() -> None:
+    """기존 경로 무변경 — seed_topic 기본값 None이면 예전과 같이 돈다."""
+    store, result = _run_seeded(_topic_script() + _content_script())
+
+    assert result.status == "completed"
+    called = [e for e in store.events if e["kind"] == "agent_called"]
+    topic_event = next(e for e in called if e["payload"].get("topic_id"))
+    assert topic_event["payload"]["agent"] == "topic"
+
+
+def test_seed_topic_ignores_recent_topic_exclusion() -> None:
+    """사람이 같은 주제를 다시 다루겠다고 고른 것을 되돌릴 근거가 아니다."""
+    store = InMemoryCycleStore()
+    store.save_topic(title=_SEED.title, summary=_SEED.summary, source=_SEED.source)
+    result = run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target(mode="hybrid")],
+        model=ScriptedChatModel(messages=iter(_content_script())),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+        seed_topic=_SEED,
+    )
+    assert result.status == "completed"
+    assert len(result.prepared) == 1
+
+
+def test_seed_topic_is_screened_before_it_reaches_the_ledger() -> None:
+    """FR-W5 — 입력 프롬프트도 FR-Q7 대상. 발행 관문은 *생성된* 콘텐츠만 봐서 늦다."""
+    store = InMemoryCycleStore()
+    dirty = TopicResult(
+        title="크랙으로 유료 IDE 쓰는 법",
+        category="꿀팁",
+        source="chat_seed",
+        summary="정품인증우회 방법 정리",
+        reason="사용자 확정",
+    )
+    result = run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target(mode="hybrid")],
+        # 콘텐츠 스크립트를 주지 않는다 — 여기까지 오면 안 된다는 뜻이다.
+        model=ScriptedChatModel(messages=iter([])),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+        seed_topic=dirty,
+    )
+
+    assert result.status == "failed"
+    assert result.topic_id is None
+    assert [t.outcome for t in result.targets] == ["blocked"]
+    assert store.topics == {}  # 금지 소재가 원장에 남지 않는다
+    assert any(e["payload"].get("gate") == "seed" for e in store.events if e["kind"] == "notice")
+
+
+def test_clean_seed_passes_the_screen() -> None:
+    store, result = _run_seeded(_content_script(), seed_topic=_SEED)
+    assert result.status == "completed"
+    assert not [
+        e for e in store.events if e["kind"] == "notice" and e["payload"].get("gate") == "seed"
+    ]
