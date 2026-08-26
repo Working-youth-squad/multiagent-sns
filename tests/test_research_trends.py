@@ -4,6 +4,7 @@ import time
 
 from sns.research.trends import (
     ENV_GEMINI_API_KEY,
+    ENV_GROUNDING_MODEL,
     ENV_NAVER_CLIENT_ID,
     ENV_NAVER_CLIENT_SECRET,
     ENV_YOUTUBE_API_KEY,
@@ -190,3 +191,30 @@ def test_grounding_prompt_binds(monkeypatch) -> None:  # type: ignore[no-untyped
         sources=("llm_grounding",)
     )
     assert seen["prompt"] == "요리 주제를 나열해줘"
+
+
+def test_grounding_model_from_env(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """모델을 env로 갈아끼운다 — 은퇴하면 코드 배포 없이 바꿀 수 있어야 한다."""
+    seen: dict[str, object] = {}
+
+    def fake_grounding(limit: int, **kw: object) -> tuple[str, ...]:
+        seen["url"] = kw.get("url")
+        return ()
+
+    monkeypatch.setattr("sns.research.sources.llm_grounding.fetch_llm_grounding", fake_grounding)
+    env = {**_ALL_KEYS, ENV_GROUNDING_MODEL: "gemini-9-future"}
+    default_service(env=env)(sources=("llm_grounding",))
+    assert "gemini-9-future" in str(seen["url"])
+
+
+def test_grounding_model_defaults_when_env_absent(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """안 넘기면 fetcher 기본값이 쓰인다 — 빈 값을 바인딩에 밀어넣지 않는다."""
+    seen: dict[str, object] = {}
+
+    def fake_grounding(limit: int, **kw: object) -> tuple[str, ...]:
+        seen["kw"] = kw
+        return ()
+
+    monkeypatch.setattr("sns.research.sources.llm_grounding.fetch_llm_grounding", fake_grounding)
+    default_service(env=_ALL_KEYS)(sources=("llm_grounding",))
+    assert "url" not in seen["kw"]  # type: ignore[operator]

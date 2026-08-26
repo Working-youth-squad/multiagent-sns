@@ -27,6 +27,10 @@ ENV_NAVER_CLIENT_ID = "NAVER_CLIENT_ID"
 ENV_NAVER_CLIENT_SECRET = "NAVER_CLIENT_SECRET"
 ENV_YOUTUBE_API_KEY = "YOUTUBE_API_KEY"
 ENV_GEMINI_API_KEY = "GEMINI_API_KEY"
+# 그라운딩 모델을 코드 배포 없이 갈아끼우는 자리. 예전에 URL에 박힌 모델이 은퇴하면서
+# 소스가 조용히 죽었고(404), 고치려면 배포가 필요했다
+# ([sns.research.sources.llm_grounding.DEFAULT_MODEL]).
+ENV_GROUNDING_MODEL = "GROUNDING_MODEL"
 
 
 class ResearchTrendsService:
@@ -121,11 +125,15 @@ def default_service(
       전체가 데이터랩의 추이 비교 키워드다. 프로필의 `(topic_major, *topic_subs)`가
       그대로 들어온다 — 사람이 인터뷰에서 고른 말이 곧 검색어다.
     - `grounding_prompt`: LLM 그라운딩 질의([sns.topic_policy.grounding_prompt_for]).
+
+    그라운딩 **모델**은 env `GROUNDING_MODEL`로 바꾼다 — 프로필이 아니라 운영 설정이라
+    자격증명과 같은 자리에서 읽는다. 모델이 은퇴해도 코드 배포 없이 넘어갈 수 있어야
+    한다(예전에 URL에 박힌 모델이 은퇴해 소스가 조용히 죽었다).
     """
     from sns.research.sources.devnews import fetch_hacker_news, fetch_lobsters
     from sns.research.sources.github_trending import fetch_github_trending
     from sns.research.sources.google_trends import fetch_google_trends
-    from sns.research.sources.llm_grounding import fetch_llm_grounding
+    from sns.research.sources.llm_grounding import fetch_llm_grounding, gemini_url
     from sns.research.sources.naver_datalab import fetch_naver_datalab
     from sns.research.sources.naver_search import fetch_naver_search
     from sns.research.sources.youtube_popular import fetch_youtube_popular
@@ -160,8 +168,14 @@ def default_service(
 
     gemini_key = env_map.get(ENV_GEMINI_API_KEY)
     if gemini_key:
-        prompt = {"prompt": grounding_prompt} if grounding_prompt else {}
-        fetchers["llm_grounding"] = _bind(fetch_llm_grounding, api_key=gemini_key, **prompt)
+        # 안 넘긴 값은 바인딩에서 아예 뺀다 — fetcher의 기본값이 살아 있게.
+        bound: dict[str, object] = {"api_key": gemini_key}
+        if grounding_prompt:
+            bound["prompt"] = grounding_prompt
+        grounding_model = env_map.get(ENV_GROUNDING_MODEL)
+        if grounding_model:
+            bound["url"] = gemini_url(grounding_model)
+        fetchers["llm_grounding"] = _bind(fetch_llm_grounding, **bound)
 
     if sources is not None:
         # 이 주제가 안 쓰는 소스는 키가 있어도 등록하지 않는다.
