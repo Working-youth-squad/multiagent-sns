@@ -440,18 +440,23 @@ def test_findings_are_logged_with_location() -> None:
 
 
 def test_near_duplicate_of_recent_content_is_blocked() -> None:
-    """어제 낸 대본을 살짝 바꿔 다시 낸 것 — 실제로 일어난 사고다."""
+    """어제 낸 대본을 살짝 바꿔 다시 낸 것 — 실제로 일어난 사고다.
+
+    근접중복은 이제 차단 전에 1회 재생성한다 — 재생성마저 겹치면(스크립트가 같은
+    spec을 두 번 내면) 그때 차단이고, 렌더는 끝까지 하지 않는다.
+    """
     store = InMemoryCycleStore()
     yesterday = _spec_with()
     store.save_content_item(
         cycle_id="c0", topic_id="t0", content_format="shorts",
         body="본문", media_spec=yesterday, hook_pattern="curiosity", status="approved",
     )  # fmt: skip
+    script = _topic_script() + _content_script(_spec_with()) + _content_script(_spec_with())
     run_cycle(
         store,
         goal_ref="engagement_depth",
         targets=[_target(fmt="shorts")],
-        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(_spec_with()))),
+        model=ScriptedChatModel(messages=iter(script)),
         research_trends=FakeResearchTrends(),
         read_stats=FakeReadStats(),
         render_media=FakeRenderMedia(),
@@ -595,3 +600,104 @@ def test_clean_seed_passes_the_screen() -> None:
     assert not [
         e for e in store.events if e["kind"] == "notice" and e["payload"].get("gate") == "seed"
     ]
+
+
+def test_research_and_audience_thread_to_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    """리서치 seam — 근거 노트·audience·회피 목록이 run_content까지 전달된다."""
+    import sns.runner.cycle as cycle_mod
+
+    captured: dict[str, Any] = {}
+    real_run_content = cycle_mod.run_content
+
+    def spy(model: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return real_run_content(model, **kwargs)
+
+    monkeypatch.setattr(cycle_mod, "run_content", spy)
+    store = InMemoryCycleStore()
+    result = run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target()],
+        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script())),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+        research_topic=lambda t: f"- {t.title}의 사실 1 (출처: example.com)",
+        audience="요리",
+    )
+    assert result.status == "completed"
+    assert "사실 1" in captured["research"]
+    assert captured["audience"] == "요리"
+    assert "avoid_titles" in captured
+
+
+def test_research_failure_does_not_kill_cycle() -> None:
+    def boom(topic: TopicResult) -> str:
+        raise OSError("network down")
+
+    store = InMemoryCycleStore()
+    result = run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target()],
+        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script())),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+        research_topic=boom,
+    )
+    assert result.status == "completed"  # 근거 없이 진행
+    notices = [e for e in store.events if e.get("kind") == "notice"]
+    assert any(e["payload"].get("tool") == "research_topic" for e in notices)
+
+
+def test_near_duplicate_regenerates_once_before_blocking() -> None:
+    """근접중복이면 차단 전에 1회 재생성 — 두 번째 산출이 다르면 prepared로 간다."""
+    store = InMemoryCycleStore()
+    # 직전 사이클이 남긴 것과 같은 spec을 첫 시도가 다시 만든다.
+    store.save_content_item(
+        cycle_id="c0", topic_id="t0", content_format="feed_image", body="이전 본문",
+        media_spec=_CARD_SPEC, hook_pattern="curiosity", status="approved",
+    )  # fmt: skip
+    fresh = {
+        "hook": "오늘의 발견", "title": "제너레이터", "body": ["yield 한 줄"], "footer": "저장",
+    }  # fmt: skip
+    script = _topic_script() + _content_script(_CARD_SPEC) + _content_script(fresh)
+    result = run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target()],
+        model=ScriptedChatModel(messages=iter(script)),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+    )
+    assert result.targets[0].outcome == "prepared"
+    notices = [e for e in store.events if e.get("kind") == "notice"]
+    assert any(e["payload"].get("reason") == "near_duplicate_regenerate" for e in notices)
+
+
+def test_near_duplicate_twice_is_blocked() -> None:
+    """재생성까지 겹치면 기존대로 blocked — 무한 재시도는 없다."""
+    store = InMemoryCycleStore()
+    store.save_content_item(
+        cycle_id="c0", topic_id="t0", content_format="feed_image", body="이전 본문",
+        media_spec=_CARD_SPEC, hook_pattern="curiosity", status="approved",
+    )  # fmt: skip
+    script = _topic_script() + _content_script(_CARD_SPEC) + _content_script(_CARD_SPEC)
+    result = run_cycle(
+        store,
+        goal_ref="engagement_depth",
+        targets=[_target()],
+        model=ScriptedChatModel(messages=iter(script)),
+        research_trends=FakeResearchTrends(),
+        read_stats=FakeReadStats(),
+        render_media=FakeRenderMedia(),
+        assess_quality=_passing_quality,
+    )
+    assert result.targets[0].outcome == "blocked"
+    assert "근접중복" in (result.targets[0].error or "")

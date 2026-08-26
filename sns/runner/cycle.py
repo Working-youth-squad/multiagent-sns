@@ -234,6 +234,21 @@ def run_cycle(
             },
         )
 
+        # ── 주제 리서치(근거 노트) — 대상 수와 무관하게 사이클당 1회 ────────
+        research_note: str | None = None
+        if research_topic is not None:
+            try:
+                research_note = research_topic(topic) or None
+            except Exception as exc:  # 리서치 실패는 사이클을 죽이지 않는다 — 근거 없이 진행
+                store.log_event(
+                    cycle_id=cycle_id,
+                    kind="notice",
+                    payload={"tool": "research_topic", "reason": str(exc)},
+                )
+
+        # 회피 목록 — 재탕을 입력 단계에서 막는다(temperature=0 결정론은 유지).
+        avoid_titles = tuple(store.recent_topic_titles(days=RECENT_TOPIC_DAYS))[:10]
+
         # ── 대상별 콘텐츠 제작·적재(도메인 오류만 격리) ─────────────────
         results: list[TargetResult] = []
         for target in targets:
@@ -268,6 +283,9 @@ def run_cycle(
                         resolve_media_spec=resolve_media_spec,
                         recent_signatures=recent_signatures,
                         playbook_guidance=playbook_guidance,
+                        research=research_note,
+                        audience=audience,
+                        avoid_titles=avoid_titles,
                     )
                 )
             except (ContentRejected, CardSpecError, VideoSpecError) as exc:
@@ -331,12 +349,16 @@ def _prepare_target(
     resolve_media_spec: ResolveMediaSpec | None,
     recent_signatures: tuple[frozenset[str], ...],
     playbook_guidance: str | None,
+    research: str | None = None,
+    audience: str | None = None,
+    avoid_titles: Sequence[str] = (),
 ) -> TargetResult:
     fmt = target.content_format
 
     content = run_content(
-        model, topic=topic, content_format=fmt, playbook_guidance=playbook_guidance
-    )
+        model, topic=topic, content_format=fmt, playbook_guidance=playbook_guidance,
+        research=research, audience=audience, avoid_titles=avoid_titles,
+    )  # fmt: skip
     store.log_event(
         cycle_id=cycle_id,
         kind="agent_called",
@@ -349,6 +371,30 @@ def _prepare_target(
     # 캡션만 보면 뚫린다. 이미지 해소는 텍스트를 바꾸지 않으므로 그 전에 봐도 같다.
     findings = screen_content(body=content.body, media_spec=content.media_spec)
     similarity = max_similarity(spec_signature(content.media_spec), recent_signatures)
+    if not findings and similarity > MAX_CONTENT_SIMILARITY:
+        # 근접중복은 차단하기 전에 **1회 재생성**한다 — 차단은 아무것도 만들지 않지만
+        # 재생성은 다양성을 만든다. temperature=0이라도 지침 한 줄이 입력을 바꾼다.
+        store.log_event(
+            cycle_id=cycle_id,
+            kind="notice",
+            payload={
+                "gate": "publish",
+                "channel_id": target.channel_id,
+                "reason": "near_duplicate_regenerate",
+                "similarity": round(similarity, 2),
+            },
+        )
+        retry_guidance = (playbook_guidance or "") + (
+            f"\n직전 시도가 최근 콘텐츠와 유사도 {similarity:.2f}로 겹쳤다. "
+            "같은 주제라도 완전히 다른 각도·다른 구성·다른 소재로 다시 써라."
+        )
+        content = run_content(
+            model, topic=topic, content_format=fmt, playbook_guidance=retry_guidance,
+            research=research, audience=audience, avoid_titles=avoid_titles,
+        )  # fmt: skip
+        findings = screen_content(body=content.body, media_spec=content.media_spec)
+        similarity = max_similarity(spec_signature(content.media_spec), recent_signatures)
+
     reasons = [f.describe() for f in findings]
     if similarity > MAX_CONTENT_SIMILARITY:
         reasons.append(

@@ -100,7 +100,10 @@ def _bind(fetch: Callable[..., tuple[str, ...]], **bound: object) -> SourceFetch
 
 
 def default_service(
-    timeout_s: float = DEFAULT_TIMEOUT_S, *, env: Mapping[str, str] | None = None
+    timeout_s: float = DEFAULT_TIMEOUT_S,
+    *,
+    env: Mapping[str, str] | None = None,
+    extra_sources: Mapping[str, SourceFetcher] | None = None,
 ) -> ResearchTrendsService:
     """사용 가능한 실 fetcher를 배선한 서비스. 새 소스가 붙을 때마다 여기 등록한다.
 
@@ -109,6 +112,9 @@ def default_service(
     YouTube·LLM 그라운딩)는 env에 키가 있을 때만 등록 — 없으면 미등록이라 호출돼도
     ok=False로 격리된다(§2, 부분 가용성 허용). LLM 그라운딩은 선택이라 키가 있을
     때만 기본 소스에 합류한다.
+
+    `extra_sources`는 호출자 조립분(예: 채널 프로필에 묶인 소스)을 기본 소스 위에
+    얹는다 — 같은 이름이면 호출자 쪽이 이긴다.
     """
     from sns.research.sources.devnews import fetch_hacker_news, fetch_lobsters
     from sns.research.sources.github_trending import fetch_github_trending
@@ -144,6 +150,9 @@ def default_service(
     gemini_key = env_map.get(ENV_GEMINI_API_KEY)
     if gemini_key:
         fetchers["llm_grounding"] = _bind(fetch_llm_grounding, api_key=gemini_key)
+
+    if extra_sources:
+        fetchers.update(extra_sources)
 
     return ResearchTrendsService(fetchers, timeout_s=timeout_s)
 

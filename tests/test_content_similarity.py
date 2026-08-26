@@ -102,3 +102,16 @@ def test_card_and_video_share_one_mechanism() -> None:
     """포맷별로 따로 만들면 한쪽만 배선되는 사고가 또 난다."""
     assert spec_signature(CARD)
     assert max_similarity(spec_signature(CARD), (spec_signature(CARD),)) == 1.0
+
+
+def test_particle_variation_is_still_similar() -> None:
+    """조사만 바뀐 재탕 — 어절 집합이던 시절 임계에 안 걸리던 실측 구멍이다."""
+    varied = {
+        "topic": "리스트에서 in은 쓰지 마세요",
+        "slides": [
+            {"subtitle": "왜 느린가", "narration": "in 연산자가 처음부터 끝까지 훑어요."},
+            {"subtitle": "해법", "narration": "셋으로 바꾸니 한 번입니다."},
+        ],
+    }
+    similarity = max_similarity(spec_signature(varied), (spec_signature(VIDEO),))
+    assert similarity > MAX_CONTENT_SIMILARITY, similarity

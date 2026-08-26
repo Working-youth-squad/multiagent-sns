@@ -28,7 +28,7 @@ import hashlib
 import json
 import os
 import sys
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import url2pathname
@@ -37,6 +37,8 @@ import psycopg
 from dotenv import load_dotenv
 
 from sns.agents.models import make_model
+from sns.agents.research import research_topic
+from sns.agents.topic import TopicResult
 from sns.onboarding.character import make_scene_generate
 from sns.onboarding.profile import build_channel_brief
 from sns.onboarding.store import PgOnboardingStore
@@ -49,8 +51,16 @@ from sns.render.images.resolve import ImageResolution, resolve_images
 from sns.render.video.media import VideoRenderMedia
 from sns.render.video.quality import check_video
 from sns.render.video.tts import synthesize_google
-from sns.research.trends import default_service
-from sns.runner.cycle import AssessQuality, CycleTarget, ResolveMediaSpec, run_cycle
+from sns.research.keywords import rank_keywords
+from sns.research.sources.llm_grounding import fetch_llm_grounding
+from sns.research.trends import SourceFetcher, default_service
+from sns.runner.cycle import (
+    AssessQuality,
+    CycleTarget,
+    ResearchTopic,
+    ResolveMediaSpec,
+    run_cycle,
+)
 from sns.runner.store import PgCycleStore
 from sns.tools.contracts import ContentFormat, MediaAsset, MediaKind, RenderMedia
 from sns.tools.fakes import FakePublish, FakeReadStats
@@ -110,6 +120,24 @@ def make_video_gate(media_store: DirMediaStore, ffprobe: str, ffmpeg: str) -> As
         return QualityReport(status="passed" if report.passed else "failed", checks=checks)
 
     return assess
+
+
+def make_channel_keyword_fetcher(subs: Sequence[str]) -> SourceFetcher:
+    """세부주제별 자동완성 키워드 랭킹(#37 rank_keywords)을 SourceFetcher 모양으로.
+
+    외부 서비스의 소스별 타임아웃(10s) 안에 끝나야 하므로 세부주제는 앞의 2개,
+    내부 타임아웃은 4s로 죈다 — 늦으면 소스째 ok=False로 격리되는 게 규율이다.
+    """
+    picked = tuple(subs[:2])
+
+    def fetch(limit: int) -> tuple[str, ...]:
+        items: list[str] = []
+        for sub in picked:
+            ranking = rank_keywords(sub, top=max(limit // max(len(picked), 1), 3), timeout_s=4.0)
+            items.extend(s.text for s in ranking.candidates)
+        return tuple(dict.fromkeys(items))[:limit]
+
+    return fetch
 
 
 # 대본 단계의 자리표시 자산 URL — --render-item이 진짜 미디어로 갱신하기 전의 표식.
@@ -308,8 +336,32 @@ def main() -> int:
                 "화면 글자는 최소로 — subtitle은 2~4단어 키워드, narration은 짧은 한 문장."
             )
 
-        # 프로필 맞춤 트렌드 조립은 트렌드 담당 몫 — 완성되면 이 줄만 교체한다.
-        trends = default_service()
+        # 프로필 맞춤 트렌드 — 채널 세부주제를 소스에 묶는다. 상세 조립(소스 선별·
+        # 밴드 파라미터)은 트렌드 담당 몫이라 이 블록만 교체하면 된다.
+        #   channel_keywords: 팀원의 질의어 기반 자동완성 랭킹(#37, 무인증) — 세부주제
+        #     주변에서 실제로 검색되는 키워드가 주제 후보 풀에 들어간다.
+        #   llm_grounding_channel: 채널 주제로 물은 검색 그라운딩(문장형 후보, 유료 1회).
+        extra: dict[str, SourceFetcher] = {
+            "channel_keywords": make_channel_keyword_fetcher(profile.topic_subs)
+        }
+        gemini_key = os.environ.get("GEMINI_API_KEY", "")
+        if gemini_key:
+            channel_topic = f"{profile.topic_major} {' '.join(profile.topic_subs)}"
+
+            def _grounded(limit: int) -> tuple[str, ...]:
+                return fetch_llm_grounding(limit, api_key=gemini_key, topic=channel_topic)
+
+            extra["llm_grounding_channel"] = _grounded
+        trends = default_service(extra_sources=extra)
+
+        # 근거 노트 리서치 — 확정된 주제의 사실·수치를 대본이 인용할 수 있게(FR-Q7 정합).
+        research_fn: ResearchTopic | None = None
+        if gemini_key:
+
+            def _research(topic: TopicResult) -> str:
+                return research_topic(topic.title, api_key=gemini_key)
+
+            research_fn = _research
 
         result = run_cycle(
             PgCycleStore(conn),
@@ -328,6 +380,8 @@ def main() -> int:
             render_media=renderer,
             assess_quality=assess,
             resolve_media_spec=resolve_spec,
+            research_topic=research_fn,
+            audience=profile.topic_major,
             channel_brief=brief,
             topic_categories=profile.categories,
             playbook_guidance=playbook,

@@ -96,3 +96,17 @@ def test_media_binding_dispatches_by_style() -> None:
     render_media = VideoRenderMedia(InMemoryMediaStore(), synthesize=tone_wav)
     asset = render_media(MOTION_DICT, "video")
     assert asset.kind == "video" and asset.storage_url.endswith(".mp4")
+
+
+def test_caption_band_makes_text_readable_on_bright_background() -> None:
+    """자막 뒤 반투명 밴드 — 밝은 배경(화이트 모드 그라데이션) 위에서도 자막 영역이
+    어둡게 깔리고 흰 글자가 얹힌다. 그림자 1획이던 시절 밝은 사진에서 묻히던 실측 구멍."""
+    spec = parse_video_spec(MOTION_DICT)
+    render = render_motion_video(spec, synthesize=tone_wav)
+    frame = _frame_at(render.mp4, 0.8)  # 텍스트 라이즈+페이드(0.4s)가 끝난 뒤
+    y = round(spec.height * 0.76) + 20  # 자막 첫 줄 밴드 안쪽
+    row = [frame.getpixel((x, y)) for x in range(spec.width // 2 - 200, spec.width // 2 + 200, 8)]
+    darkest = min(sum(p[:3]) for p in row)
+    brightest = max(sum(p[:3]) for p in row)
+    assert darkest < 330, f"밴드가 없다 — 가장 어두운 픽셀 {darkest}"  # 반투명 검정
+    assert brightest > 600, f"흰 글자가 없다 — 가장 밝은 픽셀 {brightest}"

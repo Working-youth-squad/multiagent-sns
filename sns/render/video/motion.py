@@ -121,7 +121,7 @@ def _text_png(slide: Slide, spec: VideoSpec, font_path: str) -> bytes:
             fill=(0, 0, 0, _BAND_ALPHA),
         )
         draw.text((x, y), line, font=cap_font, fill=(255, 255, 255, 255))
-        y += cap_font.size + pad_y * 2 + round(cap_font.size * 0.16)
+        y += round(cap_font.size * 1.16) + pad_y * 2
 
     buf = io.BytesIO()
     layer.save(buf, format="PNG", optimize=False, compress_level=6)

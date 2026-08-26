@@ -172,3 +172,31 @@ def test_llm_fetch_posts_with_key() -> None:
     assert req.method == "POST"
     assert "key=gk" in req.full_url
     assert json.loads(req.data)["tools"] == [{"google_search": {}}]
+
+
+def test_llm_fetch_binds_channel_topic_into_prompt() -> None:
+    """채널 프로필 최소 바인딩 — topic이 있으면 그 분야로 묻는다(기본은 기존 개발 프롬프트)."""
+    sink: dict[str, Any] = {}
+    fetch_llm_grounding(2, api_key="gk", topic="요리 베이킹", opener=_opener(_GEMINI, sink))
+    prompt = json.loads(sink["target"].data)["contents"][0]["parts"][0]["text"]
+    assert "요리 베이킹" in prompt and "개발자" not in prompt
+
+    sink2: dict[str, Any] = {}
+    fetch_llm_grounding(2, api_key="gk", opener=_opener(_GEMINI, sink2))
+    default_prompt = json.loads(sink2["target"].data)["contents"][0]["parts"][0]["text"]
+    assert "개발자" in default_prompt  # 미지정이면 기존 동작 그대로
+
+
+def test_research_topic_returns_grounded_note() -> None:
+    """주제 리서치 — 근거 노트 원문을 그대로 돌려준다(줄 파싱 없음)."""
+    from sns.agents.research import research_topic
+
+    note = json.dumps(
+        {"candidates": [{"content": {"parts": [{"text": "- 오븐 예열은 180도 (출처: a.com)"}]}}]}
+    ).encode()
+    sink: dict[str, Any] = {}
+    out = research_topic("베이킹 예열", api_key="gk", opener=_opener(note, sink))
+    assert out == "- 오븐 예열은 180도 (출처: a.com)"
+    prompt = json.loads(sink["target"].data)["contents"][0]["parts"][0]["text"]
+    assert "베이킹 예열" in prompt
+    assert json.loads(sink["target"].data)["tools"] == [{"google_search": {}}]
