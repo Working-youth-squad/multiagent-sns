@@ -99,10 +99,19 @@ def _load_json(payload: bytes) -> Mapping[str, object]:
 _GOOGLE_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
 
 
-def _google_request(model: str, prompt: str, api_key: str) -> urllib.request.Request:
+def _google_request(
+    model: str, prompt: str, api_key: str, reference_png: bytes | None
+) -> urllib.request.Request:
+    # 레퍼런스 이미지(캐릭터 앵커)를 앞에 실으면 모델이 그 캐릭터를 유지한 장면을 그린다
+    # ([sns.onboarding.character]의 일관성 트랙 — 이미지 파트가 텍스트보다 앞이어야 한다).
+    parts: list[dict[str, object]] = []
+    if reference_png is not None:
+        encoded = base64.b64encode(reference_png).decode()
+        parts.append({"inlineData": {"mimeType": "image/png", "data": encoded}})
+    parts.append({"text": prompt})
     return urllib.request.Request(
         f"{_GOOGLE_BASE}/{model}:generateContent",
-        data=json.dumps({"contents": [{"parts": [{"text": prompt}]}]}).encode(),
+        data=json.dumps({"contents": [{"parts": parts}]}).encode(),
         headers={"x-goog-api-key": api_key, "Content-Type": "application/json"},
     )
 
@@ -131,7 +140,13 @@ def _google_parse(payload: bytes) -> bytes:
 _OPENAI_URL = "https://api.openai.com/v1/images/generations"
 
 
-def _openai_request(model: str, prompt: str, api_key: str) -> urllib.request.Request:
+def _openai_request(
+    model: str, prompt: str, api_key: str, reference_png: bytes | None
+) -> urllib.request.Request:
+    if reference_png is not None:
+        # Images API는 레퍼런스가 별도 엔드포인트(edits, multipart)라 통로가 다르다 —
+        # 필요해지기 전엔 열지 않는다.
+        raise ImageGenerationError("레퍼런스 이미지는 google 프로바이더만 지원합니다")
     # 정사각 슬롯이라 1024×1024를 주문한다 — 크롭 손실이 없다.
     body: dict[str, object] = {"model": model, "prompt": prompt, "n": 1, "size": "1024x1024"}
     # gpt-image-1은 response_format을 **받지 않는다**(보내면 400). 항상 b64로 돌려준다.
@@ -168,7 +183,7 @@ class Provider:
     env_key: str
     signup_hint: str
     quota_hint: str
-    build_request: Callable[[str, str, str], urllib.request.Request]
+    build_request: Callable[[str, str, str, bytes | None], urllib.request.Request]
     parse: Callable[[bytes], bytes]
 
 
@@ -220,6 +235,7 @@ def generate_image(
     model: str | None = None,
     opener: Opener = DEFAULT_OPENER,
     style_rules: Sequence[str] = STYLE_RULES,
+    reference_png: bytes | None = None,
 ) -> bytes:
     """주제 → 이미지 바이트. 게이트를 **요청 전에** 통과해야 한다(FR-Q7, 유료 호출 방어)."""
     provider, model_name = resolve_model(model)
@@ -230,7 +246,9 @@ def generate_image(
     if not api_key:
         raise ImageGenerationError(f"env {provider.env_key}가 없습니다 — {provider.signup_hint}")
 
-    request = provider.build_request(model_name, build_prompt(subject, style_rules), api_key)
+    request = provider.build_request(
+        model_name, build_prompt(subject, style_rules), api_key, reference_png
+    )
     try:
         payload = fetch_bytes(
             request, timeout_s=TIMEOUT_S, opener=opener, max_bytes=MAX_IMAGE_BYTES * 2

@@ -181,6 +181,17 @@ def _tune_block(recommendation: Mapping[str, object] | None) -> str:
     )
 
 
+# 느린 제출(트렌드+LLM ~1분, 캐릭터 생성)의 중복 클릭 방지 — 제출이 시작된 뒤 버튼을
+# 잠그고 클릭한 버튼의 문구만 바꾼다(이전 버튼 제외). 두 번 눌리면 추천 LLM이 중복
+# 호출되고, 계정 만들기는 핸들 UNIQUE 위반 500이 났다(실사고).
+_SLOW_SUBMIT = (
+    ' onsubmit="const b=event.submitter;setTimeout(()=>{'
+    "this.querySelectorAll('button').forEach(x=>x.disabled=true);"
+    "if(b&&!b.formAction.includes('/back/'))b.textContent='처리 중… (최대 1분)'"
+    '},0)"'
+)
+
+
 def _back_button(to_step: int) -> str:
     """같은 폼의 답(hidden 포함)을 실은 채 이전 화면을 다시 그린다 — 입력 유실 없음.
 
@@ -255,7 +266,7 @@ def _step_goal(state: Mapping[str, str]) -> tuple[str, str]:
 def _step_character(state: Mapping[str, str]) -> tuple[str, str]:
     choices = "".join(_radio("style", key, label) for key, label in CHARACTER_STYLES.items())
     body = (
-        '<form method="post" action="/interview/finish">'
+        f'<form method="post" action="/interview/finish"{_SLOW_SUBMIT}>'
         f"{_hidden(state, ('platform', 'handle', 'major', 'subs', 'tone', 'goal_ref'))}{choices}"
         '<p class="meta">영상에 등장할 캐릭터의 그림 스타일이에요.</p>'
         f'{_back_button(4)}<button type="submit">컨셉 확정</button></form>'
@@ -332,7 +343,7 @@ def render_create(
     body = (
         f"{_summary_card(profile)}{_recommendation_block(recommendation)}"
         f'<div class="card"><h3>{title}</h3>'
-        f'<form method="post" action="/channels">{_hidden(state, tuple(state))}'
+        f'<form method="post" action="/channels"{_SLOW_SUBMIT}>{_hidden(state, tuple(state))}'
         f"{account_fields}"
         "<p class='meta'>바꾸고 싶은 점이 있으면 한 줄로 적어주세요(선택). "
         "컨셉에 반영됩니다.</p>"

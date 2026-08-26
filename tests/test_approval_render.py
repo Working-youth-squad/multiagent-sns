@@ -55,6 +55,48 @@ def test_render_detail_includes_approve_and_reject_forms() -> None:
     assert "hook=curiosity" in html
 
 
+VIDEO_ITEM = replace(
+    ITEM,
+    media_kind="video",
+    content_format="shorts",
+    media_spec={
+        "topic": "고정 주제",
+        "slides": [{"subtitle": "부제 <1>", "narration": "나레이션 한 문장."}],
+    },
+)
+
+
+def test_render_detail_video_shows_cut_form_when_enabled() -> None:
+    html = render_detail(VIDEO_ITEM, rerender_enabled=True)
+    assert "/items/ci-1/rerender" in html
+    assert 'name="topic"' in html and 'name="subtitle_0"' in html and 'name="narration_0"' in html
+    assert "부제 &lt;1&gt;" in html  # 폼 값 이스케이프
+
+
+def test_render_detail_video_form_hidden_without_wiring() -> None:
+    assert "/items/ci-1/rerender" not in render_detail(VIDEO_ITEM)
+    # 이미지 항목은 배선돼도 폼이 없다.
+    assert "/items/ci-1/rerender" not in render_detail(ITEM, rerender_enabled=True)
+
+
+def test_render_detail_error_banner_escaped() -> None:
+    html = render_detail(VIDEO_ITEM, rerender_enabled=True, error="<너무 김>")
+    assert "&lt;너무 김&gt;" in html and "<너무 김>" not in html
+
+
+def test_render_detail_embeds_media_preview() -> None:
+    assert "<video controls" in render_detail(VIDEO_ITEM)
+    assert "/items/ci-1/media" in render_detail(VIDEO_ITEM)
+    assert '<img class="preview"' in render_detail(ITEM)  # 이미지 항목
+    no_media = replace(ITEM, media_storage_url=None)
+    assert "/items/ci-1/media" not in render_detail(no_media)
+
+
+def test_render_detail_notice_banner() -> None:
+    html = render_detail(VIDEO_ITEM, notice="재렌더 완료 — 확인 후 승인하세요.")
+    assert "재렌더 완료" in html
+
+
 def test_render_not_found_links_back() -> None:
     html = render_not_found()
     assert "찾을 수 없습니다" in html

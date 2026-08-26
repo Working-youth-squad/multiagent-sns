@@ -9,10 +9,18 @@ import hashlib
 from collections.abc import Mapping
 
 from sns.render.storage import InMemoryMediaStore, MediaStore
+from sns.render.video.motion import render_motion_video
 from sns.render.video.renderer import VideoRender, render_video
 from sns.render.video.spec import parse_video_spec
 from sns.render.video.tts import Synthesize, synthesize_google
 from sns.tools.contracts import MediaAsset, MediaKind, RenderMedia
+
+# 화면 문법 레지스트리 — 키는 [sns.render.video.spec.VIDEO_STYLES]와 함께 늘린다.
+# 완전 생성 클립(generated_clip) 트랙은 여기에 "clip" 렌더러로 추가될 예정(팀원 작업).
+_RENDERERS = {
+    "": render_video,  # 3단 레이아웃
+    "motion": render_motion_video,  # 모션 그래픽
+}
 
 
 class VideoRenderMedia:
@@ -32,9 +40,17 @@ class VideoRenderMedia:
         self._ffmpeg = ffmpeg
 
     def render(self, media_spec: Mapping[str, object]) -> VideoRender:
-        """렌더 결과를 그대로 반환 — 품질 검사가 mp4 바이트를 참조한다."""
-        return render_video(
-            parse_video_spec(media_spec),
+        """렌더 결과를 그대로 반환 — 품질 검사가 mp4 바이트를 참조한다.
+
+        spec의 `style`이 템플릿을 고른다 — 승인 웹 재렌더가 별도 배선 없이
+        같은 스타일로 다시 그려지는 근거. 새 화면 문법(예: 완전 생성 클립)은
+        `_RENDERERS`에 항목 하나로 추가한다 — 캐릭터 트랙([sns.onboarding.character],
+        spec의 character_ref)과는 독립이다: 캐릭터는 재료, style은 화면 문법.
+        """
+        spec = parse_video_spec(media_spec)
+        render_fn = _RENDERERS[spec.style]
+        return render_fn(
+            spec,
             synthesize=self._synthesize,
             font_path=self._font_path,
             fetch_image=self._store.get,
