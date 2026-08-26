@@ -10,8 +10,8 @@ uv run python scripts/run_profile_cycle.py <채널핸들> [--format card|video]
 **채널당 전용 사이클**(targets 1개)로 돈다 — 기존 실험 사이클(변수=mode 하나,
 동일 주제 도메인 공유)과 실행 단위를 분리해 통제 설계를 깨지 않는다.
 
-트렌드는 default_service() 그대로 조립한다 — 프로필 맞춤 트렌드(세부주제 쿼리
-바인딩)는 트렌드 담당의 상세 버전이 오면 아래 `trends = ...` 한 줄만 교체.
+트렌드는 프로필에 맞춰 조립한다 — 소스 목록은 topic_major 파생(개발 전용 소스는
+비개발 채널에서 빠진다), 검색어는 (topic_major, *topic_subs)를 그대로 쓴다.
 
 발행은 e2e_cycle과 동일하게 FakePublish로 원장 종결까지만 확인한다(실 어댑터
 연결은 발행 러너 운영 배선 몫).
@@ -49,6 +49,7 @@ from sns.runner.cycle import AssessQuality, ChannelMode, CycleTarget, ResolveMed
 from sns.runner.store import PgCycleStore
 from sns.tools.contracts import ContentFormat, MediaAsset, MediaKind, Platform, RenderMedia
 from sns.tools.fakes import FakePublish, FakeReadStats
+from sns.topic_policy import grounding_prompt_for, trend_sources_for
 
 OUT = Path(__file__).parent / "out"
 ENV_FILE = Path(__file__).parent.parent / ".env"
@@ -212,8 +213,16 @@ def main() -> int:
             assess = assess_card
             resolve = None
 
-        # 프로필 맞춤 트렌드 조립은 트렌드 담당 몫 — 완성되면 이 줄만 교체한다.
-        trends = default_service()
+        # 프로필 맞춤 트렌드 — 소스 목록은 코드 파생(등록 이름과 일치해야 한다),
+        # 질의어는 사람이 인터뷰에서 고른 말을 그대로 쓴다.
+        search_terms = (profile.topic_major, *profile.topic_subs)
+        trends = default_service(
+            sources=trend_sources_for(profile.topic_major),
+            search_terms=search_terms,
+            grounding_prompt=grounding_prompt_for(profile.topic_major, profile.topic_subs),
+        )
+        print(f"트렌드: {', '.join(trends.sources)}")
+        print(f"검색어: {', '.join(search_terms)}\n")
 
         result = run_cycle(
             PgCycleStore(conn),

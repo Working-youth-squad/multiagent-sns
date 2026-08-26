@@ -19,7 +19,7 @@
 않았음을 기존 테스트로 증명하기 위해서다.
 """
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from types import MappingProxyType
 
 DEV_MAJOR = "개발"
@@ -45,6 +45,25 @@ GENERIC_CONCEPT_KINDS: tuple[str, ...] = ("emphasis", "compare", "remember", "fl
 # 그 소스 자체가 없다.
 DEV_SQUARE_SOURCES: tuple[str, ...] = ("code", "concept", "image", "gradient")
 GENERIC_SQUARE_SOURCES: tuple[str, ...] = ("concept", "image", "gradient")
+
+# 트렌드 소스 — 이름은 [sns.research.trends.default_service]의 레지스트리 키와 정확히
+# 같아야 한다(그래서 DB가 아니라 코드에 있다). 일반 급상승(google_trends·
+# youtube_popular)은 **모든 채널이 본다** — SNS에서 시의성은 무기다.
+GENERIC_TREND_SOURCES: tuple[str, ...] = (
+    "google_trends",
+    "youtube_popular",
+    "naver_search",
+    "naver_datalab",
+    "llm_grounding",
+)
+# 개발 전용 3종(github_trending·hacker_news·lobsters)은 개발 채널만 본다 — 요리 채널이
+# 여기서 주제를 고르면 대본이 억지가 된다(실제로 "엔비디아 실적 기원 야식"이 나왔다).
+DEV_TREND_SOURCES: tuple[str, ...] = (
+    *GENERIC_TREND_SOURCES,
+    "github_trending",
+    "hacker_news",
+    "lobsters",
+)
 
 _DEV_EXAMPLES: Mapping[str, str] = MappingProxyType(
     {
@@ -197,3 +216,22 @@ def square_guidance_for(topic_major: str) -> str:
 def subject_label_for(topic_major: str) -> str:
     """프롬프트의 «DOMAIN» 자리를 채우는 주제 표기. 팩의 `topic_domain`이 하던 일이다."""
     return "개발자" if topic_major == DEV_MAJOR else topic_major
+
+
+def trend_sources_for(topic_major: str) -> tuple[str, ...]:
+    """이 주제가 쓸 트렌드 소스. 이름은 `default_service`의 등록 키와 같아야 한다."""
+    return DEV_TREND_SOURCES if topic_major == DEV_MAJOR else GENERIC_TREND_SOURCES
+
+
+def grounding_prompt_for(topic_major: str, topic_subs: Sequence[str] = ()) -> str:
+    """LLM 그라운딩 소스가 검색과 함께 던질 질의([sns.research.sources.llm_grounding]).
+
+    **주제마다 분기하지 않고 한 골격에 값만 끼운다.** 개발용 문구를 여기 또 적으면
+    `llm_grounding`의 기본 질의와 같은 문장이 두 벌이 되어 한쪽만 고쳐지는 날이 온다.
+    프로필 없는 실험 사이클은 그 기본값을 그대로 쓰고, 프로필 채널만 이 함수를 쓴다.
+    """
+    scope = f"{topic_major}({', '.join(topic_subs)})" if topic_subs else topic_major
+    return (
+        f"한국에서 최근 화제인 {scope} 주제 후보를 근거와 함께 한 줄씩 나열해줘. "
+        "각 줄은 '- '로 시작하고, 확인되지 않은 내용은 넣지 마."
+    )

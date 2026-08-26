@@ -13,7 +13,9 @@ from sns.net.http import DEFAULT_OPENER, MAX_RESPONSE_BYTES, Opener
 GEMINI_URL = (
     "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
 )
-_PROMPT = (
+# 프로필 없는 실험 사이클의 기본 질의. 온보딩 채널은 자기 주제로 만든 질의를 넘긴다
+# ([sns.topic_policy.grounding_prompt_for]).
+DEFAULT_PROMPT = (
     "한국 개발자 커뮤니티에서 최근 화제인 기술 주제 후보를 근거와 함께 한 줄씩 나열해줘. "
     "각 줄은 '- '로 시작하고, 확인되지 않은 내용은 넣지 마."
 )
@@ -36,12 +38,13 @@ def fetch_llm_grounding(
     limit: int,
     *,
     api_key: str,
+    prompt: str = DEFAULT_PROMPT,
     url: str = GEMINI_URL,
     timeout_s: float = 10.0,
     opener: Opener = DEFAULT_OPENER,
 ) -> tuple[str, ...]:
     body = json.dumps(
-        {"contents": [{"parts": [{"text": _PROMPT}]}], "tools": [{"google_search": {}}]}
+        {"contents": [{"parts": [{"text": prompt}]}], "tools": [{"google_search": {}}]}
     ).encode("utf-8")
     q = urllib.parse.urlencode({"key": api_key})
     request = urllib.request.Request(

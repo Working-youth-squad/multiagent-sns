@@ -118,3 +118,75 @@ def test_default_service_registers_youtube_and_llm_with_keys() -> None:
     svc = default_service(env={ENV_YOUTUBE_API_KEY: "y", ENV_GEMINI_API_KEY: "g"})
     assert "youtube_popular" in svc._fetchers
     assert "llm_grounding" in svc._fetchers
+
+
+# ── 온보딩 채널 주입 (프로필 맞춤 트렌드) ──────────────────────────────
+# 소스만 갈아끼우고 질의어를 그대로 두면 도메인을 바꿔도 같은 걸 검색한다 —
+# 실제로 요리 채널이 "엔비디아 실적"을 골라 야식으로 비틀었다.
+
+_ALL_KEYS = {
+    ENV_NAVER_CLIENT_ID: "i",
+    ENV_NAVER_CLIENT_SECRET: "s",
+    ENV_YOUTUBE_API_KEY: "y",
+    ENV_GEMINI_API_KEY: "g",
+}
+
+
+def test_sources_narrow_the_registry() -> None:
+    """run_topic은 소스를 지정하지 않고 부른다 — 등록 시점에 걸러야 한다."""
+    svc = default_service(env=_ALL_KEYS, sources=("google_trends", "naver_search"))
+    assert set(svc.sources) == {"google_trends", "naver_search"}
+
+
+def test_sources_none_keeps_everything() -> None:
+    """기본값은 기존 동작 무변경."""
+    svc = default_service(env=_ALL_KEYS)
+    assert "hacker_news" in svc.sources and "github_trending" in svc.sources
+
+
+def test_search_terms_bind_to_naver_fetchers(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """첫 항목이 검색 대표 질의어, 전체가 데이터랩 추이 키워드."""
+    seen: dict[str, object] = {}
+
+    def fake_search(limit: int, **kw: object) -> tuple[str, ...]:
+        seen["query"] = kw.get("query")
+        return ()
+
+    def fake_datalab(limit: int, **kw: object) -> tuple[str, ...]:
+        seen["keywords"] = kw.get("keywords")
+        return ()
+
+    monkeypatch.setattr("sns.research.sources.naver_search.fetch_naver_search", fake_search)
+    monkeypatch.setattr("sns.research.sources.naver_datalab.fetch_naver_datalab", fake_datalab)
+
+    svc = default_service(env=_ALL_KEYS, search_terms=("요리", "자취요리", "간편식"))
+    svc(sources=("naver_search", "naver_datalab"))
+    assert seen["query"] == "요리"
+    assert seen["keywords"] == ("요리", "자취요리", "간편식")
+
+
+def test_no_search_terms_leaves_fetcher_defaults(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """안 넘기면 fetcher 기본값이 쓰인다 — 바인딩에 빈 값을 밀어넣지 않는다."""
+    seen: dict[str, object] = {}
+
+    def fake_search(limit: int, **kw: object) -> tuple[str, ...]:
+        seen["kw"] = kw
+        return ()
+
+    monkeypatch.setattr("sns.research.sources.naver_search.fetch_naver_search", fake_search)
+    default_service(env=_ALL_KEYS)(sources=("naver_search",))
+    assert "query" not in seen["kw"]  # type: ignore[operator]
+
+
+def test_grounding_prompt_binds(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    seen: dict[str, object] = {}
+
+    def fake_grounding(limit: int, **kw: object) -> tuple[str, ...]:
+        seen["prompt"] = kw.get("prompt")
+        return ()
+
+    monkeypatch.setattr("sns.research.sources.llm_grounding.fetch_llm_grounding", fake_grounding)
+    default_service(env=_ALL_KEYS, grounding_prompt="요리 주제를 나열해줘")(
+        sources=("llm_grounding",)
+    )
+    assert seen["prompt"] == "요리 주제를 나열해줘"

@@ -12,19 +12,36 @@ import pytest
 
 from sns.render.concept_image import CONCEPT_FIELDS, ConceptError, parse_concept
 from sns.render.video.spec import VideoSpecError, parse_video_spec
+from sns.research.trends import (
+    ENV_GEMINI_API_KEY,
+    ENV_NAVER_CLIENT_ID,
+    ENV_NAVER_CLIENT_SECRET,
+    ENV_YOUTUBE_API_KEY,
+    default_service,
+)
 from sns.topic_policy import (
     DEV_MAJOR,
     categories_for,
     concept_examples_for,
     concept_kinds_for,
+    grounding_prompt_for,
     square_guidance_for,
     square_sources_for,
     subject_label_for,
+    trend_sources_for,
 )
 
 OFFERED = (DEV_MAJOR, "요리", "음악", "춤")  # 인터뷰가 제시하는 대분류
 UNKNOWN_BUT_VALID = ("뜨개질", "Gardening")  # "직접 입력"으로 들어올 수 있는 값
 ALL_VALID = OFFERED + UNKNOWN_BUT_VALID
+
+# 인증 소스가 전부 배선된 상태 — 파생이 어떤 소스를 적든 실재하는지 보려면 다 켜야 한다.
+_FULL_TREND_ENV = {
+    ENV_NAVER_CLIENT_ID: "id",
+    ENV_NAVER_CLIENT_SECRET: "secret",
+    ENV_YOUTUBE_API_KEY: "yt",
+    ENV_GEMINI_API_KEY: "gemini",
+}
 
 
 @pytest.mark.parametrize("major", ALL_VALID)
@@ -139,3 +156,42 @@ def test_topic_major_is_required() -> None:
     """silent default가 있으면 새 호출부가 요리 채널에 개발 규칙을 조용히 적용한다."""
     with pytest.raises(TypeError):
         parse_video_spec(_MINIMAL)  # type: ignore[call-arg]
+
+
+# ── 트렌드 소스·그라운딩 질의 ────────────────────────────────────────
+# 요리 채널이 개발 뉴스에서 주제를 고르면 대본이 억지가 된다 — 실제로 "엔비디아 실적
+# 기원 야식"이 나왔다.
+
+_DEV_ONLY = {"github_trending", "hacker_news", "lobsters"}
+
+
+@pytest.mark.parametrize("major", ALL_VALID)
+def test_trend_sources_are_registered_names(major: str) -> None:
+    """없는 소스 이름을 적으면 그 소스만 조용히 빠진 채 사이클이 돈다 — 여기서 잡는다."""
+    known = set(default_service(env=_FULL_TREND_ENV).sources)
+    unknown = set(trend_sources_for(major)) - known
+    assert not unknown, f"{major}: 등록되지 않은 트렌드 소스 {sorted(unknown)}"
+
+
+def test_non_dev_major_drops_developer_only_sources() -> None:
+    assert _DEV_ONLY <= set(trend_sources_for(DEV_MAJOR))
+    for major in ("요리", "음악", "춤", "뜨개질"):
+        assert not (_DEV_ONLY & set(trend_sources_for(major))), major
+
+
+def test_general_trend_sources_survive_for_every_major() -> None:
+    """일반 급상승은 모든 채널이 본다 — SNS에서 시의성은 무기다."""
+    for major in ALL_VALID:
+        assert {"google_trends", "youtube_popular"} <= set(trend_sources_for(major))
+
+
+def test_grounding_prompt_carries_the_major_and_subs() -> None:
+    prompt = grounding_prompt_for("요리", ("자취요리", "간편식"))
+    assert "요리" in prompt
+    assert "자취요리" in prompt and "간편식" in prompt
+    assert "개발" not in prompt, "주제 밖 문구가 남아 있다"
+
+
+def test_grounding_prompt_without_subs() -> None:
+    """세부 주제는 최소 1개지만, 파생이 그 가정에 기대지 않게 한다."""
+    assert "요리" in grounding_prompt_for("요리", ())
