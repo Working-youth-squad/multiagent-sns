@@ -112,3 +112,39 @@ def seed_done_message(outcome: SeedOutcome) -> str:
         return f"‘{outcome.topic_title}’ 초안을 만들지 못했습니다 — 대상이 없습니다."
     reasons = "; ".join(i.error or i.outcome for i in outcome.items)
     return f"‘{outcome.topic_title}’ 초안을 만들지 못했습니다 — {reasons}"
+
+
+@dataclass(frozen=True)
+class ExportItem:
+    """수동 발행용 내보내기 1건 — 사람이 플랫폼 앱에 손으로 올릴 재료 전부.
+
+    초안 카드가 싣는 미리보기와 달리 **본문을 자르지 않는다**. 손으로 올릴 때 잘린
+    캡션을 복사하면 그대로 잘린 채 게시된다 — 미리보기와 정반대의 요구다.
+    """
+
+    content_item_id: str
+    topic_title: str
+    channel_label: str
+    platform: str
+    content_status: str
+    body: str
+    media_asset_id: str | None = None
+    media_ext: str = "png"
+
+    channel_mode: str | None = None
+    """채널 발행 모드 — 손으로 올린 뒤 **원장에 등록할 수 있는지**를 가른다.
+
+    `sns.publish.manual`은 `manual` 채널만 받는다(auto/hybrid에 손으로 등록하면 실험군이
+    오염된다). 그래서 hybrid 건을 손으로 올리면 등록 경로가 없고 `publication`은 pending
+    으로 남는다 — 화면이 그 사실을 말해야 한다. 되는 것처럼 안내하면 실패로 보낸다.
+    """
+
+    @property
+    def filename_stem(self) -> str:
+        """내려받을 파일 이름의 몸통 — 사람이 여러 건을 받아도 구분되게.
+
+        제목을 그대로 쓰면 OS가 거부하는 문자(`/` `:` 등)가 섞이므로 골라서 남긴다.
+        """
+        safe = "".join(c if c.isalnum() or c in " -_" else "" for c in self.topic_title).strip()
+        safe = "-".join(safe.split()) or "content"
+        return f"{safe}-{self.content_item_id[:8]}"

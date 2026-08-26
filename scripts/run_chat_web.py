@@ -33,7 +33,13 @@ from dotenv import load_dotenv
 
 from sns.agents.models import make_model, required_key_env, resolve_model_name, resolve_provider
 from sns.agents.topic import TopicResult
-from sns.chat.drafts import DraftItem, SeedOutcome, seed_done_message, seed_done_payload
+from sns.chat.drafts import (
+    DraftItem,
+    ExportItem,
+    SeedOutcome,
+    seed_done_message,
+    seed_done_payload,
+)
 from sns.chat.store import PgChatStore
 from sns.quality.gate import QualityReport, check_card
 from sns.render.card.media import CardRenderMedia
@@ -43,7 +49,7 @@ from sns.runner.cycle import AssessQuality, CycleTarget, TargetResult, run_cycle
 from sns.runner.store import PgCycleStore
 from sns.tools.contracts import ContentFormat, MediaAsset, MediaKind
 from sns.tools.fakes import FakeReadStats
-from sns.web.chat.app import LoadMediaFn, StartCycleFn, create_app
+from sns.web.chat.app import LoadExportFn, LoadMediaFn, StartCycleFn, create_app
 
 ENV_FILE = Path(__file__).parent.parent / ".env"
 DEFAULT_DSN = "postgresql://sns:sns@localhost:5432/sns"
@@ -165,6 +171,45 @@ def make_load_media_fn(dsn: str) -> LoadMediaFn:
     return load
 
 
+def make_load_export_fn(dsn: str) -> LoadExportFn:
+    """content_item_id → 수동 발행용 재료. **본문은 지금 원장의 값**을 읽는다.
+
+    대화 payload의 미리보기가 아니라 여기서 다시 읽는 이유: 승인 화면에서 사람이 고친
+    본문이 payload에는 없다. 손으로 올릴 캡션은 최신이어야 한다.
+    """
+
+    def load(content_item_id: str) -> ExportItem | None:
+        with psycopg.connect(dsn, connect_timeout=10, autocommit=True) as conn:
+            row = conn.execute(
+                "SELECT ci.body, ci.status, ma.id, ma.kind, "
+                "ch.platform, ch.handle, t.title, ch.mode "
+                "FROM content_item ci "
+                "JOIN topic t ON t.id = ci.topic_id "
+                "LEFT JOIN media_asset ma ON ma.content_item_id = ci.id "
+                "LEFT JOIN publication p ON p.content_item_id = ci.id "
+                "LEFT JOIN channel ch ON ch.id = p.channel_id "
+                "WHERE ci.id = %s",
+                (content_item_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        platform = str(row[4]) if row[4] else "플랫폼 미상"
+        handle = f" @{row[5]}" if row[5] else ""
+        return ExportItem(
+            content_item_id=content_item_id,
+            topic_title=str(row[6] or "제목 없음"),
+            channel_label=f"{platform}{handle}",
+            platform=platform,
+            content_status=str(row[1]),
+            body=str(row[0] or ""),
+            media_asset_id=None if row[2] is None else str(row[2]),
+            media_ext="mp4" if str(row[3]) == "video" else "png",
+            channel_mode=None if row[7] is None else str(row[7]),
+        )
+
+    return load
+
+
 def make_start_cycle_fn(dsn: str, chat_store: PgChatStore, *, approve_base: str) -> StartCycleFn:
     """(conversation_id, topic) → 백그라운드 사이클. 즉시 반환한다."""
     font = find_font()
@@ -259,6 +304,7 @@ def main() -> int:
         model=make_model(),
         start_cycle_fn=make_start_cycle_fn(dsn, store, approve_base=approve_base),
         load_media_fn=make_load_media_fn(dsn),
+        load_export_fn=make_load_export_fn(dsn),
     )
     host = os.environ.get("CHAT_WEB_HOST", "127.0.0.1")
     port = int(os.environ.get("CHAT_WEB_PORT", "8003"))

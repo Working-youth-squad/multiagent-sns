@@ -13,12 +13,14 @@ JS 0줄이고 hidden input으로 이력을 실어 나르지 않는다. 새로고
   키워드 조회에서 멈춘다 — 그것도 유효한 배치다.
 - `load_media_fn`: 만들어진 카드 이미지를 대화에 보여주기 위한 조회. None이면 초안
   카드가 이미지 자리를 "이미지 없음"으로 그린다(대화는 그대로 동작한다).
+- `load_export_fn`: 수동 발행용 내보내기 화면의 재료 조회. None이면 그 화면이 404다.
 
 **LLM 실패가 사용자 발화를 삼키지 않는다.** 사용자 메시지를 먼저 append 한 뒤 턴을
 돌리므로, 턴이 죽어도 발화는 대화에 남고 실패 사실이 system 메시지로 붙는다.
 """
 
 from collections.abc import Callable, Sequence
+from urllib.parse import quote
 
 from fastapi import FastAPI, Form
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
@@ -26,13 +28,25 @@ from langchain_core.language_models import BaseChatModel
 
 from sns.agents.topic import TopicResult
 from sns.chat.agent import RankFn, ranking_payload, run_chat_turn
+from sns.chat.drafts import ExportItem
 from sns.chat.store import ChatStore, ConversationNotFound
 from sns.research import rank_keywords
-from sns.web.chat.render import render_conversation, render_index, render_not_found
+from sns.web.chat.render import (
+    render_conversation,
+    render_export,
+    render_index,
+    render_not_found,
+)
 
 StartCycleFn = Callable[[str, TopicResult], None]
 """(conversation_id, topic) → 콘텐츠 사이클 착수. 즉시 반환할 것 — 진행·결과는 구현이
 system 메시지로 대화에 append 한다. 동기로 완주하면 브라우저가 분 단위로 멈춘다."""
+
+LoadExportFn = Callable[[str], ExportItem | None]
+"""content_item_id → 수동 발행용 재료. None이면 내보내기 화면이 404.
+
+대화 payload에 본문 전문을 싣지 않고 조회로 가져오는 이유: payload는 **그때의 기록**이라
+승인 화면에서 사람이 고친 본문이 반영되지 않는다. 손으로 올릴 캡션은 최신이어야 한다."""
 
 LoadMediaFn = Callable[[str], tuple[bytes, str] | None]
 """media_asset_id → (바이트, MIME). 없으면 None.
@@ -50,6 +64,7 @@ def create_app(
     rank_fn: RankFn = rank_keywords,
     start_cycle_fn: StartCycleFn | None = None,
     load_media_fn: LoadMediaFn | None = None,
+    load_export_fn: LoadExportFn | None = None,
     exclude: Sequence[str] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="키워드 챗봇")
@@ -161,8 +176,12 @@ def create_app(
         return RedirectResponse(f"/c/{conversation_id}#bottom", status_code=303)
 
     @app.get("/media/{asset_id}", response_model=None)
-    def media(asset_id: str) -> Response:
-        """초안 카드 이미지. 대화가 file:// URI를 직접 가리킬 수 없어 서버가 중계한다."""
+    def media(asset_id: str, download: str = "", name: str = "") -> Response:
+        """초안 카드 이미지. 대화가 file:// URI를 직접 가리킬 수 없어 서버가 중계한다.
+
+        `download=1`이면 첨부로 내려준다 — 수동 발행 경로에서 사람이 파일을 받아
+        플랫폼 앱에 직접 올린다.
+        """
         if load_media_fn is None:
             return Response(status_code=404)
         try:
@@ -173,6 +192,48 @@ def create_app(
             return Response(status_code=404)
         data, media_type = found
         # 자산은 불변이다(checksum이 파일명) — 재방문마다 다시 받을 이유가 없다.
-        return Response(data, media_type=media_type, headers={"Cache-Control": "max-age=3600"})
+        headers = {"Cache-Control": "max-age=3600"}
+        if download:
+            ext = media_type.rsplit("/", 1)[-1]
+            headers["Content-Disposition"] = _attachment(f"{name or asset_id}.{ext}")
+        return Response(data, media_type=media_type, headers=headers)
+
+    @app.get("/export/{content_item_id}", response_class=HTMLResponse)
+    def export(content_item_id: str) -> HTMLResponse:
+        """수동 발행용 내보내기 — 잘리지 않은 캡션 + 이미지 + 내려받기."""
+        item = _export_item(content_item_id)
+        if item is None:
+            return HTMLResponse(render_not_found(), status_code=404)
+        return HTMLResponse(render_export(item))
+
+    @app.get("/export/{content_item_id}/caption.txt", response_model=None)
+    def caption(content_item_id: str) -> Response:
+        """캡션 원문 파일. 화면에서 복사해도 되지만, 파일이 있으면 옮겨 붙이기가 확실하다."""
+        item = _export_item(content_item_id)
+        if item is None:
+            return Response(status_code=404)
+        return Response(
+            item.body.encode("utf-8"),
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": _attachment(f"{item.filename_stem}.txt")},
+        )
+
+    def _export_item(content_item_id: str) -> ExportItem | None:
+        if load_export_fn is None:
+            return None
+        try:
+            return load_export_fn(content_item_id)
+        except Exception:  # 조회 실패를 500으로 흘리지 않는다 — 없는 것과 같이 취급
+            return None
 
     return app
+
+
+def _attachment(filename: str) -> str:
+    """RFC 5987 — 한글 파일명이 헤더에서 깨지지 않게 UTF-8로 싣는다.
+
+    ASCII 대체본을 함께 주는 이유는 `filename*`을 모르는 오래된 클라이언트 대비다.
+    대체본이 비면(제목이 전부 비ASCII) 이름 없는 다운로드가 되므로 최소 이름을 남긴다.
+    """
+    ascii_name = filename.encode("ascii", "ignore").decode("ascii").lstrip("-") or "download"
+    return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(filename)}"
