@@ -20,9 +20,12 @@ from tests.dbguard import admin_dsn_for, database_name, derive_test_dsn, require
 
 DSN = derive_test_dsn(os.environ.get("DATABASE_URL", "postgresql://sns:sns@localhost:5432/sns"))
 
+# playbook은 FK가 없어 CASCADE로 딸려 오지 않는다 — 학습 테이블은 이름을 다 적는다.
+# (나머지는 publication/topic/cycle에 매달려 CASCADE되지만, 목록이 곧 문서라 함께 적는다.)
 _MUTABLE_TABLES = (
     "channel, channel_profile, cycle, topic, content_item, media_asset, publication, "
-    "publish_attempt, run_event"
+    "publish_attempt, run_event, metric_observation, metric_value, reward, topic_stats, "
+    "playbook, analysis_note"
 )
 
 # channel~publication FK 체인 + (선택) media_asset을 한 번에 만들고 publication id 반환.
