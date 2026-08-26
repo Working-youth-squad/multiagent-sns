@@ -10,9 +10,20 @@ import urllib.request
 
 from sns.net.http import DEFAULT_OPENER, MAX_RESPONSE_BYTES, Opener
 
-GEMINI_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-)
+_API_BASE = "https://generativelanguage.googleapis.com/v1beta/models"
+# 이 소스가 쓸 모델. **URL에 박아두지 않는다** — 예전엔 gemini-2.0-flash가 URL에
+# 하드코딩돼 있었고, 그 모델이 은퇴하자 404가 나면서 소스가 조용히 죽었다. 소스 격리
+# 설계상 실패는 ok=False로 삼켜지므로(FR-G4) 아무도 알아채지 못했다.
+# 에이전트의 대화 모델([sns.agents.models])과 일부러 분리한다 — 이쪽은 google_search
+# 그라운딩 전용이라 따로 갈아끼울 수 있어야 한다.
+DEFAULT_MODEL = "gemini-3.5-flash"
+
+
+def gemini_url(model: str = DEFAULT_MODEL) -> str:
+    return f"{_API_BASE}/{model}:generateContent"
+
+
+GEMINI_URL = gemini_url()
 # 프로필 없는 실험 사이클의 기본 질의. 온보딩 채널은 자기 주제로 만든 질의를 넘긴다
 # ([sns.topic_policy.grounding_prompt_for]).
 DEFAULT_PROMPT = (

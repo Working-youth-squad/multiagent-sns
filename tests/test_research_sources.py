@@ -11,7 +11,12 @@ from typing import Any
 import pytest
 
 from sns.research.sources.github_trending import fetch_github_trending, parse_github_trending
-from sns.research.sources.llm_grounding import fetch_llm_grounding, parse_llm_grounding
+from sns.research.sources.llm_grounding import (
+    DEFAULT_MODEL,
+    fetch_llm_grounding,
+    gemini_url,
+    parse_llm_grounding,
+)
 from sns.research.sources.naver_datalab import (
     _judge_trend,
     fetch_naver_datalab,
@@ -172,3 +177,20 @@ def test_llm_fetch_posts_with_key() -> None:
     assert req.method == "POST"
     assert "key=gk" in req.full_url
     assert json.loads(req.data)["tools"] == [{"google_search": {}}]
+
+
+def test_llm_fetch_targets_the_configured_model() -> None:
+    """모델명이 URL에 박혀 있으면 은퇴할 때 404가 나고 소스가 조용히 죽는다.
+
+    실제로 gemini-2.0-flash가 은퇴한 뒤 오래 ok=False였는데, 소스 격리(FR-G4)가
+    실패를 삼켜서 아무도 몰랐다. 모델을 갈아끼울 수 있는지를 여기서 고정한다.
+    """
+    sink: dict[str, Any] = {}
+    fetch_llm_grounding(1, api_key="k", opener=_opener(_GEMINI, sink))
+    assert DEFAULT_MODEL in sink["target"].full_url
+
+    sink2: dict[str, Any] = {}
+    fetch_llm_grounding(
+        1, api_key="k", url=gemini_url("gemini-9-future"), opener=_opener(_GEMINI, sink2)
+    )
+    assert "gemini-9-future" in sink2["target"].full_url

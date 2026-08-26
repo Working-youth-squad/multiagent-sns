@@ -47,7 +47,16 @@ from sns.render.video.tts import synthesize_google
 from sns.research.trends import default_service
 from sns.runner.cycle import AssessQuality, ChannelMode, CycleTarget, ResolveMediaSpec, run_cycle
 from sns.runner.store import PgCycleStore
-from sns.tools.contracts import ContentFormat, MediaAsset, MediaKind, Platform, RenderMedia
+from sns.tools.contracts import (
+    ContentFormat,
+    MediaAsset,
+    MediaKind,
+    Platform,
+    RenderMedia,
+    ResearchTrends,
+    SourceResult,
+    TrendDigest,
+)
 from sns.tools.fakes import FakePublish, FakeReadStats
 from sns.topic_policy import grounding_prompt_for, trend_sources_for
 
@@ -127,6 +136,34 @@ class DirMediaStore:
         되어 OSError가 난다 — 실제로 그렇게 터졌다.
         """
         return Path(url2pathname(urlparse(url).path)).read_bytes()
+
+
+class ReportingTrends:
+    """트렌드 서비스를 감싸 소스별 결과를 기억한다 — 죽은 소스를 드러내려고.
+
+    소스 격리(FR-G4)는 실패를 `ok=False`로 삼킨다. 설계대로지만, 그 때문에 모델이
+    은퇴해 소스 하나가 오래 죽어 있어도 아무도 알아채지 못했다(gemini-2.0-flash가
+    실제로 그랬다). **표시하려고 트렌드를 한 번 더 부르지는 않는다** — 사이클이 부르는
+    그 호출의 결과를 그대로 들고 있다가 끝나고 보여준다.
+    """
+
+    def __init__(self, inner: ResearchTrends) -> None:
+        self._inner = inner
+        self.results: tuple[SourceResult, ...] = ()
+
+    def __call__(self, sources: tuple[str, ...] | None = None, limit: int = 10) -> TrendDigest:
+        digest = self._inner(sources, limit)
+        self.results = digest.source_results
+        return digest
+
+    def report(self) -> str:
+        if not self.results:
+            return "  (트렌드 조회 없음)"
+        rows = []
+        for r in self.results:
+            mark = f"{len(r.items)}건" if r.ok and r.items else ("빈 결과" if r.ok else "실패")
+            rows.append(f"  {r.source}: {mark}")
+        return "\n".join(rows)
 
 
 def find_font() -> str | None:
@@ -221,6 +258,7 @@ def main() -> int:
             search_terms=search_terms,
             grounding_prompt=grounding_prompt_for(profile.topic_major, profile.topic_subs),
         )
+        reporting = ReportingTrends(trends)
         print(f"트렌드: {', '.join(trends.sources)}")
         print(f"검색어: {', '.join(search_terms)}\n")
 
@@ -237,7 +275,7 @@ def main() -> int:
                 )
             ],
             model=make_model(),
-            research_trends=trends,
+            research_trends=reporting,
             read_stats=FakeReadStats(),
             render_media=renderer,
             assess_quality=assess,
@@ -246,6 +284,8 @@ def main() -> int:
             topic_categories=profile.categories,
             playbook_guidance=brief,
         )
+        print("트렌드 소스 결과")
+        print(reporting.report())
         print(f"cycle={result.cycle_id} status={result.status}")
         for t in result.targets:
             print(f"  {t.channel_id[:8]}... -> {t.outcome} {t.error or ''}")
