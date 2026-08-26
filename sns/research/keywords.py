@@ -33,6 +33,7 @@ from sns.research.ranking import (
     KeywordStat,
     band_bounds,
     excluded_by,
+    live_results,
     rank_stats,
 )
 from sns.research.sources.naver_autocomplete import fetch_naver_autocomplete
@@ -45,7 +46,11 @@ KEYWORD_SOURCES: tuple[str, ...] = (
     "google_suggest",
     "youtube_suggest",
 )
-"""질의어를 그대로 받는 소스 — 자동완성 3종. 전부 무인증이라 키 없이 항상 등록된다."""
+"""질의어를 그대로 받는 소스 — 자동완성 3종. 전부 무인증이라 키 없이 항상 등록된다.
+
+CLI `--source` choices와 문서용 상수다. `rank_keywords(sources=None)`은 이 상수가 아니라
+**주입된 서비스의 레지스트리**로 폴백한다 — 그래야 `service=`로 임의 소스를 넣을 수 있다.
+"""
 
 DEFAULT_LIMIT = 20
 """소스별 수집 깊이. 자동완성 엔드포인트는 실측상 9~10개만 주므로 상한 역할이다."""
@@ -111,7 +116,8 @@ def aggregate(
     if min_present > 1:
         stats = tuple(s for s in stats if s.present_count >= min_present)
 
-    live_sources = sum(1 for r in results if r.ok)
+    live = live_results(results)
+    live_sources = len(live)
     scored = tuple(s for s in stats if s.rank_std is not None)
     unscored = tuple(s for s in stats if s.rank_std is None)
 
@@ -141,6 +147,7 @@ def aggregate(
             f" · 판정 대상 {len(scored)}개 · 미판정 {len(unscored)}개"
         )
 
+    ok_names = {r.source for r in live}
     dropped_ids = {id(s) for s in dropped}
     kept = tuple(s for s in stats if id(s) not in dropped_ids)
     return KeywordRanking(
@@ -148,8 +155,10 @@ def aggregate(
         filter_mode=mode,  # type: ignore[arg-type]
         band=bounds,
         reason=reason,
-        sources_ok=tuple(r.source for r in results if r.ok),
-        sources_failed=tuple(r.source for r in results if not r.ok),
+        sources_ok=tuple(r.source for r in live),
+        sources_failed=tuple(
+            dict.fromkeys(r.source for r in results if not r.ok and r.source not in ok_names)
+        ),
         candidates=kept[:top],
         pool=tuple(stats),
         dropped=dropped,
@@ -177,7 +186,11 @@ def rank_keywords(
     테스트가 네트워크 없이 도는 지점이다.
     """
     active = service or keyword_service(query, timeout_s=timeout_s)
-    selected = tuple(sources) if sources is not None else KEYWORD_SOURCES
+    # sources=None은 **서비스가 자기 레지스트리로 폴백**한다(trends.__call__). 여기서
+    # KEYWORD_SOURCES를 강제하면 3종 이외의 이름으로 소스를 등록한 서비스를 주입했을 때
+    # 전부 미등록으로 격리돼 후보가 0건이 된다 — docstring이 광고하는 `service=` 주입
+    # 지점이 그 상수 때문에 무력해진다. KEYWORD_SOURCES는 CLI choices·문서용 상수로만 둔다.
+    selected = tuple(sources) if sources is not None else None
     digest = active(selected, limit=limit)
     return aggregate(
         query,

@@ -139,6 +139,26 @@ def _ranked(items: Sequence[str]) -> dict[str, tuple[str, float]]:
     return out
 
 
+def live_results(results: Sequence[SourceResult]) -> tuple[SourceResult, ...]:
+    """통계에 참여하는 소스 결과 — 성공분만, 소스명 중복은 첫 건만 남긴다.
+
+    `rank_stats`와 `aggregate`가 **같은 집합**을 봐야 한다. 한쪽이 리스트로 순회하고
+    다른 쪽이 dict로 접으면, 중복 소스명 하나가 후보에 `SourceRank` 두 개를 붙여
+    관측 1건짜리 키워드가 `present_count=2`·`rank_std=0.0`을 받는다 — 이 모듈이
+    `rank_std: float | None`로 막으려던 바로 그 혼동이 정렬 1순위에서 일어난다.
+
+    서비스(`ResearchTrendsService.__call__`)가 이미 중복을 접지만, 이 함수들은 공개
+    API라 다른 경로로도 결과가 들어올 수 있다.
+    """
+    seen: set[str] = set()
+    out: list[SourceResult] = []
+    for result in results:
+        if result.ok and result.source not in seen:
+            seen.add(result.source)
+            out.append(result)
+    return tuple(out)
+
+
 def rank_stats(results: Sequence[SourceResult]) -> tuple[KeywordStat, ...]:
     """소스별 수집 결과 → 후보별 등수 통계. 실패 소스(ok=False)는 통계에서 제외한다.
 
@@ -148,7 +168,7 @@ def rank_stats(results: Sequence[SourceResult]) -> tuple[KeywordStat, ...]:
 
     반환은 present_count 내림 → observed_mean 오름 → 표기 순(결정론).
     """
-    live = [r for r in results if r.ok]
+    live = live_results(results)
     if not live:
         return ()
 

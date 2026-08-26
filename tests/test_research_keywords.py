@@ -253,6 +253,38 @@ def test_keyword_service_rejects_blank_query() -> None:
         keyword_service("   ")
 
 
+def test_injected_service_with_custom_source_names_is_used() -> None:
+    """R3 회귀: sources=None이 KEYWORD_SOURCES를 강제하면 임의 레지스트리가 통째로 격리된다."""
+    mine = ResearchTrendsService({"mine": fetcher("등산화", "등산복")})
+    r = rank_keywords("등산", service=mine, band=False)
+    assert r.sources_ok == ("mine",)
+    assert r.sources_failed == ()
+    assert [c.text for c in r.candidates] == ["등산화", "등산복"]
+
+
+def test_duplicate_source_name_is_not_counted_twice() -> None:
+    """R4 회귀: 중복 소스가 접히지 않으면 관측 1건이 present_count=2·rank_std=0.0이 된다."""
+    r = rank_keywords(
+        "등산",
+        service=fake_service(),
+        sources=("google_suggest", "google_suggest"),
+        band=False,
+        top=99,
+    )
+    assert r.sources_ok == ("google_suggest",)
+    assert all(c.present_count == 1 for c in r.candidates)
+    assert all(c.rank_std is None for c in r.candidates)
+
+
+def test_duplicate_source_does_not_open_the_band() -> None:
+    """중복이 참여 소스 수를 부풀리면 MIN_BAND_SOURCES 게이트가 헛돈다."""
+    r = rank_keywords(
+        "등산", service=fake_service(), sources=("google_suggest", "google_suggest"), top=99
+    )
+    assert r.filter_mode == "passthrough"
+    assert "참여 소스 1개" in r.reason
+
+
 # ── CLI 렌더 ─────────────────────────────────────────────────────────
 
 
