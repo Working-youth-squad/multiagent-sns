@@ -10,6 +10,7 @@ import pytest
 
 from sns.learning.schedule import (
     DEFAULT_HORIZON_DAYS,
+    REWARD_WINDOW_INDEX,
     plan_windows,
     window_due_at,
     window_grace_hours,
@@ -113,3 +114,8 @@ def test_future_publication_plans_nothing() -> None:
         published_at=PUBLISHED, now=_at(-100)
     )
     assert plan_windows(published_at=PUBLISHED, now=_at(-3)).due == ()
+
+
+def test_reward_window_is_the_72h_one() -> None:
+    """B(reward)와 C(분석글)가 같은 창을 본다는 약속 — 상수가 움직이면 여기서 걸린다."""
+    assert window_offset_hours(REWARD_WINDOW_INDEX) == 72

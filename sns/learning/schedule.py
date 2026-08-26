@@ -26,6 +26,10 @@ EARLY_OFFSETS_H: tuple[int, ...] = (6, 24, 72)
 DAILY_STEP_H = 24
 # 발행 후 이 기간까지만 폴링한다. 팀 결정 대상 — 제안값(docs/handoff 참조).
 DEFAULT_HORIZON_DAYS = 14
+# reward(FR-L2)와 분석글(FR-L5)이 **함께** 보는 창. 초기 확산이 대체로 끝난 72h다.
+# 둘이 각자 고르면 보상과 리포트가 다른 사실을 말한다 — 상수를 하나만 둔다.
+# 6·24h는 조기 판정(FR-A3) 전용으로 남는다.
+REWARD_WINDOW_INDEX = 2
 # 유예의 하한 — 아주 촘촘한 창에서도 폴러가 한 번쯤 놓치는 것은 정상이다.
 MIN_GRACE_H = 3
 
