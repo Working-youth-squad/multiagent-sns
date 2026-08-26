@@ -22,6 +22,15 @@ Opener = Callable[..., AbstractContextManager[_Response]]
 
 DEFAULT_OPENER: Opener = urllib.request.urlopen
 
+USER_AGENT = "multiagent-sns/0.1 (+https://github.com/Working-youth-squad/multiagent-sns)"
+"""외부 요청 UA — 레포 단일 출처.
+
+세 곳이 각자 같은 리터럴을 들고 있었다. 값이 갈라지면 **조용히 깨진다**: Lobsters는
+UA 없는 요청을 차단하고, Pexels 앞의 Cloudflare는 urllib 기본 UA를 error 1010으로 막고,
+구글 자동완성은 UA로 응답 인코딩을 가른다(UA 없음 → EUC-KR). 전부 "키가 틀렸나"로
+오해하기 좋은 실패라 값을 한 곳에 둔다.
+"""
+
 # 외부 응답 크기 상한 — 악의/오작동 소스의 메모리·파싱 DoS 방어(google_trends와 동일).
 MAX_RESPONSE_BYTES = 5_000_000
 

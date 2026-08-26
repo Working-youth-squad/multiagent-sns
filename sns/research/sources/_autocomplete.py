@@ -12,10 +12,11 @@ import urllib.parse
 import urllib.request
 from collections.abc import Iterable, Mapping
 
+from sns.net.http import USER_AGENT
 from sns.research.keytext import squeezed
 
-USER_AGENT = "multiagent-sns/0.1 (+https://github.com/Working-youth-squad/multiagent-sns)"
-"""자동완성 엔드포인트는 UA로 응답 인코딩을 가른다 — 아래 get_request 참조."""
+__all__ = ["USER_AGENT", "clamp_limit", "get_request", "related_terms"]
+"""USER_AGENT 재수출: 이 모듈이 UA를 거는 지점이라 테스트·호출부가 여기서 읽어 왔다."""
 
 
 def related_terms(query: str, candidates: Iterable[object]) -> tuple[str, ...]:
