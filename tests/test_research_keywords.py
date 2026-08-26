@@ -338,3 +338,24 @@ def test_render_marks_undefined_std() -> None:
     from scripts.rank_keywords import render
 
     assert "미정의" in render(run(band=False, top=99))  # type: ignore[arg-type]
+
+
+def test_render_suggests_no_band_only_when_band_actually_cut() -> None:
+    """R8 회귀: 밴드가 열리지도 않았는데 --no-band를 권하면 필터 탓으로 오인한다."""
+    from scripts.rank_keywords import render
+
+    empty = ResearchTrendsService({"naver_autocomplete": fetcher()})
+    off = render(rank_keywords("개발자", service=empty, band=False))
+    passthrough = render(rank_keywords("개발자", service=empty, band=True))
+    assert "--no-band" not in off
+    assert "--no-band" not in passthrough
+    assert "소스 응답이 비었다" in off
+
+
+def test_cli_rejects_blank_query_as_usage_error() -> None:
+    """R6 회귀: exit 1은 '전 소스 실패'에 배정된 코드다 — 인자 오류는 2여야 한다."""
+    from scripts.rank_keywords import main
+
+    with pytest.raises(SystemExit) as exc:
+        main(["   "])
+    assert exc.value.code == 2

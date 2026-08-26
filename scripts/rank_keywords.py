@@ -31,6 +31,18 @@ def _positive_int(raw: str) -> int:
     return value
 
 
+def _nonblank(raw: str) -> str:
+    """공백뿐인 질의어를 argparse 층에서 막는다.
+
+    없으면 `keyword_service`의 `ValueError`가 트레이스백으로 죽으며 **exit 1**이 된다.
+    1은 "전 소스 실패"에 배정된 코드라, 자동화가 인자 오류를 네트워크 장애로 오독한다.
+    """
+    value = raw.strip()
+    if not value:
+        raise argparse.ArgumentTypeError("질의어가 비어 있다")
+    return value
+
+
 def _percentile(raw: str) -> float:
     value = float(raw)
     if not 0.0 <= value <= 100.0:
@@ -51,7 +63,12 @@ def render(ranking: KeywordRanking) -> str:
         std = "미정의" if c.rank_std is None else f"{c.rank_std:.4f}"
         lines.append(f"{i:>2}  {c.text:<26}{c.present_count:>4}{c.observed_mean:>10.4f}{std:>11}")
     if not ranking.candidates:
-        lines.append("    (후보 없음 — --no-band 로 전량을 확인해 볼 것)")
+        # 밴드가 자른 게 아닌데 --no-band를 권하면 필터 탓으로 오인하게 만든다.
+        # filter_mode 3값을 구분해 기록한 취지가 여기서도 지켜져야 한다.
+        if ranking.filter_mode == "active":
+            lines.append("    (후보 없음 — --no-band 로 전량을 확인해 볼 것)")
+        else:
+            lines.append("    (후보 없음 — 밴드는 열리지 않았다. 소스 응답이 비었다)")
     if ranking.dropped:
         # `if s.rank_std`로 거르면 하위 꼬리(정확히 0.0)가 통째로 사라진다 — None만 뺀다.
         cut = ", ".join(
@@ -60,6 +77,12 @@ def render(ranking: KeywordRanking) -> str:
         lines += ["", f"밴드 밖 {len(ranking.dropped)}건: {cut}"]
     if ranking.unscored:
         lines += ["", f"미판정(관측 1건이라 불일치를 잴 수 없음) {len(ranking.unscored)}건"]
+    if ranking.below_min_present:
+        n = len(ranking.below_min_present)
+        lines += [
+            "",
+            f"교차검증 하한 미달 {n}건: " + ", ".join(s.text for s in ranking.below_min_present),
+        ]
     if ranking.excluded:
         hit = ", ".join(f"{t}←{k}" for t, k in ranking.excluded)
         lines += ["", f"제외 {len(ranking.excluded)}건: {hit}"]
@@ -76,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         prog="rank_keywords",
         description="질의어 1개 → 3소스 등수 통계 + 표준편차 밴드",
     )
-    parser.add_argument("query", help="질의어 (예: 개발자)")
+    parser.add_argument("query", type=_nonblank, help="질의어 (예: 개발자)")
     parser.add_argument(
         "--source",
         action="append",
