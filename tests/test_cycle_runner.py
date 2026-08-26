@@ -46,9 +46,16 @@ def _topic_script(index: int = 0, category: str = "꿀팁") -> list[AIMessage]:
 
 
 def _content_script(
-    spec: dict[str, object] = _CARD_SPEC, *, hook: str = "curiosity", body: str = "본문"
+    spec: dict[str, object] = _CARD_SPEC,
+    *,
+    hook: str = "curiosity",
+    body: str = "본문",
+    method: str | None = None,
 ) -> list[AIMessage]:
+    # 영상 포맷은 set_plan이 먼저다 — 코드가 순서를 강제한다([sns.agents.content]).
+    plan = [_tool("set_plan", {"video_method": method})] if method else []
     return [
+        *plan,
         _tool("set_hook", {"pattern": hook}),
         _tool("set_media_spec", {"spec_json": json.dumps(spec, ensure_ascii=False)}),
         AIMessage(content=body),
@@ -324,7 +331,9 @@ def _run_video(resolve: Any) -> Any:
         goal_ref="engagement_depth",
         topic_major=DEV_MAJOR,
         targets=[_target(fmt="shorts")],
-        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(_VIDEO_SPEC))),
+        model=ScriptedChatModel(
+            messages=iter(_topic_script() + _content_script(_VIDEO_SPEC, method="template"))
+        ),
         research_trends=FakeResearchTrends(),
         read_stats=FakeReadStats(),
         render_media=FakeRenderMedia(),
@@ -401,7 +410,9 @@ def _run_shorts(spec: dict[str, object], *, body: str = "본문", mode: str = "a
         goal_ref="engagement_depth",
         topic_major=DEV_MAJOR,
         targets=[_target(mode=mode, fmt="shorts")],
-        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(spec, body=body))),
+        model=ScriptedChatModel(
+            messages=iter(_topic_script() + _content_script(spec, body=body, method="template"))
+        ),
         research_trends=FakeResearchTrends(),
         read_stats=FakeReadStats(),
         render_media=FakeRenderMedia(),
@@ -459,7 +470,9 @@ def test_near_duplicate_of_recent_content_is_blocked() -> None:
         goal_ref="engagement_depth",
         topic_major=DEV_MAJOR,
         targets=[_target(fmt="shorts")],
-        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(_spec_with()))),
+        model=ScriptedChatModel(
+            messages=iter(_topic_script() + _content_script(_spec_with(), method="template"))
+        ),
         research_trends=FakeResearchTrends(),
         read_stats=FakeReadStats(),
         render_media=FakeRenderMedia(),
@@ -484,7 +497,9 @@ def test_different_content_passes_the_similarity_gate() -> None:
         goal_ref="engagement_depth",
         topic_major=DEV_MAJOR,
         targets=[_target(fmt="shorts")],
-        model=ScriptedChatModel(messages=iter(_topic_script() + _content_script(_spec_with()))),
+        model=ScriptedChatModel(
+            messages=iter(_topic_script() + _content_script(_spec_with(), method="template"))
+        ),
         research_trends=FakeResearchTrends(),
         read_stats=FakeReadStats(),
         render_media=FakeRenderMedia(),

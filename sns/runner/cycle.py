@@ -42,6 +42,7 @@ from sns.tools.contracts import (
     ReadStats,
     RenderMedia,
     ResearchTrends,
+    VideoMethod,
 )
 
 # 발행 모드 3분류([sns.publish.modes] 정본): auto·hybrid·manual
@@ -122,6 +123,7 @@ def run_cycle(
     resolve_media_spec: ResolveMediaSpec | None = None,
     playbook_guidance: str | None = None,
     topic_major: str,
+    supported_methods: Sequence[VideoMethod] = ("template",),
     channel_brief: str | None = None,
     topic_categories: Sequence[str] | None = None,
 ) -> CycleResult:
@@ -216,6 +218,7 @@ def run_cycle(
                         recent_signatures=recent_signatures,
                         playbook_guidance=playbook_guidance,
                         topic_major=topic_major,
+                        supported_methods=supported_methods,
                     )
                 )
             except (ContentRejected, CardSpecError, VideoSpecError) as exc:
@@ -280,6 +283,7 @@ def _prepare_target(
     recent_signatures: tuple[frozenset[str], ...],
     playbook_guidance: str | None,
     topic_major: str,
+    supported_methods: Sequence[VideoMethod],
 ) -> TargetResult:
     fmt = target.content_format
 
@@ -289,6 +293,7 @@ def _prepare_target(
         content_format=fmt,
         playbook_guidance=playbook_guidance,
         topic_major=topic_major,
+        supported_methods=supported_methods,
     )
     store.log_event(
         cycle_id=cycle_id,

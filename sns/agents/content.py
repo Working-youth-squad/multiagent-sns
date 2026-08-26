@@ -14,6 +14,7 @@ LLM이 자유 JSON으로 흘리지 않고 **툴로 코드가 포착·검증**한
 """
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, get_args
 
@@ -25,7 +26,7 @@ from langchain_core.tools import tool
 from sns.agents.topic import TopicResult
 from sns.render.card.spec import CardSpecError, parse_card_spec
 from sns.render.video.spec import VideoSpecError, parse_video_spec
-from sns.tools.contracts import ContentFormat
+from sns.tools.contracts import ContentFormat, VideoMethod
 from sns.topic_policy import (
     concept_examples_for,
     concept_kinds_for,
@@ -71,10 +72,24 @@ _PROMPT_TAIL = """4. **근거를 댈 수 없는 구체 수치를 쓰지 않는�
    캡션은 마크다운을 렌더하지 않는 플랫폼에 올라가니 **, ##, --- 같은 기호를 쓰지 않는다.
 6. 정치·특정인 비방·음란·불법 복제 소재는 쓰지 않는다 — 게이트에 걸려 발행이 막힌다.
 
-set_hook과 set_media_spec을 모두 호출한 뒤 마지막 메시지로 본문을 마무리한다."""
+영상 포맷(reels/shorts)이면 **set_plan을 가장 먼저** 불러 제작 방식을 확정한다.
+«METHODS»
+
+그다음 set_hook과 set_media_spec을 호출하고 마지막 메시지로 본문을 마무리한다."""
 
 
-def _system_prompt(topic_major: str) -> str:
+# 제작 방식 안내 — 배선된 조합마다 무엇을 쓰라고 말할지. 목록에 없는 조합은 이름만 나열한다.
+_METHOD_GUIDE: dict[tuple[str, ...], str] = {
+    ("template",): "가능한 방식: template(코드·개념 그림·사진으로 3단 화면을 만든다) 하나뿐이다.",
+    ("template", "generated_scene"): """가능한 방식 둘:
+  template        — 코드·개념 그림·사진으로 3단 화면. 보여줄 코드나 도해가 있을 때.
+  generated_scene — 컷마다 장면을 그려 화면 전체를 채운다. 분위기·이야기가 중요할 때.
+  generated_scene을 고르면 슬라이드마다 scene_prompt(영문 한 문장, 무엇이 어떻게
+  놓여 있는지)를 쓴다. 화풍은 코드가 붙이니 구도만 써라. 글자는 넣지 마라.""",
+}
+
+
+def _system_prompt(topic_major: str, supported_methods: Sequence[str] = ("template",)) -> str:
     """주제 대분류 → Content 시스템 프롬프트.
 
     대분류에서 오는 건 셋이다 — 주제 범위 문구, **정사각 섹션 전체**, 개념 그림 예시.
@@ -95,7 +110,10 @@ def _system_prompt(topic_major: str) -> str:
         .replace("«N»", str(len(kinds)))
     )
     head = _PROMPT_HEAD.replace("«DOMAIN»", subject_label_for(topic_major))
-    return head + square + "\n" + _PROMPT_TAIL
+    # 후보를 프롬프트에 실어도 **자물쇠는 set_plan이 건다** — 프롬프트에서 안내를 빼는
+    # 것만으로는 부족하다(에이전트가 안내를 무시하면 그대로 통과한다).
+    methods = _METHOD_GUIDE.get(tuple(supported_methods), f"가능한 방식: {list(supported_methods)}")
+    return head + square + "\n" + _PROMPT_TAIL.replace("«METHODS»", methods)
 
 
 @dataclass(frozen=True)
@@ -129,6 +147,17 @@ def _message_text(content: object) -> str:
     return str(content)
 
 
+def _plan_error(method: str, supported: Sequence[str]) -> str | None:
+    """고른 제작 방식이 이 환경에서 가능한가. 통과면 None.
+
+    **렌더 시점이 아니라 여기서 막는다.** 라우터가 사후 거부하면 대본을 다 만든 뒤에
+    터져 토큰과 시간을 이미 태운 뒤다. 여기서 거부하면 LLM이 즉시 고쳐 재호출한다.
+    """
+    if method not in supported:
+        return f"오류: 이 환경이 못 하는 제작 방식 {method!r} (가능: {list(supported)})"
+    return None
+
+
 def _validate_spec(spec: object, fmt: ContentFormat, topic_major: str) -> dict[str, object]:
     """포맷별 기존 파서로 media_spec 검증. 통과한 dict를 그대로 반환(jsonb 저장용).
 
@@ -155,12 +184,17 @@ def run_content(
     content_format: ContentFormat,
     playbook_guidance: str | None = None,
     topic_major: str,
+    supported_methods: Sequence[VideoMethod] = ("template",),
 ) -> ContentResult:
     """주제 → 포맷별 콘텐츠. 훅·검증된 media_spec·본문 모두 확보돼야 반환.
 
     `topic_major`는 주제 범위와 쓸 수 있는 개념 그림을 정한다([sns.topic_policy]).
     **기본값이 없다** — 빠뜨리면 요리 채널에 개발 규칙이 조용히 적용되고, 그 사고는
     렌더가 끝난 뒤에야 드러난다.
+
+    `supported_methods`는 **이 실행 환경이 배선한 렌더러 목록**이다
+    ([sns.render.video.router]). 기본값이 template 하나뿐이라, 생성 트랙은 진입점이
+    명시로 열어야 켜진다 — 비싼 방식이 조용히 기본이 되지 않게.
     """
     captured: dict[str, object] = {}
 
@@ -173,13 +207,29 @@ def run_content(
         return f"훅 기록: {pattern}"
 
     @tool
+    def set_plan(video_method: str) -> str:
+        """이 영상의 제작 방식을 확정한다. set_media_spec보다 먼저 호출해야 한다."""
+        error = _plan_error(video_method, supported_methods)
+        if error:
+            return error
+        captured["plan"] = video_method
+        return f"제작 방식 확정: {video_method}"
+
+    @tool
     def set_media_spec(spec_json: str) -> str:
         """포맷에 맞는 media_spec(JSON 문자열)을 검증·기록한다. 틀리면 오류 사유를 돌려준다."""
+        # 순서 강제 — 실행 방식을 몰래 정하지 못하게 한다.
+        if content_format in ("reels", "shorts") and "plan" not in captured:
+            return "오류: set_plan을 먼저 호출해야 한다"
         try:
             spec = json.loads(spec_json)
         except (TypeError, ValueError) as exc:
             return f"오류: JSON 파싱 실패 — {exc}"
         try:
+            # method는 **코드가 찍는다** — LLM이 media_spec에 또 쓰게 하면 진실이
+            # 둘이 되고, 두 값이 어긋나는 실패 모드가 새로 생긴다.
+            if isinstance(spec, dict) and "plan" in captured:
+                spec = {**spec, "method": captured["plan"]}
             captured["spec"] = _validate_spec(spec, content_format, topic_major)
         except (CardSpecError, VideoSpecError, ValueError) as exc:
             return f"오류: media_spec 검증 실패 — {exc}"
@@ -188,8 +238,8 @@ def run_content(
     guidance = f"\n참고 플레이북 지침: {playbook_guidance}" if playbook_guidance else ""
     agent = create_deep_agent(
         model=model,
-        tools=[set_hook, set_media_spec],
-        system_prompt=_system_prompt(topic_major),
+        tools=[set_plan, set_hook, set_media_spec],
+        system_prompt=_system_prompt(topic_major, supported_methods),
     )
     state = agent.invoke(
         {
