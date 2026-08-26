@@ -526,6 +526,7 @@ def _run_seeded(script: list[AIMessage], **kwargs: Any) -> Any:
     result = run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target(mode="hybrid")],
         model=ScriptedChatModel(messages=iter(script)),
         research_trends=FakeResearchTrends(),
@@ -572,6 +573,7 @@ def test_seed_topic_ignores_recent_topic_exclusion() -> None:
     result = run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target(mode="hybrid")],
         model=ScriptedChatModel(messages=iter(_content_script())),
         research_trends=FakeResearchTrends(),
@@ -597,6 +599,7 @@ def test_seed_topic_is_screened_before_it_reaches_the_ledger() -> None:
     result = run_cycle(
         store,
         goal_ref="engagement_depth",
+        topic_major=DEV_MAJOR,
         targets=[_target(mode="hybrid")],
         # 콘텐츠 스크립트를 주지 않는다 — 여기까지 오면 안 된다는 뜻이다.
         model=ScriptedChatModel(messages=iter([])),
