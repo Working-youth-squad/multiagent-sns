@@ -21,7 +21,7 @@ CLI가 이미 지키고 있고 화면에서 깨뜨리기 쉬운 순서로:
 from collections.abc import Mapping, Sequence
 from html import escape
 
-from sns.chat.drafts import SEED_DONE
+from sns.chat.drafts import SEED_DONE, ExportItem
 from sns.chat.store import ChatMessage, Conversation
 
 _STYLE = """<style>
@@ -82,6 +82,17 @@ button{padding:.6rem 1.2rem;border:none;border-radius:8px;cursor:pointer;font-si
 .badge.passed{border-color:#2e7d32;color:#2e7d32}
 .badge.blocked{border-color:#c62828;color:#c62828}
 .approve{display:inline-block;margin-top:.5rem;font-size:.85rem}
+.actions{margin-top:.5rem;display:flex;gap:.75rem;flex-wrap:wrap;align-items:center}
+.actions a{font-size:.85rem}
+.export-grid{display:flex;gap:1.2rem;align-items:flex-start;flex-wrap:wrap}
+.export-grid img{width:270px;height:auto;border:1px solid #ddd;border-radius:8px}
+.export-side{flex:1;min-width:260px}
+.caption{width:100%;min-height:22rem;font-family:inherit;font-size:.95rem;padding:.6rem;
+  box-sizing:border-box;border:1px solid #ccc;border-radius:8px;line-height:1.5}
+.step{border-left:3px solid #cfe0cf;padding:.1rem 0 .1rem .8rem;margin:.5rem 0;color:#444;
+  font-size:.9rem}
+.warn{background:#fff8e1;border:1px solid #ffe082;color:#5d4037;border-radius:8px;
+  padding:.7rem .9rem;font-size:.88rem;margin:1rem 0}
 .noimg{width:150px;height:150px;border-radius:8px;border:1px dashed #ccc;flex-shrink:0;
   display:flex;align-items:center;justify-content:center;color:#999;font-size:.78rem;
   text-align:center;padding:.4rem;box-sizing:border-box}
@@ -371,18 +382,23 @@ def _draft_card(item: Mapping[str, object]) -> str:
         )
 
     url = item.get("approve_url")
-    link = (
-        f'<a class="approve" href="{escape(str(url))}" target="_blank" rel="noopener">'
-        "승인 화면에서 확인·수정 →</a>"
-        if isinstance(url, str) and url
-        else ""
-    )
+    links = []
+    if isinstance(url, str) and url:
+        links.append(
+            f'<a href="{escape(url)}" target="_blank" rel="noopener">승인 화면에서 확인·수정 →</a>'
+        )
+    item_id = item.get("content_item_id")
+    if isinstance(item_id, str) and item_id:
+        # 손으로 올리려면 **잘리지 않은** 캡션과 이미지 파일이 필요하다 — 여기 미리보기는
+        # 잘려 있으므로 전용 화면으로 보낸다.
+        links.append(f'<a href="/export/{escape(item_id)}">수동 발행용 내보내기 →</a>')
+    actions = f'<div class="actions">{"".join(links)}</div>' if links else ""
 
     return (
         '<div class="card">'
         f"{thumb}"
         f'<div><p class="who">{who}{badge}</p>'
-        f'<p class="preview">{escape(preview)}</p>{rest}{link}</div></div>'
+        f'<p class="preview">{escape(preview)}</p>{rest}{actions}</div></div>'
     )
 
 
@@ -412,3 +428,81 @@ _QUALITY_TEXT: dict[str, str] = {
     "needs_review": "품질 미판정",
     "failed": "품질 미달",
 }
+
+
+def render_export(item: ExportItem) -> str:
+    """수동 발행 내보내기 — 사람이 플랫폼 앱에 손으로 올릴 재료 전부.
+
+    **캡션을 자르지 않는다.** 초안 카드의 미리보기와 정반대의 요구다: 잘린 캡션을
+    복사하면 그대로 잘린 채 게시된다. `<textarea>`에 전문을 넣어 전체 선택·복사가
+    되게 하고, 파일로도 받을 수 있게 한다(JS 없이).
+    """
+    stem = item.filename_stem
+    cid = escape(item.content_item_id)
+    if item.media_asset_id:
+        src = f"/media/{escape(item.media_asset_id)}"
+        image = (
+            f'<div><img src="{src}" alt="발행용 카드 이미지">'
+            f'<div class="actions">'
+            f'<a href="{src}?download=1&amp;name={escape(stem)}" download>이미지 내려받기</a>'
+            "</div></div>"
+        )
+    else:
+        image = '<div class="noimg">이미지 없음 — 렌더 자산이 없습니다.</div>'
+
+    # 승인 전 원고를 손으로 올리면 사람 관문(FR-Q3)을 건너뛴 것이 된다. 막지는 않되
+    # 어떤 상태인지는 반드시 알린다 — 모르고 올리는 것과 알고 올리는 것은 다르다.
+    if item.content_status != "approved":
+        gate = (
+            f'<p class="warn">이 원고는 아직 <b>{escape(item.content_status)}</b> 상태입니다 — '
+            "승인 화면을 거치지 않은 초안입니다. 그대로 올리면 사람 확인 관문을 건너뜁니다.</p>"
+        )
+    else:
+        gate = ""
+
+    steps = (
+        '<div class="step">1. 이미지를 내려받습니다.</div>'
+        '<div class="step">2. 아래 캡션을 전체 선택해 복사하거나 .txt로 내려받습니다.</div>'
+        f'<div class="step">3. {escape(item.platform)} 앱에서 직접 올립니다.</div>'
+        f'<div class="step">4. {_register_step(item)}</div>'
+    )
+
+    body = (
+        f'<a class="back" href="javascript:history.back()">← 돌아가기</a>'
+        f"<h1>{escape(item.topic_title)}</h1>"
+        f'<p class="meta">{escape(item.channel_label)} · 수동 발행용 내보내기</p>'
+        f"{gate}"
+        f'<div class="export-grid">{image}'
+        f'<div class="export-side">{steps}'
+        f'<label class="meta" for="caption">캡션 (전문 — 잘리지 않았습니다)</label>'
+        f'<textarea class="caption" id="caption" readonly>{escape(item.body)}</textarea>'
+        f'<div class="actions">'
+        f'<a href="/export/{cid}/caption.txt" download>캡션 .txt 내려받기</a>'
+        f'<span class="meta">{len(item.body)}자</span>'
+        "</div></div></div>"
+        f'<p class="note">원장 등록용 값 — content_item_id: <code>{cid}</code></p>'
+    )
+    return _page(f"{item.topic_title} — 내보내기", body)
+
+
+def _register_step(item: ExportItem) -> str:
+    """올린 뒤 원장에 등록하는 방법 — **채널 모드에 따라 실제로 되는 것만** 안내한다.
+
+    `sns.publish.manual`은 `manual` 채널만 받는다. hybrid/auto 건을 손으로 올리면 등록
+    경로가 없어 `publication`이 pending으로 남는다. 되는 것처럼 안내하면 사용자를 곧장
+    실패로 보낸다 — 안 되는 것은 안 된다고 말하는 편이 낫다.
+    """
+    mode = item.channel_mode
+    if mode == "manual":
+        return (
+            "올린 뒤 게시물 ID를 등록하면 지표 수집이 이어집니다 — "
+            "<code>scripts/manual_register.py</code>에 아래 id와 게시물 ID를 넘기세요."
+        )
+    if mode is None:
+        return "이 원고에 연결된 채널을 찾지 못했습니다 — 올린 뒤 원장 등록 경로가 없습니다."
+    return (
+        f"<b>이 채널은 {escape(mode)} 모드라 손으로 올린 결과를 원장에 등록할 수 없습니다.</b> "
+        "수동 등록은 manual 채널 전용입니다(기계 발행 채널에 손으로 등록하면 auto vs hybrid "
+        "비교가 오염됩니다). 올려도 발행 기록은 <code>pending</code>으로 남고 지표 수집이 "
+        "이어지지 않습니다."
+    )
