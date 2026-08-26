@@ -36,6 +36,7 @@ from dotenv import load_dotenv
 from sns.agents.models import make_model
 from sns.onboarding.profile import build_channel_brief
 from sns.onboarding.store import PgOnboardingStore
+from sns.onboarding.trends import profile_trend_service
 from sns.publish.runner import run_pending_publications
 from sns.quality.gate import QualityReport, check_card
 from sns.render.card.media import CardRenderMedia
@@ -44,7 +45,6 @@ from sns.render.images.resolve import ImageResolution, resolve_images
 from sns.render.video.media import VideoRenderMedia
 from sns.render.video.quality import make_video_gate
 from sns.render.video.tts import synthesize_google
-from sns.research.trends import default_service
 from sns.runner.cycle import AssessQuality, ChannelMode, CycleTarget, ResolveMediaSpec, run_cycle
 from sns.runner.store import PgCycleStore
 from sns.tools.contracts import (
@@ -58,7 +58,6 @@ from sns.tools.contracts import (
     TrendDigest,
 )
 from sns.tools.fakes import FakePublish, FakeReadStats
-from sns.topic_policy import grounding_prompt_for, trend_sources_for
 
 OUT = Path(__file__).parent / "out"
 ENV_FILE = Path(__file__).parent.parent / ".env"
@@ -250,14 +249,9 @@ def main() -> int:
             assess = assess_card
             resolve = None
 
-        # 프로필 맞춤 트렌드 — 소스 목록은 코드 파생(등록 이름과 일치해야 한다),
-        # 질의어는 사람이 인터뷰에서 고른 말을 그대로 쓴다.
+        # 프로필 맞춤 트렌드 — 조립은 온보딩 화면 6과 같은 함수를 쓴다(단일 출처).
+        trends = profile_trend_service(profile)
         search_terms = (profile.topic_major, *profile.topic_subs)
-        trends = default_service(
-            sources=trend_sources_for(profile.topic_major),
-            search_terms=search_terms,
-            grounding_prompt=grounding_prompt_for(profile.topic_major, profile.topic_subs),
-        )
         reporting = ReportingTrends(trends)
         print(f"트렌드: {', '.join(trends.sources)}")
         print(f"검색어: {', '.join(search_terms)}\n")

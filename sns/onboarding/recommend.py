@@ -1,9 +1,9 @@
 """트렌드 기반 추천안 + 줄글 미세조정 — 온보딩 화면 6의 두뇌.
 
 트렌드는 **탈부착 심**이다: `TrendProvider = 프로필 → TrendDigest` 호출자 주입.
-기본 구현(`default_trend_provider`)은 [sns.research.trends.default_service]를 그대로
-부른다 — 프로필 맞춤 조립(세부주제 쿼리 바인딩·소스 선별)은 트렌드 담당 몫이며,
-그쪽이 완성되면 이 함수 하나만 교체한다. 붙였다 떼어도 웹·프로필 코드는 무변경.
+기본 구현(`default_trend_provider`)은 [sns.onboarding.trends.profile_trend_service]로
+이 채널 주제에 맞춘 소스·질의어를 조립한다 — 사이클도 같은 함수를 쓴다.
+붙였다 떼어도 웹·프로필 코드는 무변경.
 
 `recommend`의 근거 규율은 [sns.agents.topic]과 동형: `hot_trends`는 다이제스트에
 실제로 있는 항목만 통과시킨다(할루시네이션 차단). 어떤 실패도 예외 대신 None —
@@ -27,7 +27,7 @@ from sns.onboarding.profile import (
     parse_profile,
     profile_to_json,
 )
-from sns.research.trends import default_service
+from sns.onboarding.trends import profile_trend_service
 from sns.tools.contracts import TrendDigest
 
 TrendProvider = Callable[[ChannelProfile], TrendDigest]
@@ -41,12 +41,13 @@ MAX_TUNE_CHARS = 80
 
 
 def default_trend_provider(profile: ChannelProfile) -> TrendDigest:
-    """기본 트렌드 조립 — 프로필과 무관하게 전 소스 다이제스트.
+    """기본 트렌드 조립 — **이 채널 주제에 맞춘** 다이제스트.
 
-    ponytail: 프로필 맞춤(세부주제 쿼리·소스 선별)은 트렌드 담당의 상세 버전으로
-    교체될 자리라 여기서는 조립하지 않는다.
+    조립은 [sns.onboarding.trends.profile_trend_service]가 한다 — 사이클도 같은 것을
+    쓰므로 한 곳에만 둔다. 예전엔 여기서 `default_service()`를 그냥 불러 `profile`을
+    받아놓고 쓰지 않았고, 그래서 요리 채널이 개발 트렌드를 근거로 이름을 추천받았다.
     """
-    return default_service()(limit=10)
+    return profile_trend_service(profile)(limit=10)
 
 
 _RECOMMEND_SYSTEM = (
