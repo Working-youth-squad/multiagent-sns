@@ -106,20 +106,28 @@ def check_video(
 # 사이클의 `AssessQuality`와 구조적으로 같다. Protocol을 import하면 순환이 난다 —
 # sns.runner.cycle → sns.render.video.spec → sns.render.video(패키지 init) → 이 모듈.
 AssessQualityFn = Callable[..., QualityReport]
+# 저장된 산출물을 되읽는 seam — `MediaStore.get`이 그대로 들어온다.
+FetchMedia = Callable[[str], bytes]
 
 
-def make_video_gate(ffprobe: str = "ffprobe", ffmpeg: str = "ffmpeg") -> AssessQualityFn:
+def make_video_gate(
+    fetch: FetchMedia, *, ffprobe: str = "ffprobe", ffmpeg: str = "ffmpeg"
+) -> AssessQualityFn:
     """영상 품질 게이트를 사이클의 `assess_quality` 형태로 조립.
 
-    **전달받은 `media`의 바이트를 읽는다 — 다시 렌더하지 않는다.** 영상은 컷마다 유료
-    TTS를 사므로 재렌더는 비용이 두 배다. 러너가 렌더 결과(`MediaAsset`)를 그대로
-    넘겨주므로([sns.runner.cycle]) 저장소에서 읽으면 된다.
+    **전달받은 `media`를 읽는다 — 다시 렌더하지 않는다.** 영상은 컷마다 유료 TTS를
+    사므로 재렌더는 비용이 두 배다. 러너가 렌더 결과(`MediaAsset`)를 그대로 넘겨주므로
+    ([sns.runner.cycle]) 저장소에서 읽으면 된다.
+
+    **되읽기는 `fetch`(= `MediaStore.get`)로 한다.** `storage_url`을 파일 경로로
+    간주하면 안 된다 — 저장소 벤더 교체 seam(FR-M3)이라 `file://` URI나 `s3://`가
+    올 수 있고, 실제로 로컬 스크립트 둘이 서로 다른 형식을 내보내 게이트가 터졌다.
     """
 
     def assess(
         *, media_spec: Mapping[str, object], media: MediaAsset, content_format: ContentFormat
     ) -> QualityReport:
-        report = check_video(Path(media.storage_url).read_bytes(), ffprobe=ffprobe, ffmpeg=ffmpeg)
+        report = check_video(fetch(media.storage_url), ffprobe=ffprobe, ffmpeg=ffmpeg)
         checks = tuple(QualityCheck(f, False, f) for f in report.failures) or (
             QualityCheck("video_spec", True, "규격·길이·오디오 하한 통과"),
         )

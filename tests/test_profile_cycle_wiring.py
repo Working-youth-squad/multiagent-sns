@@ -4,9 +4,12 @@
 (manual 채널이 자동 발행되는 것처럼). 그 매핑만 떼어 확인한다.
 """
 
+from pathlib import Path
+
 import pytest
 
 from scripts.run_profile_cycle import (
+    DirMediaStore,
     build_parser,
     channel_mode_of,
     content_format_for,
@@ -62,3 +65,15 @@ def test_parser_accepts_video_and_font() -> None:
     args = build_parser().parse_args(["c", "--format", "video", "--font", "/f.ttf"])
     assert args.format == "video"
     assert args.font == "/f.ttf"
+
+
+def test_media_store_round_trip(tmp_path: Path) -> None:
+    """put이 낸 URL을 get이 되읽어야 한다.
+
+    영상 품질 게이트가 산출 mp4를 되읽는데(`make_video_gate`), 이 store는 file:// URI를
+    낸다. 예전엔 get이 NotImplementedError였고 게이트는 URL을 파일 경로로 간주해
+    `file:\\C:\\...`로 OSError가 났다 — 실 관통에서 터진 자리다.
+    """
+    store = DirMediaStore(tmp_path)
+    url = store.put(b"\x00\x01mp4", checksum="a" * 64, kind="video", ext="mp4")
+    assert store.get(url) == b"\x00\x01mp4"

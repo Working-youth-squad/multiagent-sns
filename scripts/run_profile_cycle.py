@@ -27,6 +27,8 @@ import os
 import sys
 from collections.abc import Mapping
 from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import url2pathname
 
 import psycopg
 from dotenv import load_dotenv
@@ -117,7 +119,13 @@ class DirMediaStore:
         return path.resolve().as_uri()
 
     def get(self, url: str) -> bytes:
-        raise NotImplementedError("이 스크립트는 되읽기를 쓰지 않는다")
+        """`put`이 낸 file:// URI를 되읽는다.
+
+        영상 품질 게이트가 산출 mp4를 다시 읽고([sns.render.video.quality]), 사진 해소도
+        저장한 정사각을 되읽는다. URI를 경로로 그냥 넘기면 Windows에서 `file:\\C:\\...`가
+        되어 OSError가 난다 — 실제로 그렇게 터졌다.
+        """
+        return Path(url2pathname(urlparse(url).path)).read_bytes()
 
 
 def find_font() -> str | None:
@@ -183,7 +191,7 @@ def main() -> int:
             ffprobe = (
                 str(Path(args.ffmpeg).parent / "ffprobe") if args.ffmpeg != "ffmpeg" else "ffprobe"
             )
-            assess = make_video_gate(ffprobe, args.ffmpeg)
+            assess = make_video_gate(media_store.get, ffprobe=ffprobe, ffmpeg=args.ffmpeg)
 
             def resolve_video(spec: Mapping[str, object]) -> ImageResolution:
                 return resolve_images(spec, store=media_store)

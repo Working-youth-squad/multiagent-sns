@@ -239,7 +239,7 @@ def main() -> int:
         research_trends=trends,
         read_stats=FakeReadStats(),
         render_media=renderer,
-        assess_quality=make_video_gate(ffprobe, ffmpeg),
+        assess_quality=make_video_gate(media_store.get, ffprobe=ffprobe, ffmpeg=ffmpeg),
         # 사진 해소 seam — PEXELS_API_KEY가 없으면 후보를 못 구해 notice만 남고
         # 그라데이션/개념 그림으로 간다(영상은 그대로 나온다).
         resolve_media_spec=lambda spec: resolve_images(spec, store=media_store),
