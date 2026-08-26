@@ -1,11 +1,16 @@
-%% multiagent-sns — 발행 사이클 시퀀스 (코드 기준 · main 19f1466 · 2026-08-26 동기화)
+%% multiagent-sns — 발행 사이클 시퀀스 (코드 기준 · main bfdf3d5 · 2026-08-27 동기화)
 %% 실체는 **두 개의 독립 실행**이다. 기획서의 단일 루프가 아니다.
 %%   ① sns.runner.cycle.run_cycle              — 기획→제작→publication(pending)까지만
 %%   ② sns.publish.runner.run_pending_publications — pending 원장을 종결까지 전진
 %% 둘을 잇는 상시 스케줄러는 아직 없다. 사람이 scripts/를 순서대로 부른다.
+%%
+%% ①의 입구는 이제 둘이다: CLI(run_profile_cycle.py)와 키워드 챗봇(:8003)의 시드.
+%% 둘은 **같은 배선 정본**(sns.runner.wiring.build_render_wiring)을 쓴다 — 진입점마다
+%% 배선을 적던 시절에 `--format video`가 카드 렌더러로 덮이는 사고가 있었다.
 sequenceDiagram
     autonumber
-    participant OP as 운영자 · scripts/e2e_cycle.py
+    participant OP as 운영자 · CLI 또는 챗봇 :8003
+    participant WIR as runner.wiring + runner.formats
     participant RUN as run_cycle
     participant TOP as Topic 에이전트
     participant TR as ResearchTrendsService
@@ -17,26 +22,40 @@ sequenceDiagram
     participant WEB as 승인 웹 web.approve
     participant PR as run_pending_publications
     participant SM as run_publish 상태머신
+    participant RT as PlatformPublishRouter
     participant API as IG Graph / YouTube API
     participant NT as dispatch_alert · Discord
 
+    rect rgb(240,248,245)
+    Note over OP,WIR: 배선은 사이클보다 먼저 결정된다 — 두 게이트가 여기서 닫힌다
+    OP->>WIR: 사람이 고른 값은 card 또는 video (릴스/쇼츠는 **플랫폼이** 가른다)
+    WIR->>WIR: content_format_for(platform, choice) — 표를 진입점마다 복제하지 않는다
+    WIR-->>OP: RenderWiring(render_media · assess_quality · resolve · supported_methods)
+    Note over WIR: **Capability Gate** = 라우터 dict에 적힌 method만 고를 수 있다.<br/>generated_scene은 컷마다 유료 생성이라 호출자가 methods=로 **명시**해야 들어온다.<br/>generated_clip은 계약에 선언만 있고 이 배선에는 없다(preview_clip_video.py 전용).<br/>**Cost Gate**는 여기가 아니다 — gen.budget.ImageBudget이 사이클당 12장을 센다
+    end
+
     rect rgb(245,245,250)
     Note over OP,ST: ① run_cycle — 발행하지 않는다. publication(pending)까지 만든다
-    OP->>RUN: run_cycle(goal_ref, targets, model, 계약 주입)
+    OP->>RUN: run_cycle(goal_ref, targets, model, topic_major, supported_methods, 배선 주입)
     RUN->>ST: create_cycle → run_event(cycle_started)
     RUN->>ST: recent_media_specs(14일, 최대 50건) → 근접중복 지문
-    RUN->>TOP: run_topic(exclude_titles=최근 14일 제목, categories, guidance)
-    TOP->>TR: research_trends 툴 — 소스 병렬 조회
-    TR-->>TOP: 다이제스트 + 소스별 ok/실패 (실패 소스만 격리)
-    Note over TOP,TR: 사이클이 쓰는 것은 고정 피드 갈래다. 질의어 기반 키워드 랭킹은<br/>같은 서비스를 재사용하는 별도 갈래이고 사이클에 배선돼 있지 않다 (keyword-ranking-sequence)
-    TOP->>ST: read_stats 툴 (운영 구현 없음 — 현재 Fake 주입)
-    alt 근거 있는 후보에서 선택 성공
-        TOP-->>RUN: TopicResult(title, category, source)
-        RUN->>ST: save_topic + run_event(agent_called)
-    else TopicSelectionError
-        TOP-->>RUN: 근거 밖 제목 · 카테고리 무효
-        RUN->>ST: run_event(error) + complete_cycle(failed)
-        RUN-->>OP: CycleResult(status=failed, targets=빈 튜플)
+    alt seed_topic 있음 (챗봇이 확정한 주제 · FR-W5)
+        RUN->>GATE: 시드 제목·요약도 금지소재 관문을 통과해야 한다
+        RUN->>ST: save_topic + run_event(agent=seed) — Topic 에이전트를 부르지 않는다
+    else 자동 선정
+        RUN->>TOP: run_topic(exclude_titles=최근 14일 제목, categories, guidance)
+        TOP->>TR: research_trends 툴 — 소스 병렬 조회
+        TR-->>TOP: 다이제스트 + 소스별 ok/실패 (실패 소스만 격리)
+        Note over TOP,TR: 소스 구성은 채널 프로필이 정한다(onboarding.trends.profile_trend_service):<br/>topic_policy의 주제별 소스 + 세부 주제마다 키워드 랭킹 소스 하나(keywords:*).<br/>요리 채널이 개발 뉴스에서 주제를 고르지 않는다
+        TOP->>ST: read_stats 툴 (운영 구현은 있으나 사이클 진입점은 아직 Fake 주입)
+        alt 근거 있는 후보에서 선택 성공
+            TOP-->>RUN: TopicResult(title, category, source)
+            RUN->>ST: save_topic + run_event(agent_called)
+        else TopicSelectionError
+            TOP-->>RUN: 근거 밖 제목 · 카테고리 무효
+            RUN->>ST: run_event(error) + complete_cycle(failed)
+            RUN-->>OP: CycleResult(status=failed, targets=빈 튜플)
+        end
     end
     end
 
@@ -47,18 +66,20 @@ sequenceDiagram
             RUN->>ST: run_event(notice, manual_assignment) — 주제만 배정
             Note over RUN: AI 초안·렌더·기계 발행 없음. 사람이 직접 쓰고 발행한다
         else mode = auto 또는 hybrid
-            RUN->>CON: run_content(topic, format, playbook_guidance)
-            CON-->>RUN: body + media_spec + hook_pattern
+            RUN->>CON: run_content(topic, format, topic_major, supported_methods, playbook_guidance)
+            CON-->>RUN: body + media_spec(method 포함) + hook_pattern
             RUN->>GATE: 금지 소재 + 직전 50건 유사도 — 렌더보다 앞이다
             alt 관문 차단
                 GATE-->>RUN: 사유 목록 (유사도 상한 0.8 초과 포함)
                 RUN->>ST: run_event(notice) + content_item(status=needs_review)
                 Note over RUN,ST: 렌더 비용을 쓰지 않는다. 원고만 남겨 사람에게 넘긴다
             else 통과
-                RUN->>RES: image_query → image_ref 못박기 (주입 없으면 생략)
+                RUN->>RES: 해소 1회 — image_query→image_ref, scene_prompt→scene_ref
+                Note over RES: 생성 이미지는 예산(사이클당 12장)을 태우고, 실패는 종류를 갖는다 —<br/>scene_failure가 기록되면 그 컷은 렌더 필수 필드를 면제받고 그라데이션으로 간다.<br/>style·character_ref도 여기서 spec에 못박힌다(승인 웹 재렌더가 같은 꼴로 돌게)
                 RES-->>RUN: 확정된 media_spec + 크레딧 붙은 body + notes
-                RUN->>MED: render_media(media_spec, kind) → checksum
-                MED->>MED: assess_quality — 미주입이면 needs_review로 보류
+                RUN->>MED: render_media(media_spec, kind) → 라우터가 method로 갈라 보낸다
+                MED->>MED: assess_quality — 카드 게이트 / 영상 게이트(빈 화면·길이·자막)
+                RUN->>RUN: with_ai_disclosure — 생성 장면을 쓴 영상에만, **코드가** 붙인다
                 RUN->>ST: content_item(auto=approved / hybrid=needs_review)
                 RUN->>ST: media_asset(checksum, quality_status, quality_report)
                 RUN->>ST: publication(status=pending, mode 스냅샷)
@@ -73,7 +94,7 @@ sequenceDiagram
     rect rgb(240,248,245)
     Note over WEB,ST: hybrid 사람 관문 — 승인 전엔 아래 러너가 발행하지 않는다
     WEB->>ST: 승인 = content_item.status=approved + media_asset.quality_status=passed
-    Note over WEB,ST: 본문 수정 시 edited_by_human=true. 반려는 publication=skipped로 즉시 종결
+    Note over WEB,ST: 본문 수정 시 edited_by_human=true. 컷 편집 후 재렌더도 이 화면에서.<br/>반려는 publication=skipped로 즉시 종결
     end
 
     rect rgb(245,245,250)
@@ -91,18 +112,25 @@ sequenceDiagram
             end
         else 발행 진입
             PR->>SM: run_publish(idempotency_key=publication_id, quality_passed)
-            SM->>API: IG는 컨테이너 생성 → 폴링 → 게시 / YT는 resumable 업로드
-            alt 성공
-                API-->>SM: external_post_id
-                SM->>ST: publish_attempt=published + publication=published
-            else transient
-                API-->>SM: 일시 오류 → container_id 보존하고 다음 구동에서 이어감
-            else 영구 오류
-                API-->>SM: auth · quota · spam_block · permanent_unknown
-                SM->>ST: publish_attempt=failed + error_raw 원문
-                SM->>NT: dispatch_alert — 적재 먼저, 전송 실패는 삼킴
+            SM->>RT: publish(platform, media, caption, key, container_id)
+            alt 이 배선에 그 플랫폼 어댑터가 없음
+                RT-->>SM: **transient 오류** — 예외를 던지지 않는다
+                Note over RT,SM: 던지면 루프가 끊겨 배선된 플랫폼 건까지 그날 안 나간다.<br/>failed도 skipped도 아닌 pending으로 남아, 어댑터를 붙이면 그대로 나간다
+            else 배선됨
+                RT->>API: IG는 컨테이너 생성 → 폴링 → 게시 / YT는 resumable 업로드
+                alt 성공
+                    API-->>SM: external_post_id
+                    SM->>ST: publish_attempt=published + publication=published
+                else transient
+                    API-->>SM: 일시 오류 → container_id 보존하고 다음 구동에서 이어감
+                else 영구 오류
+                    API-->>SM: auth · quota · spam_block · permanent_unknown
+                    SM->>ST: publish_attempt=failed + error_raw 원문
+                    SM->>NT: dispatch_alert — 적재 먼저, 전송 실패는 삼킴
+                end
             end
             PR->>ST: run_event(publish_attempted, mode 포함)
         end
     end
+    Note over ST: published_at + external_post_id가 학습 루프의 입구다 —<br/>폴러가 이 둘로 관측 창을 찍는다(learning-loop-sequence)
     end
