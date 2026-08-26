@@ -238,3 +238,32 @@ def _start(client: TestClient, *, text: str = "개발자") -> str:
     response = client.post("/conversations", data={"text": text}, follow_redirects=False)
     assert response.status_code == 303
     return response.headers["location"].removeprefix("/c/").split("#")[0]
+
+
+# ── 미디어 중계 라우트 ─────────────────────────────────────────────────
+
+
+def test_media_route_serves_bytes_by_asset_id() -> None:
+    store = InMemoryChatStore()
+    client = _client(
+        store, [], load_media_fn=lambda aid: (b"PNGDATA", "image/png") if aid == "ma-1" else None
+    )
+    ok = client.get("/media/ma-1")
+    assert ok.status_code == 200
+    assert ok.content == b"PNGDATA"
+    assert ok.headers["content-type"].startswith("image/png")
+    assert client.get("/media/없는-id").status_code == 404
+
+
+def test_media_route_is_404_when_unwired() -> None:
+    """미배선 배치에서도 화면은 살아 있어야 한다(카드가 자리표시로 그려진다)."""
+    client = _client(InMemoryChatStore(), [])
+    assert client.get("/media/ma-1").status_code == 404
+
+
+def test_media_store_failure_does_not_500_the_page() -> None:
+    def boom(asset_id: str) -> tuple[bytes, str] | None:
+        raise OSError("저장소 장애")
+
+    client = _client(InMemoryChatStore(), [], load_media_fn=boom)
+    assert client.get("/media/ma-1").status_code == 404

@@ -21,6 +21,7 @@ CLI가 이미 지키고 있고 화면에서 깨뜨리기 쉬운 순서로:
 from collections.abc import Mapping, Sequence
 from html import escape
 
+from sns.chat.drafts import SEED_DONE
 from sns.chat.store import ChatMessage, Conversation
 
 _STYLE = """<style>
@@ -63,6 +64,27 @@ button{padding:.6rem 1.2rem;border:none;border-radius:8px;cursor:pointer;font-si
 .meta{color:#666;font-size:.82rem}
 .empty{color:#666;text-align:center;padding:3rem 0}
 .back{display:inline-block;margin-bottom:1rem;color:#666}
+.draft{border:1px solid #cfe0cf;border-left:4px solid #2e7d32;border-radius:10px;
+  padding:.9rem 1rem;margin-bottom:1rem;background:#fbfdfb}
+.draft h3{margin:0 0 .1rem;font-size:1rem}
+.draft .meta{margin-bottom:.7rem}
+.card{display:flex;gap:.9rem;align-items:flex-start;border-top:1px solid #e6efe6;
+  padding-top:.75rem;margin-top:.75rem}
+.card:first-of-type{border-top:none;padding-top:0;margin-top:0}
+.card img{width:150px;height:auto;max-height:230px;object-fit:contain;border-radius:8px;
+  border:1px solid #ddd;flex-shrink:0;background:#f4f4f4}
+.card .who{font-size:.82rem;color:#666;margin:0 0 .3rem}
+.card .preview{white-space:pre-wrap;word-break:break-word;font-size:.9rem;margin:0}
+.card .rest{color:#888;font-size:.8rem}
+.badge{display:inline-block;font-size:.75rem;padding:.1rem .5rem;border-radius:999px;
+  border:1px solid #ccc;color:#555;margin-left:.35rem}
+.badge.needs_review{border-color:#ef6c00;color:#ef6c00}
+.badge.passed{border-color:#2e7d32;color:#2e7d32}
+.badge.blocked{border-color:#c62828;color:#c62828}
+.approve{display:inline-block;margin-top:.5rem;font-size:.85rem}
+.noimg{width:150px;height:150px;border-radius:8px;border:1px dashed #ccc;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;color:#999;font-size:.78rem;
+  text-align:center;padding:.4rem;box-sizing:border-box}
 a{color:#2e7d32}
 </style>"""
 
@@ -141,6 +163,9 @@ def render_conversation(
 def _message(message: ChatMessage) -> str:
     if message.role == "ranking":
         return render_ranking(message.payload or {})
+    payload = message.payload or {}
+    if message.role == "system" and payload.get("kind") == SEED_DONE:
+        return render_drafts(payload)
     return (
         f'<div class="turn {escape(message.role)}">'
         f'<div class="bubble">{escape(message.body)}</div></div>'
@@ -276,3 +301,114 @@ def _seq(value: object) -> Sequence[object]:
 
 def _stats(value: object) -> list[Mapping[str, object]]:
     return [s for s in _seq(value) if isinstance(s, Mapping)]
+
+
+def render_drafts(payload: Mapping[str, object]) -> str:
+    """시드 사이클 결과 → 초안 카드 ([sns.chat.drafts.seed_done_payload] 산출을 읽는다).
+
+    본문은 미리보기다 — 정본은 `content_item.body`이고 승인 화면이 그것을 편집한다.
+    잘렸으면 **잘렸다고 밝힌다**. 요약해 놓고 전문인 척하면 사용자가 승인 화면에서
+    처음 보는 문장이 생긴다.
+    """
+    title = str(payload.get("topic_title", ""))
+    items = _stats(payload.get("items"))
+    prepared = [i for i in items if i.get("outcome") == "prepared"]
+
+    if prepared:
+        head = f"초안 {len(prepared)}건이 만들어졌습니다 — 승인하면 발행됩니다."
+    elif items:
+        head = "초안이 만들어지지 않았습니다."
+    else:
+        head = "초안을 만들 대상이 없습니다."
+
+    cards = "".join(_draft_card(i) for i in items)
+    if not cards:
+        cards = '<p class="note">hybrid 모드 채널이 필요합니다(온보딩 :8002).</p>'
+
+    return (
+        '<div class="draft">'
+        f"<h3>‘{escape(title)}’</h3>"
+        f'<p class="meta">{escape(head)}</p>'
+        f"{cards}</div>"
+    )
+
+
+def _draft_card(item: Mapping[str, object]) -> str:
+    outcome = str(item.get("outcome", ""))
+    who = escape(str(item.get("channel_label", "")))
+
+    if outcome != "prepared":
+        # 실패·차단도 카드로 남긴다 — 사유가 그 대상의 결과 전부다.
+        reason = str(item.get("error") or _OUTCOME_TEXT.get(outcome, outcome))
+        return (
+            '<div class="card">'
+            f'<div class="noimg">{escape(_OUTCOME_TEXT.get(outcome, outcome))}</div>'
+            f'<div><p class="who">{who}<span class="badge blocked">'
+            f"{escape(outcome)}</span></p>"
+            f'<p class="preview">{escape(reason)}</p></div></div>'
+        )
+
+    asset_id = item.get("media_asset_id")
+    if isinstance(asset_id, str) and asset_id:
+        thumb = f'<img src="/media/{escape(asset_id)}" alt="생성된 카드 이미지">'
+    else:
+        thumb = '<div class="noimg">이미지 없음</div>'
+
+    # 주 뱃지는 **승인 상태**다. 미디어 품질이 passed여도 사람 승인 전이면 나가지 않는다 —
+    # 품질만 보여주면 "통과했다"로 읽혀 발행된 줄 안다.
+    badge = _badge(str(item.get("content_status") or ""), _CONTENT_TEXT)
+    quality = str(item.get("quality_status") or "")
+    if quality and quality != "passed":
+        # 품질은 문제가 있을 때만 덧붙인다 — 통과는 승인 상태가 이미 말한 것에 더할 게 없다.
+        badge += _badge(quality, _QUALITY_TEXT)
+
+    preview = str(item.get("body_preview", ""))
+    length = item.get("body_length")
+    rest = ""
+    if isinstance(length, int) and length > len(preview):
+        rest = (
+            f'<p class="rest">…이하 {length - len(preview)}자는 승인 화면에서 볼 수 있습니다.</p>'
+        )
+
+    url = item.get("approve_url")
+    link = (
+        f'<a class="approve" href="{escape(str(url))}" target="_blank" rel="noopener">'
+        "승인 화면에서 확인·수정 →</a>"
+        if isinstance(url, str) and url
+        else ""
+    )
+
+    return (
+        '<div class="card">'
+        f"{thumb}"
+        f'<div><p class="who">{who}{badge}</p>'
+        f'<p class="preview">{escape(preview)}</p>{rest}{link}</div></div>'
+    )
+
+
+_OUTCOME_TEXT: dict[str, str] = {
+    "blocked": "게이트 차단",
+    "failed": "제작 실패",
+    "manual_assigned": "주제만 배정",
+}
+
+
+def _badge(value: str, labels: Mapping[str, str]) -> str:
+    if not value:
+        return ""
+    return f'<span class="badge {escape(value)}">{escape(labels.get(value, value))}</span>'
+
+
+# content_item.status — 발행을 실제로 막는 값.
+_CONTENT_TEXT: dict[str, str] = {
+    "needs_review": "승인 대기",
+    "draft": "초안",
+    "approved": "승인됨",
+    "rejected": "반려됨",
+}
+
+# media_asset.quality_status — 렌더 산출물 품질. 승인 여부가 아니다.
+_QUALITY_TEXT: dict[str, str] = {
+    "needs_review": "품질 미판정",
+    "failed": "품질 미달",
+}

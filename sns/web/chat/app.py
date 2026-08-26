@@ -11,6 +11,8 @@ JS 0줄이고 hidden input으로 이력을 실어 나르지 않는다. 새로고
 - `rank_fn`: `rank_keywords` 대체 지점. 테스트가 네트워크 없이 도는 자리.
 - `start_cycle_fn`: 확정된 주제로 콘텐츠 사이클을 띄운다(FR-W5). None이면 챗봇은
   키워드 조회에서 멈춘다 — 그것도 유효한 배치다.
+- `load_media_fn`: 만들어진 카드 이미지를 대화에 보여주기 위한 조회. None이면 초안
+  카드가 이미지 자리를 "이미지 없음"으로 그린다(대화는 그대로 동작한다).
 
 **LLM 실패가 사용자 발화를 삼키지 않는다.** 사용자 메시지를 먼저 append 한 뒤 턴을
 돌리므로, 턴이 죽어도 발화는 대화에 남고 실패 사실이 system 메시지로 붙는다.
@@ -19,7 +21,7 @@ JS 0줄이고 hidden input으로 이력을 실어 나르지 않는다. 새로고
 from collections.abc import Callable, Sequence
 
 from fastapi import FastAPI, Form
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from langchain_core.language_models import BaseChatModel
 
 from sns.agents.topic import TopicResult
@@ -32,6 +34,12 @@ StartCycleFn = Callable[[str, TopicResult], None]
 """(conversation_id, topic) → 콘텐츠 사이클 착수. 즉시 반환할 것 — 진행·결과는 구현이
 system 메시지로 대화에 append 한다. 동기로 완주하면 브라우저가 분 단위로 멈춘다."""
 
+LoadMediaFn = Callable[[str], tuple[bytes, str] | None]
+"""media_asset_id → (바이트, MIME). 없으면 None.
+
+**id로만 받는다** — 저장소 URL을 쿼리스트링으로 받으면 그 라우트가 임의 파일·임의 호스트
+읽기 통로가 된다(렌더 산출은 file:// URI다). id는 우리 DB가 발급한 uuid라 그 통로가 없다."""
+
 TITLE_MAX = 40
 
 
@@ -41,6 +49,7 @@ def create_app(
     model: BaseChatModel,
     rank_fn: RankFn = rank_keywords,
     start_cycle_fn: StartCycleFn | None = None,
+    load_media_fn: LoadMediaFn | None = None,
     exclude: Sequence[str] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="키워드 챗봇")
@@ -150,5 +159,20 @@ def create_app(
         except ConversationNotFound:  # 턴 도중 대화가 사라진 경우(동시 삭제)
             return HTMLResponse(render_not_found(), status_code=404)
         return RedirectResponse(f"/c/{conversation_id}#bottom", status_code=303)
+
+    @app.get("/media/{asset_id}", response_model=None)
+    def media(asset_id: str) -> Response:
+        """초안 카드 이미지. 대화가 file:// URI를 직접 가리킬 수 없어 서버가 중계한다."""
+        if load_media_fn is None:
+            return Response(status_code=404)
+        try:
+            found = load_media_fn(asset_id)
+        except Exception:  # 저장소 장애가 대화 화면 전체를 죽이지 않는다
+            return Response(status_code=404)
+        if found is None:
+            return Response(status_code=404)
+        data, media_type = found
+        # 자산은 불변이다(checksum이 파일명) — 재방문마다 다시 받을 이유가 없다.
+        return Response(data, media_type=media_type, headers={"Cache-Control": "max-age=3600"})
 
     return app

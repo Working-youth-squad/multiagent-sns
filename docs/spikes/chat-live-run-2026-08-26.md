@@ -53,20 +53,48 @@ FR-W6 구현을 **실제 LLM**으로 돌린 기록. 오프라인 테스트(`Scri
 프롬프트 규칙 6 신설 + `confirm_topic` 툴 반환문에 금지를 명시해 고쳤다.
 재실행 결과 답변 길이 **155자**, 확정 사실과 확인 위치만 안내한다.
 
-## 4. 남은 관찰
+## 4. 대화 층에서 관찰된 것
 
 - 모델이 `category`를 자유 문자열로 짓는다(관측: `"portfolio"`). `TopicResult.category`가
   `str`인 것은 온보딩 채널을 위한 의도된 폭이고, `save_topic`은 category를 저장하지 않아
   원장 오염은 없다. 다만 Content Agent 프롬프트에는 그대로 들어간다.
 - 후보가 0건일 때 모델이 "데이터 부족"이라는 표현을 쓴다. 툴이 준 문장("후보 없음")의
   드리프트지만 사실을 뒤집지는 않는다.
-- **미검증**: 콘텐츠 사이클(`start_cycle_fn`) 실제 구동. 이 기록은 시드가 착수 함수까지
-  도달하는 것까지만 확인했고, `run_cycle`이 초안·렌더·게이트를 완주하는지는 DB·렌더
-  폰트가 붙은 환경에서 따로 봐야 한다.
+
+## 5. 콘텐츠 사이클 실제 완주 (Postgres + 카드 렌더)
+
+`docker compose up -d postgres` + 마이그 004 적용 후 시드 주제로 `run_cycle`을 돌렸다.
+
+| 항목 | 값 |
+|---|---|
+| 소요 | **337초** (gpt-5-nano, 콘텐츠 생성 + 카드 렌더 + 게이트) |
+| 결과 | `status=completed` · `prepared=1` |
+| 원장 | `agent="seed"` — Topic Agent를 부르지 않았음이 기록됨 |
+| 착지 | `content_item.status=needs_review` · `media.quality_status=passed` · `publication=pending` |
+| 렌더 | 1080×1350 PNG 47,491바이트, 한글 정상(malgun.ttf) |
+| 승인 화면 | :8001에 "승인 대기 (1건)"으로 노출, 딥링크 200 |
+
+### 여기서 잡은 표시 함정
+
+`media.quality_status=passed`인데 `content_item.status=needs_review`다. 초안 카드가 미디어
+품질만 뱃지로 보여주면 **"품질 통과"**로 읽혀 발행된 줄 안다 — 실제로 발행을 막고 있는 것은
+승인 상태다. 주 뱃지를 `content_status`로 바꾸고("승인 대기"), 품질은 문제가 있을 때만
+덧붙이게 고쳤다.
+
+썸네일도 `object-fit:cover`라 4:5 카드의 훅 문구가 잘렸다 — 발행될 것의 미리보기이므로
+`contain`으로 바꿔 전체가 보이게 했다.
+
+## 6. 아직 검증되지 않은 것
+
+- **미검증**: 실제 발행(`run_pending_publications`). 승인 대기까지가 이 기록의 범위다.
+  사람이 승인 화면에서 승인해야 그다음이 돈다 — 설계상 의도된 관문이다.
 
 ## 재현
 
 ```bash
 # .env: OPENAI_API_KEY=...
-SNS_MODEL_PROVIDER=openai OPENAI_MODEL=gpt-5-nano uv run python scripts/run_chat_web.py
+docker compose up -d postgres
+DATABASE_URL=postgresql://sns:sns@localhost:5432/sns uv run python -m sns.db.migrate
+DATABASE_URL=postgresql://sns:sns@localhost:5432/sns SNS_MODEL_PROVIDER=openai \n  uv run python scripts/run_chat_web.py     # :8003
+DATABASE_URL=postgresql://sns:sns@localhost:5432/sns \n  uv run python scripts/run_approve_web.py  # :8001 — 초안 카드의 링크 대상
 ```

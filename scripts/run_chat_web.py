@@ -8,6 +8,7 @@
   3. env DATABASE_URL — (선택) 기본 postgresql://sns:sns@localhost:5432/sns
   4. env CHAT_WEB_HOST/PORT — (선택) 기본 127.0.0.1:8003
   5. env CARD_FONT — (선택) 한글 TTF 경로. 미지정 시 자동 탐색
+  6. env APPROVE_WEB_BASE — (선택) 승인 화면 주소. 기본 http://127.0.0.1:8001
 
 단일 커넥션 전제(scripts/run_approve_web.py와 동일 규율).
 
@@ -32,19 +33,22 @@ from dotenv import load_dotenv
 
 from sns.agents.models import make_model, required_key_env, resolve_model_name, resolve_provider
 from sns.agents.topic import TopicResult
+from sns.chat.drafts import DraftItem, SeedOutcome, seed_done_message, seed_done_payload
 from sns.chat.store import PgChatStore
 from sns.quality.gate import QualityReport, check_card
 from sns.render.card.media import CardRenderMedia
 from sns.render.card.spec import parse_card_spec
 from sns.research.trends import default_service
-from sns.runner.cycle import AssessQuality, CycleTarget, run_cycle
+from sns.runner.cycle import AssessQuality, CycleTarget, TargetResult, run_cycle
 from sns.runner.store import PgCycleStore
 from sns.tools.contracts import ContentFormat, MediaAsset, MediaKind
 from sns.tools.fakes import FakeReadStats
-from sns.web.chat.app import StartCycleFn, create_app
+from sns.web.chat.app import LoadMediaFn, StartCycleFn, create_app
 
 ENV_FILE = Path(__file__).parent.parent / ".env"
 DEFAULT_DSN = "postgresql://sns:sns@localhost:5432/sns"
+DEFAULT_APPROVE_BASE = "http://127.0.0.1:8001"
+_MEDIA_TYPES = {"image": "image/png", "video": "video/mp4"}
 OUT = Path(__file__).parent / "out"
 FONT_CANDIDATES = (
     "C:/Windows/Fonts/malgun.ttf",
@@ -109,7 +113,59 @@ def hybrid_targets(conn: psycopg.Connection) -> list[CycleTarget]:
     ]
 
 
-def make_start_cycle_fn(dsn: str, chat_store: PgChatStore) -> StartCycleFn:
+def _draft_item(conn: psycopg.Connection, target: TargetResult) -> DraftItem:
+    """TargetResult + 원장 조회 → 대화에 실을 1건. 조회 실패가 결과 보고를 막지 않는다."""
+    row = conn.execute(
+        "SELECT platform, handle FROM channel WHERE id = %s", (target.channel_id,)
+    ).fetchone()
+    label = f"{row[0]} @{row[1]}" if row else target.channel_id[:8]
+
+    body = ""
+    content_status = None
+    if target.content_item_id:
+        found = conn.execute(
+            "SELECT body, status FROM content_item WHERE id = %s", (target.content_item_id,)
+        ).fetchone()
+        if found:
+            body = str(found[0]) if found[0] else ""
+            content_status = str(found[1])
+
+    quality = None
+    if target.media_asset_id:
+        found = conn.execute(
+            "SELECT quality_status FROM media_asset WHERE id = %s", (target.media_asset_id,)
+        ).fetchone()
+        quality = str(found[0]) if found else None
+
+    return DraftItem(
+        channel_label=label,
+        outcome=target.outcome,
+        content_item_id=target.content_item_id,
+        body=body,
+        media_asset_id=target.media_asset_id,
+        content_status=content_status,
+        quality_status=quality,
+        error=target.error,
+    )
+
+
+def make_load_media_fn(dsn: str) -> LoadMediaFn:
+    """media_asset_id → (바이트, MIME). id로만 받아 임의 경로 읽기를 막는다."""
+    store = DirMediaStore(OUT)
+
+    def load(asset_id: str) -> tuple[bytes, str] | None:
+        with psycopg.connect(dsn, connect_timeout=10, autocommit=True) as conn:
+            row = conn.execute(
+                "SELECT storage_url, kind FROM media_asset WHERE id = %s", (asset_id,)
+            ).fetchone()
+        if row is None:
+            return None
+        return store.get(str(row[0])), _MEDIA_TYPES.get(str(row[1]), "application/octet-stream")
+
+    return load
+
+
+def make_start_cycle_fn(dsn: str, chat_store: PgChatStore, *, approve_base: str) -> StartCycleFn:
     """(conversation_id, topic) → 백그라운드 사이클. 즉시 반환한다."""
     font = find_font()
 
@@ -144,25 +200,17 @@ def make_start_cycle_fn(dsn: str, chat_store: PgChatStore) -> StartCycleFn:
                     assess_quality=make_gate(renderer),
                     seed_topic=topic,
                 )
-                prepared = len(result.prepared)
-                if prepared:
-                    body = (
-                        f"초안 {prepared}건을 만들었습니다. "
-                        "승인 화면(:8001)에서 확인하고 승인하면 발행됩니다."
-                    )
-                else:
-                    reasons = "; ".join(t.error or t.outcome for t in result.targets) or "사유 없음"
-                    body = f"초안을 만들지 못했습니다 — {reasons}"
+                outcome = SeedOutcome(
+                    cycle_id=result.cycle_id,
+                    status=result.status,
+                    topic_title=topic.title,
+                    items=tuple(_draft_item(conn, t) for t in result.targets),
+                )
                 chat_store.append(
                     conversation_id,
                     role="system",
-                    body=body,
-                    payload={
-                        "kind": "seed_done",
-                        "cycle_id": result.cycle_id,
-                        "status": result.status,
-                        "prepared": prepared,
-                    },
+                    body=seed_done_message(outcome),
+                    payload=seed_done_payload(outcome, approve_base=approve_base),
                 )
         except Exception as exc:  # 스레드에서 죽으면 사용자는 영영 모른다 — 대화에 남긴다
             chat_store.append(
@@ -205,10 +253,12 @@ def main() -> int:
         return 1
 
     store = PgChatStore(conn)
+    approve_base = os.environ.get("APPROVE_WEB_BASE", DEFAULT_APPROVE_BASE)
     app = create_app(
         store,
         model=make_model(),
-        start_cycle_fn=make_start_cycle_fn(dsn, store),
+        start_cycle_fn=make_start_cycle_fn(dsn, store, approve_base=approve_base),
+        load_media_fn=make_load_media_fn(dsn),
     )
     host = os.environ.get("CHAT_WEB_HOST", "127.0.0.1")
     port = int(os.environ.get("CHAT_WEB_PORT", "8003"))
