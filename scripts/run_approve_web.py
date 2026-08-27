@@ -80,6 +80,19 @@ def make_rerender(ffmpeg: str, font: str | None, topic_major: str) -> RerenderVi
     return rerender
 
 
+def build_app(
+    conn: psycopg.Connection, *, ffmpeg: str, font: str | None, topic_major: str
+):
+    """배선된 승인 FastAPI 앱 — 단독 실행(main)과 통합 서버(run_web.py)가 공유."""
+    resolved = font or os.environ.get("CARD_FONT")
+    if not resolved:
+        resolved = next((c for c in FONT_CANDIDATES if Path(c).exists()), None)
+    return create_app(
+        PgApprovalStore(conn),
+        rerender_video=make_rerender(ffmpeg, resolved, topic_major),
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--ffmpeg", default="ffmpeg", help="ffmpeg 실행 파일 경로")
@@ -99,14 +112,7 @@ def main() -> int:
         print(f"중단: PostgreSQL 연결 실패 — docker compose up -d postgres\n      {exc}")
         return 1
 
-    font = args.font or os.environ.get("CARD_FONT")
-    if not font:
-        font = next((c for c in FONT_CANDIDATES if Path(c).exists()), None)
-
-    app = create_app(
-        PgApprovalStore(conn),
-        rerender_video=make_rerender(args.ffmpeg, font, args.topic_major),
-    )
+    app = build_app(conn, ffmpeg=args.ffmpeg, font=args.font, topic_major=args.topic_major)
     host = os.environ.get("APPROVE_WEB_HOST", "127.0.0.1")
     port = int(os.environ.get("APPROVE_WEB_PORT", "8001"))
     print(f"승인 화면: http://{host}:{port}/")

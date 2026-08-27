@@ -160,15 +160,8 @@ class SubprocessVideoManager:
         )  # fmt: skip
 
 
-def main() -> int:
-    load_dotenv(ENV_FILE, override=False)
-    dsn = os.environ.get("DATABASE_URL", DEFAULT_DSN)
-    try:
-        conn = psycopg.connect(dsn, connect_timeout=10, autocommit=True)
-    except psycopg.OperationalError as exc:
-        print(f"중단: PostgreSQL 연결 실패 — docker compose up -d postgres\n      {exc}")
-        return 1
-
+def build_app(conn: psycopg.Connection, dsn: str):
+    """배선된 온보딩 FastAPI 앱 — 단독 실행(main)과 통합 서버(run_web.py)가 공유."""
     from sns.agents.models import make_model
     from sns.onboarding.character import make_character_fn
     from sns.onboarding.recommend import make_recommend_fn, make_refine_fn
@@ -184,13 +177,25 @@ def main() -> int:
     # 웹 앱이 "캐릭터 없음"으로 온보딩을 계속한다(비용 통제는 character.py 몫).
     ensure_character_fn = make_character_fn(DirMediaStore(CHAR_DIR))
 
-    app = create_app(
+    return create_app(
         PgOnboardingStore(conn),
         recommend_fn=recommend_fn,
         refine_fn=refine_fn,
         ensure_character_fn=ensure_character_fn,
         video_manager=SubprocessVideoManager(dsn),
     )
+
+
+def main() -> int:
+    load_dotenv(ENV_FILE, override=False)
+    dsn = os.environ.get("DATABASE_URL", DEFAULT_DSN)
+    try:
+        conn = psycopg.connect(dsn, connect_timeout=10, autocommit=True)
+    except psycopg.OperationalError as exc:
+        print(f"중단: PostgreSQL 연결 실패 — docker compose up -d postgres\n      {exc}")
+        return 1
+
+    app = build_app(conn, dsn)
     host = os.environ.get("ONBOARD_WEB_HOST", "127.0.0.1")
     port = int(os.environ.get("ONBOARD_WEB_PORT", "8002"))
     print(f"온보딩 인터뷰: http://{host}:{port}/")

@@ -3,22 +3,27 @@
 from sns.web.layout import page
 
 
-def test_sidebar_has_four_nav_links_with_absolute_urls() -> None:
+def test_sidebar_reads_bases_from_env_at_render_time(monkeypatch) -> None:
+    """네비 URL은 렌더 시점 env — 진입 스크립트가 dotenv를 main()에서 로드해도 반영."""
+    monkeypatch.setenv("ONBOARD_WEB_BASE", "http://onboard.test")
+    monkeypatch.setenv("CHAT_WEB_BASE", "http://chat.test")
+    monkeypatch.setenv("APPROVE_WEB_BASE", "http://web.test/queue")
     html = page("t", "<p>hi</p>", active="queue")
     for label, url in (
-        ("새 포스트", "http://127.0.0.1:8002/compose"),
-        ("AI 어시스턴트", "http://127.0.0.1:8003/"),
-        ("대기열", "http://127.0.0.1:8001/"),
-        ("채널", "http://127.0.0.1:8002/channels"),
+        ("새 포스트", "http://onboard.test/compose"),
+        ("AI 어시스턴트", "http://chat.test/"),
+        ("대기열", "http://web.test/queue/"),
+        ("채널", "http://onboard.test/channels"),
     ):
         assert label in html
         assert f'href="{url}"' in html
 
 
-def test_active_key_marks_exactly_one_nav_item() -> None:
+def test_active_key_marks_exactly_one_nav_item(monkeypatch) -> None:
+    monkeypatch.setenv("CHAT_WEB_BASE", "http://chat.test")
     html = page("t", "", active="chat")
-    assert html.count('nav-item active') == 1
-    assert 'nav-item active" href="http://127.0.0.1:8003/"' in html
+    assert html.count("nav-item active") == 1
+    assert 'nav-item active" href="http://chat.test/"' in html
 
 
 def test_bare_mode_has_no_sidebar() -> None:

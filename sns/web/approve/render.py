@@ -5,11 +5,16 @@
 승인 화면 전용 스타일만 남긴다.
 """
 
+import os
 from collections.abc import Mapping
 from html import escape
 
 from sns.web.approve.store import PendingItem
 from sns.web.layout import page
+
+# 통합 서버(scripts/run_web.py)가 이 앱을 /queue에 마운트할 때 내부 링크·리다이렉트
+# 앞에 붙는 프리픽스. 단독 실행(:8001)에서는 빈 문자열 — 링크가 그대로다.
+URL_PREFIX = os.environ.get("APPROVE_URL_PREFIX", "").rstrip("/")
 
 _BODY_PREVIEW_CHARS = 200
 
@@ -49,7 +54,7 @@ def _list_row(item: PendingItem) -> str:
     ellipsis = "…" if len(item.body) > _BODY_PREVIEW_CHARS else ""
     return (
         '<div class="row"><div class="row-main">'
-        f'<div class="row-title"><a href="/items/{item.content_item_id}">'
+        f'<div class="row-title"><a href="{URL_PREFIX}/items/{item.content_item_id}">'
         f"{escape(item.topic_title)}</a></div>"
         f'<div class="meta">{escape(item.platform)} · {escape(item.handle)} · '
         f"{escape(item.content_format)} — {escape(preview)}{ellipsis}</div>"
@@ -83,7 +88,7 @@ def _video_form(item: PendingItem) -> str:
     )
     return (
         f"<div class='card'><h2>영상 내용 수정</h2>{quality}"
-        f'<form method="post" action="/items/{item.content_item_id}/rerender">'
+        f'<form method="post" action="{URL_PREFIX}/items/{item.content_item_id}/rerender">'
         f'<label for="topic">주제(영상 내내 고정)</label>'
         f'<input type="text" id="topic" name="topic" value="{escape(str(spec.get("topic", "")))}">'
         f"{''.join(cuts)}"
@@ -96,7 +101,7 @@ def _media_preview(item: PendingItem) -> str:
     """검수 대상 미리보기 — 경로 텍스트가 아니라 실제 미디어를 보여준다."""
     if item.media_storage_url is None:
         return ""
-    src = f"/items/{item.content_item_id}/media"
+    src = f"{URL_PREFIX}/items/{item.content_item_id}/media"
     if item.media_kind == "video":
         return f'<video controls preload="metadata" src="{src}"></video>'
     return f'<img class="preview" src="{src}" alt="검수 대상 이미지">'
@@ -114,7 +119,7 @@ def render_detail(
         rerender_enabled and item.media_kind == "video" and item.media_spec is not None
     )
     body = (
-        '<a class="textbtn" href="/">← 목록</a>'
+        f'<a class="textbtn" href="{URL_PREFIX}/">← 목록</a>'
         f"<h1>{escape(item.topic_title)}</h1>"
         f'<p class="page-sub">{escape(item.platform)} · {escape(item.handle)} · '
         f"{escape(item.content_format)}{hook}</p>"
@@ -123,13 +128,13 @@ def render_detail(
         + (_video_form(item) if show_video_form else "")
         + '<div class="card">'
         + _media_preview(item)
-        + f'<form method="post" action="/items/{item.content_item_id}/approve">'
+        + f'<form method="post" action="{URL_PREFIX}/items/{item.content_item_id}/approve">'
         f'<label for="body">본문 (수정 가능)</label>'
         f'<textarea id="body" name="body">{escape(item.body)}</textarea>'
         f'<div class="actions"><button class="approve" type="submit">승인 (수정 반영)</button>'
         "</div></form></div>"
         '<div class="card">'
-        f'<form method="post" action="/items/{item.content_item_id}/reject">'
+        f'<form method="post" action="{URL_PREFIX}/items/{item.content_item_id}/reject">'
         f'<label for="reason">반려</label>'
         f'<input type="text" id="reason" name="reason" placeholder="반려 사유(선택)">'
         f'<div class="actions"><button class="reject" type="submit">반려</button></div>'
@@ -141,6 +146,6 @@ def render_detail(
 def render_not_found() -> str:
     body = (
         '<div class="card"><p class="empty">대상을 찾을 수 없습니다(이미 처리됨).</p>'
-        '<p style="text-align:center"><a href="/">← 목록</a></p></div>'
+        f'<p style="text-align:center"><a href="{URL_PREFIX}/">← 목록</a></p></div>'
     )
     return _page("대상 없음", body)

@@ -12,17 +12,18 @@ CSS는 인라인 <style> 문자열([sns.web.approve.render] 규율 동형).
 import os
 from html import escape
 
-CHAT_BASE = os.environ.get("CHAT_WEB_BASE", "http://127.0.0.1:8003").rstrip("/")
-APPROVE_BASE = os.environ.get("APPROVE_WEB_BASE", "http://127.0.0.1:8001").rstrip("/")
-ONBOARD_BASE = os.environ.get("ONBOARD_WEB_BASE", "http://127.0.0.1:8002").rstrip("/")
-
-# (key, 아이콘, 라벨, URL) — key가 page(active=...)와 일치하면 활성 표시.
-_NAV = (
-    ("compose", "✏️", "새 포스트", f"{ONBOARD_BASE}/compose"),
-    ("chat", "💬", "AI 어시스턴트", f"{CHAT_BASE}/"),
-    ("queue", "🗂️", "대기열", f"{APPROVE_BASE}/"),
-    ("channels", "📺", "채널", f"{ONBOARD_BASE}/channels"),
-)
+def _nav() -> tuple[tuple[str, str, str, str], ...]:
+    """(key, 아이콘, 라벨, URL). **렌더 시점**에 env를 읽는다 — 진입 스크립트들은
+    dotenv를 main()에서야 로드하므로 import 시점 상수로 두면 .env가 무시된다."""
+    chat = os.environ.get("CHAT_WEB_BASE", "http://127.0.0.1:8003").rstrip("/")
+    approve = os.environ.get("APPROVE_WEB_BASE", "http://127.0.0.1:8001").rstrip("/")
+    onboard = os.environ.get("ONBOARD_WEB_BASE", "http://127.0.0.1:8002").rstrip("/")
+    return (
+        ("compose", "✏️", "새 포스트", f"{onboard}/compose"),
+        ("chat", "💬", "AI 어시스턴트", f"{chat}/"),
+        ("queue", "🗂️", "대기열", f"{approve}/"),
+        ("channels", "📺", "채널", f"{onboard}/channels"),
+    )
 
 BASE_CSS = """
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");
@@ -109,7 +110,7 @@ def _sidebar(active: str) -> str:
     items = "".join(
         f'<a class="nav-item{" active" if key == active else ""}" href="{url}">'
         f'<span aria-hidden="true">{icon}</span>{label}</a>'
-        for key, icon, label, url in _NAV
+        for key, icon, label, url in _nav()
     )
     return f'<aside class="sidebar">{_BRAND}{items}</aside>'
 
