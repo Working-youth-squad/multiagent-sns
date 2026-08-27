@@ -25,7 +25,12 @@ from starlette.concurrency import run_in_threadpool
 
 from sns.render.video.spec import VideoSpecError
 from sns.tools.contracts import MediaAsset
-from sns.web.approve.render import render_detail, render_list, render_not_found
+from sns.web.approve.render import (
+    URL_PREFIX,
+    render_detail,
+    render_list,
+    render_not_found,
+)
 from sns.web.approve.store import ApprovalNotFound, ApprovalStore
 
 # 재렌더 seam — spec을 받아 (자산, 품질 상태, 품질 리포트)를 돌려준다.
@@ -70,8 +75,9 @@ def create_app(store: ApprovalStore, rerender_video: RerenderVideo | None = None
     app = FastAPI(title="hybrid 승인 대기")
 
     @app.get("/", response_class=HTMLResponse)
-    def list_pending() -> HTMLResponse:
-        return HTMLResponse(render_list(store.list_pending()))
+    def list_pending(channel: str = "") -> HTMLResponse:
+        """?channel=<handle>이면 그 채널만 — 칩 필터의 목적지."""
+        return HTMLResponse(render_list(store.list_pending(), selected=channel))
 
     @app.get("/items/{content_item_id}", response_class=HTMLResponse)
     def item_detail(content_item_id: str, rerendered: int = 0) -> HTMLResponse:
@@ -108,7 +114,7 @@ def create_app(store: ApprovalStore, rerender_video: RerenderVideo | None = None
             store.approve(content_item_id, body=body)
         except ApprovalNotFound:
             return HTMLResponse(render_not_found(), status_code=404)
-        return RedirectResponse("/", status_code=303)
+        return RedirectResponse(f"{URL_PREFIX}/", status_code=303)
 
     @app.post("/items/{content_item_id}/reject", response_model=None)
     def reject(
@@ -118,7 +124,7 @@ def create_app(store: ApprovalStore, rerender_video: RerenderVideo | None = None
             store.reject(content_item_id, reason=reason or "사유 미기재")
         except ApprovalNotFound:
             return HTMLResponse(render_not_found(), status_code=404)
-        return RedirectResponse("/", status_code=303)
+        return RedirectResponse(f"{URL_PREFIX}/", status_code=303)
 
     @app.post("/items/{content_item_id}/rerender", response_model=None)
     async def rerender(content_item_id: str, request: Request) -> HTMLResponse | RedirectResponse:
@@ -161,6 +167,8 @@ def create_app(store: ApprovalStore, rerender_video: RerenderVideo | None = None
             )
         except ApprovalNotFound:
             return HTMLResponse(render_not_found(), status_code=404)
-        return RedirectResponse(f"/items/{content_item_id}?rerendered=1", status_code=303)
+        return RedirectResponse(
+            f"{URL_PREFIX}/items/{content_item_id}?rerendered=1", status_code=303
+        )
 
     return app

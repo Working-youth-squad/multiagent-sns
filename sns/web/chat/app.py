@@ -35,19 +35,26 @@ from sns.research import rank_keywords
 from sns.runner.formats import FormatChoice
 from sns.tools.contracts import VideoMethod
 from sns.web.chat.render import (
+    ChatChannel,
     render_conversation,
     render_export,
     render_index,
     render_not_found,
 )
 
-StartCycleFn = Callable[[str, SeedRequest], None]
-"""(conversation_id, 시드 요청) → 콘텐츠 사이클 착수. 즉시 반환할 것 — 진행·결과는
-구현이 system 메시지로 대화에 append 한다. 동기로 완주하면 브라우저가 분 단위로 멈춘다.
+StartCycleFn = Callable[[str, SeedRequest, str | None], None]
+"""(conversation_id, 시드 요청, channel_id) → 콘텐츠 사이클 착수. 즉시 반환할 것 —
+진행·결과는 구현이 system 메시지로 대화에 append 한다. 동기로 완주하면 브라우저가
+분 단위로 멈춘다.
 
 **주제만이 아니라 `SeedRequest`를 받는다.** 포맷·제작 방식이 주제와 함께 대화에서
 정해지므로, 시그니처가 주제만 나르면 배선이 그 선택을 알 길이 없어 포맷을 하드코딩하게
-된다 — 실제로 그랬다."""
+된다 — 실제로 그랬다. `channel_id`는 대화가 묶인 채널이다 — None이면 예전처럼 모든
+hybrid 채널에 시드한다(채널 없이 시작한 대화의 하위 호환)."""
+
+ChannelsFn = Callable[[], Sequence[ChatChannel]]
+"""채널 선택 UI의 재료 — hybrid 채널 + 프로필 기반 주제 제안. None이면 채널 없는
+예전 화면 그대로다(테스트·경량 배치)."""
 
 LoadExportFn = Callable[[str], ExportItem | None]
 """content_item_id → 수동 발행용 재료. None이면 내보내기 화면이 404.
@@ -80,11 +87,20 @@ def create_app(
     start_cycle_fn: StartCycleFn | None = None,
     load_media_fn: LoadMediaFn | None = None,
     load_export_fn: LoadExportFn | None = None,
+    channels_fn: ChannelsFn | None = None,
     exclude: Sequence[str] | None = None,
     formats: Sequence[FormatChoice] = ("card",),
     methods: Sequence[VideoMethod] = ("template",),
 ) -> FastAPI:
     app = FastAPI(title="키워드 챗봇")
+
+    def _channels() -> tuple[ChatChannel, ...]:
+        if channels_fn is None:
+            return ()
+        try:
+            return tuple(channels_fn())
+        except Exception:  # 채널 조회 실패가 대화 화면 전체를 죽이지 않는다
+            return ()
 
     def advance(conversation_id: str, text: str) -> None:
         """한 턴 진행 — 사용자 발화 저장 → LLM → 랭킹 박제 → 답변 저장 → (시드면) 사이클."""
@@ -134,8 +150,9 @@ def create_app(
                 payload={"kind": "seed_unwired", "title": topic.title},
             )
             return
+        bound = store.get_conversation(conversation_id)
         try:
-            start_cycle_fn(conversation_id, request)
+            start_cycle_fn(conversation_id, request, bound.channel_id if bound else None)
         except Exception as exc:  # 착수 실패도 대화에 남긴다 — 조용히 삼키지 않는다
             store.append(
                 conversation_id,
@@ -159,19 +176,44 @@ def create_app(
             },
         )
 
+    def _selected(channels: tuple[ChatChannel, ...], channel: str) -> str | None:
+        """채널 선택 규칙 — 기본은 첫 채널, 'all'은 전체 보기, 모르는 id는 전체."""
+        if channel == "all" or not channels:
+            return None
+        if any(c.channel_id == channel for c in channels):
+            return channel
+        return channels[0].channel_id if not channel else None
+
     @app.get("/", response_class=HTMLResponse)
-    def index() -> HTMLResponse:
-        return HTMLResponse(render_index(store.list_conversations()))
+    def index(channel: str = "") -> HTMLResponse:
+        channels = _channels()
+        return HTMLResponse(
+            render_index(
+                store.list_conversations(),
+                channels=channels,
+                selected=_selected(channels, channel),
+            )
+        )
 
     @app.post("/conversations", response_model=None)
-    def start(text: str = Form(default="")) -> HTMLResponse | RedirectResponse:
+    def start(
+        text: str = Form(default=""), channel_id: str = Form(default="")
+    ) -> HTMLResponse | RedirectResponse:
+        channels = _channels()
+        # 배선된 채널만 묶는다 — 폼 위조로 임의 id를 대화에 심는 통로를 막는다.
+        bound = channel_id if any(c.channel_id == channel_id for c in channels) else None
         first = text.strip()
         if not first:
             return HTMLResponse(
-                render_index(store.list_conversations(), error="메시지를 입력해주세요."),
+                render_index(
+                    store.list_conversations(),
+                    channels=channels,
+                    selected=bound,
+                    error="메시지를 입력해주세요.",
+                ),
                 status_code=400,
             )
-        conversation_id = store.create_conversation()
+        conversation_id = store.create_conversation(channel_id=bound)
         # 제목은 첫 발화에서 딴다. LLM에 따로 묻지 않는 이유는 비용·지연이고, 목록
         # 화면용이라 정확할 필요가 없다.
         store.set_title(conversation_id, first[:TITLE_MAX])
@@ -183,7 +225,12 @@ def create_app(
         found = store.get_conversation(conversation_id)
         if found is None:
             return HTMLResponse(render_not_found(), status_code=404)
-        return HTMLResponse(render_conversation(found, store.messages(conversation_id)))
+        label = None
+        if found.channel_id:
+            label = next((c.label for c in _channels() if c.channel_id == found.channel_id), None)
+        return HTMLResponse(
+            render_conversation(found, store.messages(conversation_id), channel_label=label)
+        )
 
     @app.post("/c/{conversation_id}/messages", response_model=None)
     def send(conversation_id: str, text: str = Form(default="")) -> HTMLResponse | RedirectResponse:

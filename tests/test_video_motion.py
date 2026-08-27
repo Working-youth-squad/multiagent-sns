@@ -114,3 +114,61 @@ def test_media_binding_dispatches_by_style() -> None:
     )
     asset = render_media(MOTION_DICT, "video")
     assert asset.kind == "video" and asset.storage_url.endswith(".mp4")
+
+
+def test_motion_photo_fits_whole_image_on_blur_backdrop() -> None:
+    """배경 사진은 커버 크롭이 아니라 **전체가 보이게** 앉힌다 — 정사각 원본을 커버로
+    채우면 좌우 44%가 잘려 피사체가 화면 밖으로 나갔다(실사용 피드백)."""
+    import io as _io
+
+    from PIL import Image as _Image
+    from PIL import ImageDraw as _ImageDraw
+
+    # 라임 몸통 + 왼쪽 1/4 파란 기둥: 커버 크롭이면 파란 기둥이 프레임 밖으로 잘린다.
+    side = 300
+    src = _Image.new("RGB", (side, side), (60, 220, 60))
+    _ImageDraw.Draw(src).rectangle((0, 0, side // 4, side), fill=(40, 60, 220))
+    buf = _io.BytesIO()
+    src.save(buf, format="PNG")
+    spec = parse_video_spec(
+        {
+            **MOTION_DICT,
+            "slides": [
+                {
+                    "subtitle": "부제",
+                    "narration": "한 문장.",
+                    "image_ref": "mem://image/border.png",
+                }
+            ],
+        }
+    )
+    render = render_motion_video(spec, synthesize=tone_wav, fetch_image=lambda ref: buf.getvalue())
+    frame = _frame_at(render.mp4, 0.1)
+    # 가로 꽉 채움: 왼쪽 1/4 기둥(src x<75 → 프레임 x<270)이 화면에 남는다. 커버
+    # 크롭이면 그 자리는 원본 중앙부(라임)다. 페이드 구간(약 108px) 밖에서 찍는다.
+    r, g, b = frame.getpixel((200, spec.height // 2))[:3]
+    assert b > 150 and g < 150, f"좌측 기둥이 잘렸다(커버 크롭?): {(r, g, b)}"
+    # 상하 여백은 블러 백드롭 — 검은 레터박스가 아니다.
+    r2, g2, b2 = frame.getpixel((spec.width // 2, 150))[:3]
+    assert r2 + g2 + b2 > 90, f"백드롭이 비었다: {(r2, g2, b2)}"
+
+
+def test_caption_band_makes_text_readable_on_bright_background() -> None:
+    """자막 뒤 반투명 밴드 — 밝은 배경 위에서도 자막 영역이 어둡게 깔리고 흰 글자가
+    얹힌다. 그림자 1획이던 시절 밝은 사진에서 묻히던 실측 구멍."""
+    spec = parse_video_spec(MOTION_DICT)
+    render = render_motion_video(spec, synthesize=tone_wav)
+    frame = _frame_at(render.mp4, 0.8)  # 텍스트 라이즈+페이드(0.4s)가 끝난 뒤
+    # 자막 첫 줄 영역 전체를 스캔한다 — 한 줄(row)만 찍으면 폰트 메트릭(맑은고딕 vs
+    # Noto CJK)에 따라 글리프 잉크를 비껴가 CI에서만 깨졌다.
+    top = round(spec.height * 0.76)
+    cap = round(spec.width / 16)  # _CAPTION_DIV와 같은 값 — 첫 줄 높이만큼 훑는다
+    region = [
+        frame.getpixel((x, y))
+        for y in range(top, top + cap, 6)
+        for x in range(spec.width // 2 - 200, spec.width // 2 + 200, 8)
+    ]
+    darkest = min(sum(p[:3]) for p in region)
+    brightest = max(sum(p[:3]) for p in region)
+    assert darkest < 330, f"밴드가 없다 — 가장 어두운 픽셀 {darkest}"  # 반투명 검정
+    assert brightest > 600, f"흰 글자가 없다 — 가장 밝은 픽셀 {brightest}"

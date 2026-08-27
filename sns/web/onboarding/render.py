@@ -22,9 +22,31 @@ from sns.onboarding.profile import (
     ChannelProfile,
 )
 from sns.onboarding.store import ChannelRow
+from sns.web.layout import page
 
 TOTAL_STEPS = 5
 SUBS_SEP = "|"  # hidden input에서 세부 주제를 잇는 구분자(쉼표는 직접 입력에 쓰인다)
+
+_PLATFORM_ICON = {"youtube": "▶️", "instagram": "📷"}
+
+
+def _channel_head(channel: ChannelRow, active: str, *, video_enabled: bool) -> str:
+    """채널 하위 화면 공통 헤더 + [프로필|영상] 탭. 영상 탭은 배선이 있을 때만."""
+    tabs = [
+        f'<a class="tab{" active" if active == "profile" else ""}" '
+        f'href="/channels/{channel.channel_id}">프로필</a>'
+    ]
+    if video_enabled:
+        tabs.append(
+            f'<a class="tab{" active" if active == "videos" else ""}" '
+            f'href="/channels/{channel.channel_id}/videos">영상</a>'
+        )
+    return (
+        f"<h1>{_PLATFORM_ICON.get(channel.platform, '📺')} {escape(channel.handle)}</h1>"
+        f'<p class="page-sub">{escape(channel.platform)} · '
+        f'<span class="badge neutral">{escape(channel.mode)}</span></p>'
+        f'<div class="tabs">{"".join(tabs)}</div>'
+    )
 
 
 @dataclass(frozen=True)
@@ -48,42 +70,48 @@ class ScriptJobView:
     log_tail: str = ""
 
 
-_STYLE = """<style>
-body{font-family:system-ui,-apple-system,"Malgun Gothic",sans-serif;max-width:640px;
-  margin:2rem auto;padding:0 1rem;color:#1a1a1a;line-height:1.5}
-.progress{height:6px;background:#eee;border-radius:3px;margin-bottom:1.5rem}
-.progress>div{height:100%;background:#2e7d32;border-radius:3px}
-.step-label{color:#666;font-size:.85rem;margin-bottom:.25rem}
-.choice{display:block;border:1px solid #ddd;border-radius:8px;padding:.8rem 1rem;
-  margin-bottom:.6rem;cursor:pointer}
-.choice:hover{border-color:#2e7d32}
-.choice input{margin-right:.6rem}
-.choice .desc{color:#666;font-size:.85rem;margin:.2rem 0 0 1.6rem}
-input[type=text]{width:100%;padding:.5rem;box-sizing:border-box;border:1px solid #ccc;
-  border-radius:6px;font-size:.95rem}
-textarea{width:100%;min-height:6rem;font-family:inherit;font-size:1rem;padding:.6rem;
-  box-sizing:border-box;border:1px solid #ccc;border-radius:6px}
-button{padding:.55rem 1.4rem;border:none;border-radius:6px;cursor:pointer;
-  font-size:.95rem;background:#2e7d32;color:#fff;margin-top:1rem}
-.secondary{background:#eee;color:#1a1a1a}
-.chip{background:#eef4ee;color:#1a1a1a;border:1px solid #cfe0cf;padding:.3rem .8rem;
-  font-size:.85rem;margin:.2rem .3rem .2rem 0;border-radius:999px}
-.chip:hover{border-color:#2e7d32}
-.error{color:#c62828;margin-bottom:1rem}
-.card{border:1px solid #ddd;border-radius:8px;padding:1rem;margin-bottom:1rem}
-.card h3{margin:0 0 .5rem}
-.meta{color:#666;font-size:.85rem}
-.item{border:1px solid #ddd;border-radius:8px;padding:1rem;margin-bottom:1rem}
-.empty{color:#666;text-align:center;padding:2rem 0}
-a{color:#2e7d32}
-</style>"""
+# 온보딩 전용 스타일 — 골격·토큰은 [sns.web.layout] 공용. 위저드는 bare(사이드바
+# 없음) 중앙 화면이다: hidden input으로 상태를 나르는 화면에서 사이드바는 곧
+# 진행 유실 버튼이라 숨긴다.
+_EXTRA_CSS = """
+.progress{height:6px;background:var(--border);border-radius:3px;margin-bottom:24px}
+.progress>div{height:100%;background:var(--primary);border-radius:3px}
+.step-label{color:var(--muted);font-size:13px;font-weight:600;margin-bottom:4px}
+h1{margin-bottom:16px}
+.choice{display:block;background:#fff;border:1px solid var(--border);
+  border-radius:var(--radius);padding:12px 16px;margin-bottom:8px;cursor:pointer;
+  font-size:15px}
+.choice:hover{border-color:var(--primary)}
+.choice:has(input:checked){border-color:var(--primary);background:var(--primary-light)}
+.choice input{margin-right:10px}
+.choice .desc{color:var(--muted);font-size:13px;margin:2px 0 0 26px}
+form button{margin-top:12px}
+.chip{background:#fff;color:var(--text);border:1px solid var(--border);
+  padding:6px 14px;font-size:13px;font-weight:600;margin:2px 6px 2px 0;
+  border-radius:999px}
+.chip:hover{border-color:var(--primary);background:var(--primary-light)}
+.card h3{margin:0 0 8px;font-size:15px;font-weight:700}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
+.grid .card{margin-bottom:0}
+.chip-row{display:flex;flex-wrap:wrap;gap:8px}
+.chip-radio{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;
+  border-radius:999px;font-size:14px;font-weight:600;border:1px solid var(--border);
+  background:#fff;cursor:pointer}
+.chip-radio:has(input:checked){border-color:var(--primary);
+  background:var(--primary-light)}
+.chip-radio input{margin:0}
+button.big{padding:12px 28px;font-size:15px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin:16px 0 20px}
+.tab{display:inline-block;padding:8px 14px;font-size:14px;font-weight:600;
+  color:var(--muted)}
+.tab:hover{color:var(--text);text-decoration:none}
+.tab.active{color:var(--primary);border-bottom:2px solid var(--primary);
+  margin-bottom:-1px}
+"""
 
 
-def _page(title: str, body: str) -> str:
-    return (
-        f"<!doctype html><html><head><meta charset='utf-8'>"
-        f"<title>{escape(title)}</title>{_STYLE}</head><body>{body}</body></html>"
-    )
+def _page(title: str, body: str, *, active: str | None = None, max_width: str = "560px") -> str:
+    return page(title, body, active=active, extra_css=_EXTRA_CSS, max_width=max_width)
 
 
 def render_entry() -> str:
@@ -124,16 +152,69 @@ def render_link(*, error: str | None = None) -> str:
 def render_channels(channels: tuple[ChannelRow, ...]) -> str:
     """만들어진 채널 목록 — 생성은 여기가 아니라 인터뷰 완료 화면에서 한다."""
     if not channels:
-        rows = '<p class="empty">아직 만든 계정이 없습니다.</p>'
+        rows = '<div class="card"><p class="empty">아직 만든 계정이 없습니다.</p></div>'
     else:
-        rows = "".join(
-            f'<div class="item"><a href="/channels/{c.channel_id}">'
-            f"{escape(c.handle)}</a>"
-            f'<div class="meta">{escape(c.platform)} · {escape(c.mode)}</div></div>'
+        cards = "".join(
+            f'<div class="card"><h3>{_PLATFORM_ICON.get(c.platform, "📺")} '
+            f'<a href="/channels/{c.channel_id}">{escape(c.handle)}</a></h3>'
+            f'<div class="meta">{escape(c.platform)} · '
+            f'<span class="badge neutral">{escape(c.mode)}</span></div></div>'
             for c in channels
         )
-    start = '<a href="/"><button type="button">새 계정 인터뷰 시작</button></a>'
-    return _page("내 채널", f"<h1>내 채널</h1>{rows}{start}")
+        rows = f'<div class="grid">{cards}</div>'
+    start = (
+        '<p style="margin-top:16px"><a href="/">'
+        '<button type="button">새 계정 인터뷰 시작</button></a></p>'
+    )
+    body = f'<h1>채널</h1><p class="page-sub">만들어진 계정과 프로필을 관리합니다</p>{rows}{start}'
+    return _page("내 채널", body, active="channels", max_width="960px")
+
+
+def render_compose(
+    channels: tuple[ChannelRow, ...],
+    *,
+    selected: str | None = None,
+    error: str | None = None,
+) -> str:
+    """새 포스트 — 줄글 영상 컨셉을 적으면 대본 생성까지 (feedr Composer 매핑).
+
+    컨셉은 refine과 같은 경로로 프로필 revision에 반영된 뒤 대본 생성이 돈다.
+    """
+    # ponytail: 컨셉이 프로필 revision으로 영구히 남는다(기존 refine 동작 그대로) —
+    # 1회성 지시가 필요해지면 run_profile_cycle에 컨셉 인자를 추가한다.
+    head = (
+        "<h1>새 포스트</h1>"
+        '<p class="page-sub">영상 컨셉을 적으면 대본부터 만들어 드려요 — '
+        "대본을 확인한 뒤 영상으로 만듭니다</p>"
+    )
+    if not channels:
+        body = (
+            f"{head}"
+            '<div class="card"><p class="empty">먼저 채널을 만들어주세요.</p>'
+            '<p style="text-align:center"><a href="/">'
+            '<button type="button">계정 인터뷰 시작</button></a></p></div>'
+        )
+        return _page("새 포스트", body, active="compose", max_width="680px")
+    err = f'<div class="error">{escape(error)}</div>' if error else ""
+    picked = selected if any(c.channel_id == selected for c in channels) else channels[0].channel_id
+    chips = "".join(
+        f'<label class="chip-radio"><input type="radio" name="channel_id" '
+        f'value="{escape(c.channel_id, quote=True)}"'
+        f"{' checked' if c.channel_id == picked else ''}>"
+        f"{_PLATFORM_ICON.get(c.platform, '📺')} {escape(c.handle)}</label>"
+        for c in channels
+    )
+    body = (
+        f"{head}{err}"
+        f'<div class="card"><form method="post" action="/compose"{_SLOW_SUBMIT}>'
+        "<label>채널</label>"
+        f'<div class="chip-row">{chips}</div>'
+        '<label for="compose-note">영상 컨셉</label>'
+        '<textarea id="compose-note" name="note" placeholder="예: 신입 개발자 면접 꿀팁을 '
+        '밈 스타일로, 이모지를 많이 (비워두면 채널 프로필 그대로)"></textarea>'
+        '<button type="submit" class="big">대본 만들기</button></form></div>'
+    )
+    return _page("새 포스트", body, active="compose", max_width="680px")
 
 
 def render_step(step: int, state: Mapping[str, str], *, error: str | None = None) -> str:
@@ -374,7 +455,9 @@ def render_create(
         f'{_back_button(5)}<button type="submit">{button}</button></form></div>'
         '<a href="/">← 처음부터 다시 하기</a>'
     )
-    return _page("온보딩 — 컨셉 확정", f"<h1>이렇게 계정을 시작할게요</h1>{body}")
+    return _page(
+        "온보딩 — 컨셉 확정", f"<h1>이렇게 계정을 시작할게요</h1>{body}", max_width="640px"
+    )
 
 
 _PRE_STYLE = (
@@ -420,19 +503,10 @@ def render_channel(
     video_enabled: bool = False,
     character_error: str | None = None,
 ) -> str:
-    """만들어진 계정의 프로필 화면 — 캐릭터·미세조정, 영상은 관리 탭으로."""
+    """채널 프로필 탭 — 컨셉·캐릭터·미세조정. 대본·영상은 영상 탭이 맡는다."""
     note = f"<p>운영자 지침: {escape(profile.note)}</p>" if profile.note else ""
-    video_tab = (
-        f'<a href="/channels/{channel.channel_id}/videos">'
-        '<button type="button">영상 관리</button></a> '
-        if video_enabled
-        else ""
-    )
     body = (
-        f'<p class="meta">{escape(channel.platform)} · {escape(channel.handle)} · '
-        f"{escape(channel.mode)}</p>"
-        f"{video_tab}"
-        f"{_summary_card(profile)}"
+        _channel_head(channel, "profile", video_enabled=video_enabled) + f"{_summary_card(profile)}"
         f"{_character_card(channel.channel_id, profile, character_error)}"
         f"{_recommendation_block(profile.recommendation)}{note}"
         '<div class="card"><h3>미세 조정</h3>'
@@ -443,7 +517,7 @@ def render_channel(
         '<button type="submit">반영하기</button></form></div>'
         '<a href="/channels"><button class="secondary" type="button">내 채널 목록</button></a>'
     )
-    return _page(f"계정 — {channel.handle}", f"<h1>계정이 만들어졌어요</h1>{body}")
+    return _page(f"계정 — {channel.handle}", body, active="channels", max_width="680px")
 
 
 def _script_card(item: VideoItemView, channel_id: str) -> str:
@@ -485,36 +559,39 @@ def render_videos(
     items: tuple[VideoItemView, ...],
     script_job: ScriptJobView | None,
 ) -> str:
-    """영상 관리 탭 — 새 대본 생성부터 대본 승인 → 렌더 → 완성 영상까지 한 화면."""
-    parts = []
+    """영상 탭 — 대본 승인 → 렌더 → 완성 영상 관리. **생성 입구는 새 포스트 하나**다:
+    같은 기능의 버튼을 두 곳에 두면 컨셉을 쓸 수 있는 쪽(새 포스트)만 남기는 게 맞다."""
+    parts = [_channel_head(channel, "videos", video_enabled=True)]
     refreshing = script_job is not None and script_job.state == "running"
     refreshing = refreshing or any(i.state == "rendering" for i in items)
     if refreshing:
         parts.append(_AUTO_REFRESH)
-    parts.append('<div class="card"><h3>새 대본 만들기</h3>')
+    compose_url = f"/compose?channel={channel.channel_id}"
     if script_job is not None and script_job.state == "running":
-        parts.append("<p>대본 생성 중… (트렌드 조사 + 에이전트, 1~2분)</p>")
-    else:
-        if script_job is not None and script_job.state == "failed":
-            parts.append('<p class="error">대본 생성 실패 — 로그 끝부분:</p>')
-            parts.append(f"<pre {_PRE_STYLE}>{escape(script_job.log_tail)}</pre>")
+        parts.append('<div class="card"><p>대본 생성 중… (트렌드 조사 + 에이전트, 1~2분)</p></div>')
+    elif script_job is not None and script_job.state == "failed":
         parts.append(
-            "<p class='meta'>영상을 바로 만들지 않아요 — 대본이 먼저 나오고, "
-            "확인 후 영상으로 만듭니다.</p>"
+            '<div class="card"><p class="error">대본 생성 실패 — 로그 끝부분:</p>'
+            f"<pre {_PRE_STYLE}>{escape(script_job.log_tail)}</pre></div>"
         )
-    disabled = " disabled" if script_job is not None and script_job.state == "running" else ""
-    parts.append(
-        f'<form method="post" action="/channels/{channel.channel_id}/videos/script">'
-        f'<button type="submit"{disabled}>새 대본 만들기</button></form></div>'
-    )
+    else:
+        parts.append(
+            f'<p class="meta" style="margin-bottom:16px">새 대본은 '
+            f'<a href="{compose_url}">새 포스트</a>에서 컨셉과 함께 만듭니다.</p>'
+        )
     if not items:
-        parts.append('<p class="empty">아직 만든 대본이 없습니다.</p>')
+        parts.append(
+            '<div class="card"><p class="empty">아직 만든 대본이 없습니다.</p>'
+            f'<p style="text-align:center"><a href="{compose_url}">'
+            "<button type='button'>새 포스트에서 만들기</button></a></p></div>"
+        )
     parts.extend(_script_card(i, channel.channel_id) for i in items)
-    parts.append(
-        f'<a href="/channels/{channel.channel_id}">'
-        '<button class="secondary" type="button">← 계정으로</button></a>'
+    return _page(
+        f"영상 관리 — {channel.handle}",
+        "".join(parts),
+        active="channels",
+        max_width="760px",
     )
-    return _page(f"영상 관리 — {channel.handle}", f"<h1>영상 관리</h1>{''.join(parts)}")
 
 
 def _recommendation_block(recommendation: Mapping[str, object] | None) -> str:
@@ -537,6 +614,7 @@ def _recommendation_block(recommendation: Mapping[str, object] | None) -> str:
 
 def render_not_found() -> str:
     body = (
-        '<p class="empty">채널 또는 프로필을 찾을 수 없습니다.</p><p><a href="/">← 처음으로</a></p>'
+        '<div class="card"><p class="empty">채널 또는 프로필을 찾을 수 없습니다.</p>'
+        '<p style="text-align:center"><a href="/">← 처음으로</a></p></div>'
     )
-    return _page("대상 없음", body)
+    return _page("대상 없음", body, active="channels")

@@ -97,6 +97,35 @@ def test_render_detail_notice_banner() -> None:
     assert "재렌더 완료" in html
 
 
+def test_render_list_groups_by_channel_and_filters() -> None:
+    """대기열은 채널별로 분류된다 — 칩은 필터 링크, 기본은 채널별 섹션."""
+    two = (ITEM, replace(ITEM, content_item_id="ci-2", handle="second"))
+    html = render_list(two)
+    assert "?channel=demo" in html and "?channel=second" in html  # 채널 칩
+    assert html.count('<div class="card-list">') == 2  # 채널별 그룹 섹션
+    only = render_list(two, selected="second")
+    assert "/items/ci-2" in only and "/items/ci-1" not in only
+
+
+def test_urls_respect_mount_prefix(monkeypatch) -> None:
+    """통합 서버(run_web.py)가 /queue에 마운트할 때 내부 링크가 프리픽스를 따른다."""
+    import importlib
+
+    import sns.web.approve.render as render_mod
+
+    monkeypatch.setenv("APPROVE_URL_PREFIX", "/queue")
+    importlib.reload(render_mod)
+    try:
+        html = render_mod.render_list((ITEM,))
+        assert "/queue/items/ci-1" in html
+        detail = render_mod.render_detail(ITEM)
+        assert 'action="/queue/items/ci-1/approve"' in detail
+        assert 'href="/queue/"' in detail
+    finally:
+        monkeypatch.delenv("APPROVE_URL_PREFIX")
+        importlib.reload(render_mod)  # 다른 테스트를 위해 기본값(빈 프리픽스) 복원
+
+
 def test_render_not_found_links_back() -> None:
     html = render_not_found()
     assert "찾을 수 없습니다" in html

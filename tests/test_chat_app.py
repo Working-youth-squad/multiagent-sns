@@ -16,6 +16,7 @@ from sns.research.keywords import aggregate
 from sns.research.ranking import KeywordRanking
 from sns.tools.contracts import SourceResult
 from sns.web.chat.app import create_app
+from sns.web.chat.render import ChatChannel
 from tests.test_chat_agent import ScriptedChatModel, _tool
 
 
@@ -116,7 +117,8 @@ def test_second_turn_appends_without_hidden_state() -> None:
     cid = _start(client)
 
     page = client.get(f"/c/{cid}")
-    assert "hidden" not in page.text
+    # 공용 CSS의 overflow:hidden에 오탐하지 않게 폼 hidden input만 조준한다.
+    assert 'type="hidden"' not in page.text
 
     client.post(f"/c/{cid}/messages", data={"text": "연봉 쪽으로"}, follow_redirects=False)
     bodies = [m.body for m in store.messages(cid) if m.role in ("user", "assistant")]
@@ -144,7 +146,7 @@ def test_llm_failure_does_not_swallow_user_message() -> None:
 
 def test_seed_starts_cycle_and_records_it() -> None:
     store = InMemoryChatStore()
-    started: list[tuple[str, SeedRequest]] = []
+    started: list[tuple[str, SeedRequest, str | None]] = []
 
     client = _client(
         store,
@@ -152,13 +154,14 @@ def test_seed_starts_cycle_and_records_it() -> None:
             _tool("confirm_topic", {"title": "개발자 연봉 협상", "summary": "협상 팁 3가지"}),
             AIMessage(content="초안을 만들게요."),
         ],
-        start_cycle_fn=lambda cid, request: started.append((cid, request)),
+        start_cycle_fn=lambda cid, request, channel: started.append((cid, request, channel)),
     )
     cid = _start(client, text="연봉 얘기로 만들어줘")
 
     assert len(started) == 1
     assert started[0][0] == cid
     assert started[0][1].topic.title == "개발자 연봉 협상"
+    assert started[0][2] is None  # 채널 없이 시작한 대화 — 전 채널 시드(하위 호환)
     system = [m for m in store.messages(cid) if m.role == "system"]
     assert "초안 제작을 시작했습니다" in system[-1].body
 
@@ -182,7 +185,7 @@ def test_seed_without_wiring_says_so() -> None:
 def test_seed_start_failure_is_recorded() -> None:
     store = InMemoryChatStore()
 
-    def boom(conversation_id: str, request: SeedRequest) -> None:
+    def boom(conversation_id: str, request: SeedRequest, channel_id: str | None) -> None:
         raise RuntimeError("스레드 기동 실패")
 
     client = _client(
@@ -197,6 +200,65 @@ def test_seed_start_failure_is_recorded() -> None:
 
     system = [m for m in store.messages(cid) if m.role == "system"]
     assert "시작하지 못했습니다" in system[-1].body
+
+
+def test_channel_binding_flows_from_index_to_seed() -> None:
+    """채널을 골라 시작한 대화는 그 채널로만 시드된다 — 채널별 관리의 관통 검증."""
+    store = InMemoryChatStore()
+    started: list[tuple[str, SeedRequest, str | None]] = []
+    channels = (
+        ChatChannel("ch-1", "파이썬 한입", ("파이썬 독학", "AI 툴")),
+        ChatChannel("ch-2", "코딩 쿼카", ("면접 꿀팁",)),
+    )
+    client = _client(
+        store,
+        [
+            _tool("confirm_topic", {"title": "면접 꿀팁 모음", "summary": "요약"}),
+            AIMessage(content="초안을 만들게요."),
+        ],
+        start_cycle_fn=lambda cid, request, channel: started.append((cid, request, channel)),
+        channels_fn=lambda: channels,
+    )
+
+    # 인덱스: 기본 선택은 첫 채널 — 칩과 그 채널의 주제 제안이 보인다.
+    page = client.get("/")
+    assert "파이썬 한입" in page.text and "코딩 쿼카" in page.text
+    assert "파이썬 독학" in page.text
+    # 두 번째 채널을 고르면 제안·hidden 바인딩이 그 채널로 바뀐다.
+    page2 = client.get("/?channel=ch-2")
+    assert "면접 꿀팁" in page2.text
+    assert 'value="ch-2"' in page2.text
+
+    r = client.post(
+        "/conversations",
+        data={"text": "만들어줘", "channel_id": "ch-2"},
+        follow_redirects=False,
+    )
+    cid = r.headers["location"].removeprefix("/c/").split("#")[0]
+    assert store.get_conversation(cid).channel_id == "ch-2"  # type: ignore[union-attr]
+    assert started[-1][2] == "ch-2"  # 시드가 대화의 채널로 좁혀진다
+
+    # 대화 기록이 채널별로 걸러지고, 대화 화면에 채널 배지가 붙는다.
+    assert cid in client.get("/?channel=ch-2").text
+    assert cid not in client.get("/?channel=ch-1").text
+    assert "코딩 쿼카" in client.get(f"/c/{cid}").text
+
+
+def test_forged_channel_id_is_not_bound() -> None:
+    """배선에 없는 channel_id는 무시한다 — 폼 위조로 임의 id를 심을 수 없다."""
+    store = InMemoryChatStore()
+    client = _client(
+        store,
+        list(_SEARCH_SCRIPT),
+        channels_fn=lambda: (ChatChannel("ch-1", "채널"),),
+    )
+    r = client.post(
+        "/conversations",
+        data={"text": "개발자", "channel_id": "nope"},
+        follow_redirects=False,
+    )
+    cid = r.headers["location"].removeprefix("/c/").split("#")[0]
+    assert store.get_conversation(cid).channel_id is None  # type: ignore[union-attr]
 
 
 def test_blank_message_is_rejected_without_touching_the_thread() -> None:

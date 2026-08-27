@@ -74,6 +74,22 @@ def test_auto_channels_are_not_seeded(db: psycopg.Connection) -> None:
         plan_seed(db, choice="card")
 
 
+def test_channel_bound_conversation_seeds_only_that_channel(db: psycopg.Connection) -> None:
+    """채널에 묶인 대화의 시드는 그 채널 하나만 태운다 — 채널별 관리의 배선 반쪽."""
+    first = _channel(db, handle="one")
+    _profile(db, first)
+    _profile(db, _channel(db, handle="two"))
+    plan = plan_seed(db, choice="card", channel_id=first)
+    assert [t.channel_id for t in plan.targets] == [first]
+
+
+def test_unknown_or_non_hybrid_channel_binding_is_refused(db: psycopg.Connection) -> None:
+    auto = _channel(db, handle="auto-bound", mode="auto")
+    _profile(db, auto)
+    with pytest.raises(SeedRefused, match="hybrid"):
+        plan_seed(db, choice="card", channel_id=auto)
+
+
 def test_card_choice_targets_feed_image(db: psycopg.Connection) -> None:
     _profile(db, _channel(db, handle="ig-one"))
     plan = plan_seed(db, choice="card")

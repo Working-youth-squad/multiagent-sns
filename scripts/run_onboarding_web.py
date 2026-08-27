@@ -102,14 +102,19 @@ class SubprocessVideoManager:
         if job is not None and job[0].poll() is None:
             return  # 이미 진행 중 — 중복 기동 방지
         log = LOG_DIR / f"script-{_safe(handle)}.log"
-        self._scripts[handle] = (_spawn(log, handle, "--script-only"), log)
+        # 영상 탭·새 포스트는 영상 전용 흐름 — --format 없이 돌리면 기본값 card라
+        # run_profile_cycle이 "--script-only는 영상 포맷 전용"으로 즉시 중단한다.
+        self._scripts[handle] = (_spawn(log, handle, "--format", "video", "--script-only"), log)
 
     def start_render(self, handle: str, item_id: str) -> None:
         job = self._renders.get(item_id)
         if job is not None and job[0].poll() is None:
             return
         log = LOG_DIR / f"render-{_safe(item_id)}.log"
-        self._renders[item_id] = (_spawn(log, handle, "--render-item", item_id), log)
+        self._renders[item_id] = (
+            _spawn(log, handle, "--format", "video", "--render-item", item_id),
+            log,
+        )
 
     def script_job(self, handle: str) -> ScriptJobView | None:
         job = self._scripts.get(handle)
@@ -155,15 +160,8 @@ class SubprocessVideoManager:
         )  # fmt: skip
 
 
-def main() -> int:
-    load_dotenv(ENV_FILE, override=False)
-    dsn = os.environ.get("DATABASE_URL", DEFAULT_DSN)
-    try:
-        conn = psycopg.connect(dsn, connect_timeout=10, autocommit=True)
-    except psycopg.OperationalError as exc:
-        print(f"중단: PostgreSQL 연결 실패 — docker compose up -d postgres\n      {exc}")
-        return 1
-
+def build_app(conn: psycopg.Connection, dsn: str):
+    """배선된 온보딩 FastAPI 앱 — 단독 실행(main)과 통합 서버(run_web.py)가 공유."""
     from sns.agents.models import make_model
     from sns.onboarding.character import make_character_fn
     from sns.onboarding.recommend import make_recommend_fn, make_refine_fn
@@ -179,13 +177,25 @@ def main() -> int:
     # 웹 앱이 "캐릭터 없음"으로 온보딩을 계속한다(비용 통제는 character.py 몫).
     ensure_character_fn = make_character_fn(DirMediaStore(CHAR_DIR))
 
-    app = create_app(
+    return create_app(
         PgOnboardingStore(conn),
         recommend_fn=recommend_fn,
         refine_fn=refine_fn,
         ensure_character_fn=ensure_character_fn,
         video_manager=SubprocessVideoManager(dsn),
     )
+
+
+def main() -> int:
+    load_dotenv(ENV_FILE, override=False)
+    dsn = os.environ.get("DATABASE_URL", DEFAULT_DSN)
+    try:
+        conn = psycopg.connect(dsn, connect_timeout=10, autocommit=True)
+    except psycopg.OperationalError as exc:
+        print(f"중단: PostgreSQL 연결 실패 — docker compose up -d postgres\n      {exc}")
+        return 1
+
+    app = build_app(conn, dsn)
     host = os.environ.get("ONBOARD_WEB_HOST", "127.0.0.1")
     port = int(os.environ.get("ONBOARD_WEB_PORT", "8002"))
     print(f"온보딩 인터뷰: http://{host}:{port}/")

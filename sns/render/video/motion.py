@@ -4,7 +4,8 @@
 spec에 `style: "motion"`이면 [sns.render.video.media]가 이쪽으로 디스패치한다.
 
 화면 문법 (1080×1920):
-  - 배경: 해소된 사진/생성 이미지를 풀블리드 크롭, 없으면 그라데이션. 느린 줌(zoompan)
+  - 배경: 해소된 사진/생성 이미지를 **가로 꽉 채우고** 상하 경계는 같은 이미지의
+    블러 커버로 페이드(테두리 없는 전체화면 느낌), 없으면 그라데이션. 느린 줌(zoompan)
   - 텍스트: 하단 자막(나레이션) **하나뿐** — 주제·키워드까지 세 군데 얹었더니 화면이
     글로 덮였다. 내용은 나레이션·음성이, 화면은 이미지가 맡는다
   - 캐릭터(`character_ref`): 우하단에서 바운스 — 결제를 켜고 장면 생성이 붙으면
@@ -27,7 +28,7 @@ import io
 import tempfile
 from pathlib import Path
 
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFilter
 
 from sns.render.video.assemble import (
     _BAR_RATIO,
@@ -43,7 +44,6 @@ from sns.render.video.renderer import (
     _character_badge,
     _font,
     _gradient,
-    _hex_to_rgb,
     _pick_font,
     _wrap,
 )
@@ -54,9 +54,14 @@ __all__ = ["render_motion_video"]
 
 # 글자는 하단 자막 **하나뿐**이다 — 주제 라벨·키워드 타이포까지 세 군데에 얹었더니
 # 화면이 글로 덮였다(실사용 피드백). 내용 전달은 나레이션이, 화면은 이미지가 맡는다.
-_CAPTION_DIV = 21.0  # 하단 자막 (1080 → 51px) — 유일한 글자라 잘 보이게 키운다
+_CAPTION_DIV = 16.0  # 하단 자막 (1080 → 67px) — 유일한 글자라 잘 보이게 키운다
 _MARGIN_RATIO = 0.065
 _CAPTION_Y = 0.76  # 쇼츠 하단 UI(진행바·버튼) 가림 영역 위
+# 자막 뒤 반투명 밴드 — 그림자 1획으로는 밝은 사진 위에서 글자가 묻혔다(실사용 피드백).
+# 밴드 위 글자는 배경·테마와 무관하게 항상 흰색이다.
+_BAND_ALPHA = 150
+_BAND_PAD_X = 0.45  # 폰트 크기 대비 좌우 패딩
+_BAND_PAD_Y = 0.26  # 폰트 크기 대비 상하 패딩
 _BADGE_RATIO = 0.20  # 모션 템플릿의 캐릭터는 배지가 아니라 출연자라 3단(0.16)보다 크다
 # 모션 파라미터 — 전부 ffmpeg 표현식 상수.
 _ZOOM_AMOUNT = 0.08  # 컷 동안 1.0 → 1.08
@@ -67,7 +72,7 @@ _BOUNCE_HZ = 3.9  # abs(sin(t*ω)) — 초당 약 1.2회 바운스
 
 
 def _cover(img: Image.Image, width: int, height: int) -> Image.Image:
-    """가운데 기준 커버 크롭 — 저장된 정사각(940)을 9:16 풀블리드로 채운다."""
+    """가운데 기준 커버 크롭 — 블러 백드롭이 프레임을 채울 때 쓴다."""
     scale = max(width / img.width, height / img.height)
     resized = img.resize(
         (round(img.width * scale), round(img.height * scale)), Image.Resampling.LANCZOS
@@ -75,6 +80,32 @@ def _cover(img: Image.Image, width: int, height: int) -> Image.Image:
     x = (resized.width - width) // 2
     y = (resized.height - height) // 2
     return resized.crop((x, y, x + width, y + height))
+
+
+# 원본↔블러 경계를 녹이는 페이드 폭(짧은 변 대비) — 딱 떨어지는 사각 테두리가
+# "이미지가 박혀 있다"로 읽혔다(실사용 피드백).
+_FEATHER_RATIO = 0.14
+
+
+def _fit_on_blur(img: Image.Image, width: int, height: int) -> Image.Image:
+    """이미지를 **가로 꽉 채워** 앉힌다 — 커버 크롭은 정사각 원본의 좌우 44%를 잘라
+    피사체가 화면 밖으로 나갔고(실사용 피드백 1), 여백을 남긴 contain은 사각 테두리가
+    도드라졌다(실사용 피드백 2). 가로는 프레임과 같아 좌우 잘림·테두리가 없고, 상하
+    경계는 같은 이미지의 블러 커버로 페이드시켜 전체화면처럼 읽힌다."""
+    # 백드롭을 어둡게 하지 않는다 — 밝기가 다르면 페이드로 이음새를 지워도 밝은
+    # 사각형이 도드라진다. 자막 가독성은 자막 밴드가 따로 책임진다.
+    backdrop = _cover(img, width, height).filter(ImageFilter.GaussianBlur(radius=40))
+    # 가로 폭 기준. 세로가 더 긴 이미지는 프레임을 넘지 않게 contain으로 물러난다.
+    scale = min(width / img.width, height / img.height)
+    fg = img.resize((round(img.width * scale), round(img.height * scale)), Image.Resampling.LANCZOS)
+    feather = max(1, round(min(fg.width, fg.height) * _FEATHER_RATIO))
+    mask = Image.new("L", (fg.width, fg.height), 255)
+    draw = ImageDraw.Draw(mask)
+    for i in range(feather):  # 바깥(0) → 안(feather)으로 갈수록 불투명
+        alpha = round(255 * (i + 1) / (feather + 1))
+        draw.rectangle((i, i, fg.width - 1 - i, fg.height - 1 - i), outline=alpha)
+    backdrop.paste(fg, ((width - fg.width) // 2, (height - fg.height) // 2), mask)
+    return backdrop
 
 
 def _bg_png(slide: Slide, spec: VideoSpec, fetch_image: FetchImage | None) -> bytes:
@@ -85,7 +116,7 @@ def _bg_png(slide: Slide, spec: VideoSpec, fetch_image: FetchImage | None) -> by
                 "조용히 그라데이션으로 떨어지지 않는다"
             )
         photo = Image.open(io.BytesIO(fetch_image(slide.image_ref))).convert("RGB")
-        canvas = _cover(photo, spec.width, spec.height)
+        canvas = _fit_on_blur(photo, spec.width, spec.height)
     else:
         canvas = _gradient(spec.width, spec.height, spec.background, spec.background2)
     buf = io.BytesIO()
@@ -93,32 +124,33 @@ def _bg_png(slide: Slide, spec: VideoSpec, fetch_image: FetchImage | None) -> by
     return buf.getvalue()
 
 
-def _shadowed(draw: ImageDraw.ImageDraw, xy: tuple[int, int], text: str, font: object,
-              fill: tuple[int, int, int]) -> None:  # fmt: skip
-    """사진 위 흰 글자의 가독성 — 그림자 1획이 반투명 박스보다 화면을 덜 어지럽힌다."""
-    x, y = xy
-    draw.text((x + 3, y + 3), text, font=font, fill=(0, 0, 0, 170))  # type: ignore[arg-type]
-    draw.text((x, y), text, font=font, fill=(*fill, 255))  # type: ignore[arg-type]
-
-
 def _text_png(slide: Slide, spec: VideoSpec, font_path: str) -> bytes:
     """투명 텍스트 레이어 — 하단 자막(나레이션) 한 덩어리뿐이다.
 
     subtitle·topic은 그리지 않는다: spec에는 남아 있지만(3단 템플릿·승인 웹 편집이
-    쓴다) 이 화면 문법에서는 자막 하나가 가독성이 가장 좋았다.
+    쓴다) 이 화면 문법에서는 자막 하나가 가독성이 가장 좋았다. 줄마다 반투명 밴드를
+    깔고 흰 글자를 얹는다 — 배경이 어떤 사진이든 읽힌다.
     """
     width, height = spec.width, spec.height
     margin = round(width * _MARGIN_RATIO)
-    fg = _hex_to_rgb(spec.foreground)
     layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
 
     cap_font = _font(round(width / _CAPTION_DIV), font_path)
+    pad_x = round(cap_font.size * _BAND_PAD_X)
+    pad_y = round(cap_font.size * _BAND_PAD_Y)
     y = round(height * _CAPTION_Y)
-    for line in _wrap(draw, slide.narration, cap_font, width - margin * 2):
+    for line in _wrap(draw, slide.narration, cap_font, width - margin * 2 - pad_x * 2):
         left, _, right, _ = draw.textbbox((0, 0), line, font=cap_font)
-        _shadowed(draw, ((width - round(right - left)) // 2, y), line, cap_font, fg)
-        y += round(cap_font.size * 1.35)
+        text_w = round(right - left)
+        x = (width - text_w) // 2
+        draw.rounded_rectangle(
+            (x - pad_x, y - pad_y, x + text_w + pad_x, y + cap_font.size + pad_y),
+            radius=round(cap_font.size * 0.3),
+            fill=(0, 0, 0, _BAND_ALPHA),
+        )
+        draw.text((x, y), line, font=cap_font, fill=(255, 255, 255, 255))
+        y += round(cap_font.size * 1.16) + pad_y * 2
 
     buf = io.BytesIO()
     layer.save(buf, format="PNG", optimize=False, compress_level=6)

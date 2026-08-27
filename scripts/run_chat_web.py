@@ -43,6 +43,7 @@ import os
 import shutil
 import sys
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -76,6 +77,7 @@ from sns.runner.wiring import VIDEO_STYLES, build_render_wiring, style_guidance
 from sns.tools.contracts import MediaKind, Platform, Publish, VideoMethod
 from sns.tools.fakes import FakeReadStats
 from sns.web.chat.app import LoadExportFn, LoadMediaFn, StartCycleFn, create_app
+from sns.web.chat.render import ChatChannel
 
 ENV_FILE = Path(__file__).parent.parent / ".env"
 DEFAULT_DSN = "postgresql://sns:sns@localhost:5432/sns"
@@ -149,20 +151,35 @@ class _Candidate:
     profile: ChannelProfile
 
 
-def plan_seed(conn: psycopg.Connection, *, choice: FormatChoice) -> SeedPlan:
+def plan_seed(
+    conn: psycopg.Connection, *, choice: FormatChoice, channel_id: str | None = None
+) -> SeedPlan:
     """hybrid 채널 + 프로필 → 이번 사이클 계획. 못 돌면 `SeedRefused`.
 
     시드 발행 대상 = hybrid 채널 전부(FR-W5: 수동 시드는 hybrid에서만).
+    `channel_id`가 오면 **그 채널 하나만** — 채널에 묶인 대화의 시드다.
 
     **프로필이 없는 채널은 태우지 않는다.** `topic_major`가 없으면 콘텐츠·렌더가 어떤
     주제 정책으로 돌지 정할 수 없다 — 예전엔 개발 기본값으로 조용히 떨어져 요리 채널에
     코드 컷이 들어갔고, 그래서 그 기본값을 없앴다([sns.topic_policy]). 웹에서도 같은
     규율을 지키되, 막다른 길로 두지 않고 온보딩으로 안내한다.
     """
-    rows = conn.execute(
-        "SELECT id, platform, handle FROM channel "
-        "WHERE mode = 'hybrid' AND status = 'active' ORDER BY created_at"
-    ).fetchall()
+    if channel_id:
+        rows = conn.execute(
+            "SELECT id, platform, handle FROM channel "
+            "WHERE mode = 'hybrid' AND status = 'active' AND id = %s",
+            (channel_id,),
+        ).fetchall()
+        if not rows:
+            raise SeedRefused(
+                "이 대화가 묶인 채널이 없거나 hybrid 모드가 아닙니다 — "
+                "채널 화면에서 상태를 확인해주세요."
+            )
+    else:
+        rows = conn.execute(
+            "SELECT id, platform, handle FROM channel "
+            "WHERE mode = 'hybrid' AND status = 'active' ORDER BY created_at"
+        ).fetchall()
     if not rows:
         raise SeedRefused(
             "초안을 만들 채널이 없습니다 — hybrid 모드 채널이 필요합니다"
@@ -310,6 +327,37 @@ def make_load_export_fn(dsn: str) -> LoadExportFn:
     return load
 
 
+def make_channels_fn(conn: psycopg.Connection) -> "Callable[[], tuple[ChatChannel, ...]]":
+    """채널 선택 UI 재료 — hybrid + 프로필 있는 채널만(시드 가능한 것만 보여준다).
+
+    주제 제안은 프로필의 세부 주제 + 추천안의 우선 세부 주제다. 대화 시작 전에
+    "이 채널에서 뭘 다루면 좋을지"를 프로필이 이미 알고 있으므로 그걸 꺼내 보여준다.
+    """
+    onboarding = PgOnboardingStore(conn)
+
+    def channels() -> tuple[ChatChannel, ...]:
+        out: list[ChatChannel] = []
+        for ch in onboarding.list_channels():
+            if ch.mode != "hybrid":
+                continue
+            profile = onboarding.latest_profile(ch.channel_id)
+            if profile is None:
+                continue
+            raw: list[str] = list(profile.topic_subs)
+            rec = profile.recommendation or {}
+            focus = rec.get("focus_subs")
+            if isinstance(focus, list):
+                raw += [str(s) for s in focus if str(s).strip()]
+            seen: set[str] = set()
+            suggestions = tuple(s for s in raw if not (s in seen or seen.add(s)))[:6]
+            out.append(
+                ChatChannel(channel_id=ch.channel_id, label=ch.handle, suggestions=suggestions)
+            )
+        return tuple(out)
+
+    return channels
+
+
 def playbook_guidance(profile: ChannelProfile, request: SeedRequest, style: str) -> str:
     """Content 에이전트에게 줄 지침 — 채널 브리프 + (영상이면) 화면 문법.
 
@@ -339,14 +387,14 @@ def make_start_cycle_fn(
     """
     font = find_font()
 
-    def worker(conversation_id: str, request: SeedRequest) -> None:
+    def worker(conversation_id: str, request: SeedRequest, channel_id: str | None) -> None:
         # 스레드마다 자기 커넥션을 연다 — psycopg 커넥션은 스레드 간 공유 대상이 아니고,
         # 웹 요청이 쓰는 커넥션을 분 단위 작업이 붙들면 화면이 멈춘다.
         topic = request.topic
         try:
             with psycopg.connect(dsn, connect_timeout=10, autocommit=True) as conn:
                 try:
-                    plan = plan_seed(conn, choice=request.content_format)
+                    plan = plan_seed(conn, choice=request.content_format, channel_id=channel_id)
                 except SeedRefused as refused:
                     chat_store.append(
                         conversation_id,
@@ -415,8 +463,10 @@ def make_start_cycle_fn(
                 payload={"kind": "seed_crashed", "error": str(exc)},
             )
 
-    def start(conversation_id: str, request: SeedRequest) -> None:
-        threading.Thread(target=worker, args=(conversation_id, request), daemon=True).start()
+    def start(conversation_id: str, request: SeedRequest, channel_id: str | None) -> None:
+        threading.Thread(
+            target=worker, args=(conversation_id, request, channel_id), daemon=True
+        ).start()
 
     return start
 
@@ -596,6 +646,7 @@ def main() -> int:
         ),
         load_media_fn=make_load_media_fn(dsn),
         load_export_fn=make_load_export_fn(dsn),
+        channels_fn=make_channels_fn(conn),
         formats=formats,
         methods=methods,
     )
