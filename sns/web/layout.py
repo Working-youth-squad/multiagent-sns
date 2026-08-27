@@ -12,6 +12,7 @@ CSS는 인라인 <style> 문자열([sns.web.approve.render] 규율 동형).
 import os
 from html import escape
 
+
 def _nav() -> tuple[tuple[str, str, str, str], ...]:
     """(key, 아이콘, 라벨, URL). **렌더 시점**에 env를 읽는다 — 진입 스크립트들은
     dotenv를 main()에서야 로드하므로 import 시점 상수로 두면 .env가 무시된다."""
@@ -24,6 +25,7 @@ def _nav() -> tuple[tuple[str, str, str, str], ...]:
         ("queue", "🗂️", "대기열", f"{approve}/"),
         ("channels", "📺", "채널", f"{onboard}/channels"),
     )
+
 
 BASE_CSS = """
 @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard/dist/web/static/pretendard.css");

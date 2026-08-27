@@ -35,6 +35,7 @@ class ChatChannel:
     label: str
     suggestions: tuple[str, ...] = ()  # 이 채널과 어울리는 대화 주제 제안(프로필 기반)
 
+
 # 챗봇 전용 스타일 — 골격·토큰은 [sns.web.layout] 공용. 클래스명은 테스트와
 # 랭킹/초안 규율이 물고 있으므로 유지하고 색·모양만 feedr 토큰으로 바꾼다.
 _EXTRA_CSS = """
@@ -144,9 +145,7 @@ def render_index(
 
     chips = ""
     if channels:
-        links = [
-            f'<a class="{"on" if picked is None else ""}" href="/?channel=all">전체</a>'
-        ] + [
+        links = [f'<a class="{"on" if picked is None else ""}" href="/?channel=all">전체</a>'] + [
             f'<a class="{"on" if picked is c else ""}" '
             f'href="/?channel={escape(c.channel_id, quote=True)}">{escape(c.label)}</a>'
             for c in channels
@@ -154,8 +153,7 @@ def render_index(
         chips = f'<div class="chips">{"".join(links)}</div>'
 
     hidden = (
-        f'<input type="hidden" name="channel_id" '
-        f'value="{escape(picked.channel_id, quote=True)}">'
+        f'<input type="hidden" name="channel_id" value="{escape(picked.channel_id, quote=True)}">'
         if picked
         else ""
     )
@@ -167,13 +165,12 @@ def render_index(
             f'onclick="this.form.text.value=this.textContent">{escape(s)}</button>'
             for s in picked.suggestions
         )
-        suggest = (
-            f"<p class='meta'>이 채널과 어울리는 주제 — 눌러서 채우기</p>{chips_html}"
-        )
+        suggest = f"<p class='meta'>이 채널과 어울리는 주제 — 눌러서 채우기</p>{chips_html}"
     start = (
         '<div class="card"><form method="post" action="/conversations">'
         f"{hidden}"
-        f'<label for="new-text">무엇을 다뤄볼까요?{f" — {escape(picked.label)}" if picked else ""}</label>'
+        '<label for="new-text">무엇을 다뤄볼까요?'
+        f"{f' — {escape(picked.label)}' if picked else ''}</label>"
         f"{suggest}"
         '<input type="text" id="new-text" name="text" '
         'placeholder="어떤 주제를 다루고 싶으세요? (예: 개발자 취업)">'
@@ -182,11 +179,7 @@ def render_index(
     )
 
     labels = {c.channel_id: c.label for c in channels}
-    shown = [
-        c
-        for c in conversations
-        if picked is None or c.channel_id == picked.channel_id
-    ]
+    shown = [c for c in conversations if picked is None or c.channel_id == picked.channel_id]
     if shown:
         rows = "".join(
             '<div class="row"><div class="row-main">'

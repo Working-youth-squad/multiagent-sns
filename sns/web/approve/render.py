@@ -47,9 +47,7 @@ def render_list(items: tuple[PendingItem, ...], *, selected: str = "") -> str:
 
     chips = ""
     if handles:
-        links = [
-            f'<a class="{"on" if not selected else ""}" href="{URL_PREFIX}/">전체</a>'
-        ] + [
+        links = [f'<a class="{"on" if not selected else ""}" href="{URL_PREFIX}/">전체</a>'] + [
             f'<a class="{"on" if selected == h else ""}" '
             f'href="{URL_PREFIX}/?channel={quote(h)}">{escape(h)}</a>'
             for h in handles
@@ -63,11 +61,12 @@ def render_list(items: tuple[PendingItem, ...], *, selected: str = "") -> str:
         rows = (
             f'<div class="card-list">{"".join(_list_row(i) for i in picked)}</div>'
             if picked
-            else '<div class="card"><p class="empty">이 채널에는 승인 대기 항목이 없습니다.</p></div>'
+            else (
+                '<div class="card">'
+                '<p class="empty">이 채널에는 승인 대기 항목이 없습니다.</p></div>'
+            )
         )
-        sections = (
-            f'<h2>{escape(selected)} <span class="count">{len(picked)}</span></h2>{rows}'
-        )
+        sections = f'<h2>{escape(selected)} <span class="count">{len(picked)}</span></h2>{rows}'
     else:
         parts = []
         for handle in handles:

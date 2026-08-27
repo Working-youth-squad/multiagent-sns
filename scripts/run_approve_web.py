@@ -80,9 +80,7 @@ def make_rerender(ffmpeg: str, font: str | None, topic_major: str) -> RerenderVi
     return rerender
 
 
-def build_app(
-    conn: psycopg.Connection, *, ffmpeg: str, font: str | None, topic_major: str
-):
+def build_app(conn: psycopg.Connection, *, ffmpeg: str, font: str | None, topic_major: str):
     """배선된 승인 FastAPI 앱 — 단독 실행(main)과 통합 서버(run_web.py)가 공유."""
     resolved = font or os.environ.get("CARD_FONT")
     if not resolved:

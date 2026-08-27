@@ -227,13 +227,9 @@ def create_app(
             return HTMLResponse(render_not_found(), status_code=404)
         label = None
         if found.channel_id:
-            label = next(
-                (c.label for c in _channels() if c.channel_id == found.channel_id), None
-            )
+            label = next((c.label for c in _channels() if c.channel_id == found.channel_id), None)
         return HTMLResponse(
-            render_conversation(
-                found, store.messages(conversation_id), channel_label=label
-            )
+            render_conversation(found, store.messages(conversation_id), channel_label=label)
         )
 
     @app.post("/c/{conversation_id}/messages", response_model=None)

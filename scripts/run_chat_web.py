@@ -43,6 +43,7 @@ import os
 import shutil
 import sys
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -75,8 +76,6 @@ from sns.runner.store import PgCycleStore
 from sns.runner.wiring import VIDEO_STYLES, build_render_wiring, style_guidance
 from sns.tools.contracts import MediaKind, Platform, Publish, VideoMethod
 from sns.tools.fakes import FakeReadStats
-from collections.abc import Callable
-
 from sns.web.chat.app import LoadExportFn, LoadMediaFn, StartCycleFn, create_app
 from sns.web.chat.render import ChatChannel
 
@@ -350,13 +349,9 @@ def make_channels_fn(conn: psycopg.Connection) -> "Callable[[], tuple[ChatChanne
             if isinstance(focus, list):
                 raw += [str(s) for s in focus if str(s).strip()]
             seen: set[str] = set()
-            suggestions = tuple(
-                s for s in raw if not (s in seen or seen.add(s))
-            )[:6]
+            suggestions = tuple(s for s in raw if not (s in seen or seen.add(s)))[:6]
             out.append(
-                ChatChannel(
-                    channel_id=ch.channel_id, label=ch.handle, suggestions=suggestions
-                )
+                ChatChannel(channel_id=ch.channel_id, label=ch.handle, suggestions=suggestions)
             )
         return tuple(out)
 
@@ -399,9 +394,7 @@ def make_start_cycle_fn(
         try:
             with psycopg.connect(dsn, connect_timeout=10, autocommit=True) as conn:
                 try:
-                    plan = plan_seed(
-                        conn, choice=request.content_format, channel_id=channel_id
-                    )
+                    plan = plan_seed(conn, choice=request.content_format, channel_id=channel_id)
                 except SeedRefused as refused:
                     chat_store.append(
                         conversation_id,

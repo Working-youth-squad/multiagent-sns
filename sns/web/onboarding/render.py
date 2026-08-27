@@ -110,9 +110,7 @@ button.big{padding:12px 28px;font-size:15px}
 """
 
 
-def _page(
-    title: str, body: str, *, active: str | None = None, max_width: str = "560px"
-) -> str:
+def _page(title: str, body: str, *, active: str | None = None, max_width: str = "560px") -> str:
     return page(title, body, active=active, extra_css=_EXTRA_CSS, max_width=max_width)
 
 
@@ -168,11 +166,7 @@ def render_channels(channels: tuple[ChannelRow, ...]) -> str:
         '<p style="margin-top:16px"><a href="/">'
         '<button type="button">새 계정 인터뷰 시작</button></a></p>'
     )
-    body = (
-        "<h1>채널</h1>"
-        '<p class="page-sub">만들어진 계정과 프로필을 관리합니다</p>'
-        f"{rows}{start}"
-    )
+    body = f'<h1>채널</h1><p class="page-sub">만들어진 계정과 프로필을 관리합니다</p>{rows}{start}'
     return _page("내 채널", body, active="channels", max_width="960px")
 
 
@@ -206,7 +200,7 @@ def render_compose(
     chips = "".join(
         f'<label class="chip-radio"><input type="radio" name="channel_id" '
         f'value="{escape(c.channel_id, quote=True)}"'
-        f'{" checked" if c.channel_id == picked else ""}>'
+        f"{' checked' if c.channel_id == picked else ''}>"
         f"{_PLATFORM_ICON.get(c.platform, '📺')} {escape(c.handle)}</label>"
         for c in channels
     )
@@ -512,8 +506,7 @@ def render_channel(
     """채널 프로필 탭 — 컨셉·캐릭터·미세조정. 대본·영상은 영상 탭이 맡는다."""
     note = f"<p>운영자 지침: {escape(profile.note)}</p>" if profile.note else ""
     body = (
-        _channel_head(channel, "profile", video_enabled=video_enabled)
-        + f"{_summary_card(profile)}"
+        _channel_head(channel, "profile", video_enabled=video_enabled) + f"{_summary_card(profile)}"
         f"{_character_card(channel.channel_id, profile, character_error)}"
         f"{_recommendation_block(profile.recommendation)}{note}"
         '<div class="card"><h3>미세 조정</h3>'
@@ -524,9 +517,7 @@ def render_channel(
         '<button type="submit">반영하기</button></form></div>'
         '<a href="/channels"><button class="secondary" type="button">내 채널 목록</button></a>'
     )
-    return _page(
-        f"계정 — {channel.handle}", body, active="channels", max_width="680px"
-    )
+    return _page(f"계정 — {channel.handle}", body, active="channels", max_width="680px")
 
 
 def _script_card(item: VideoItemView, channel_id: str) -> str:
@@ -577,9 +568,7 @@ def render_videos(
         parts.append(_AUTO_REFRESH)
     compose_url = f"/compose?channel={channel.channel_id}"
     if script_job is not None and script_job.state == "running":
-        parts.append(
-            '<div class="card"><p>대본 생성 중… (트렌드 조사 + 에이전트, 1~2분)</p></div>'
-        )
+        parts.append('<div class="card"><p>대본 생성 중… (트렌드 조사 + 에이전트, 1~2분)</p></div>')
     elif script_job is not None and script_job.state == "failed":
         parts.append(
             '<div class="card"><p class="error">대본 생성 실패 — 로그 끝부분:</p>'
