@@ -30,6 +30,25 @@ SUBS_SEP = "|"  # hidden input에서 세부 주제를 잇는 구분자(쉼표는
 _PLATFORM_ICON = {"youtube": "▶️", "instagram": "📷"}
 
 
+def _channel_head(channel: ChannelRow, active: str, *, video_enabled: bool) -> str:
+    """채널 하위 화면 공통 헤더 + [프로필|영상] 탭. 영상 탭은 배선이 있을 때만."""
+    tabs = [
+        f'<a class="tab{" active" if active == "profile" else ""}" '
+        f'href="/channels/{channel.channel_id}">프로필</a>'
+    ]
+    if video_enabled:
+        tabs.append(
+            f'<a class="tab{" active" if active == "videos" else ""}" '
+            f'href="/channels/{channel.channel_id}/videos">영상</a>'
+        )
+    return (
+        f"<h1>{_PLATFORM_ICON.get(channel.platform, '📺')} {escape(channel.handle)}</h1>"
+        f'<p class="page-sub">{escape(channel.platform)} · '
+        f'<span class="badge neutral">{escape(channel.mode)}</span></p>'
+        f'<div class="tabs">{"".join(tabs)}</div>'
+    )
+
+
 @dataclass(frozen=True)
 class VideoItemView:
     """영상 관리 탭의 항목 1건 — 대본(script)에서 시작해 렌더를 거쳐 영상(done)이 된다."""
@@ -82,6 +101,12 @@ form button{margin-top:12px}
   background:var(--primary-light)}
 .chip-radio input{margin:0}
 button.big{padding:12px 28px;font-size:15px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);margin:16px 0 20px}
+.tab{display:inline-block;padding:8px 14px;font-size:14px;font-weight:600;
+  color:var(--muted)}
+.tab:hover{color:var(--text);text-decoration:none}
+.tab.active{color:var(--primary);border-bottom:2px solid var(--primary);
+  margin-bottom:-1px}
 """
 
 
@@ -151,7 +176,12 @@ def render_channels(channels: tuple[ChannelRow, ...]) -> str:
     return _page("내 채널", body, active="channels", max_width="960px")
 
 
-def render_compose(channels: tuple[ChannelRow, ...], *, error: str | None = None) -> str:
+def render_compose(
+    channels: tuple[ChannelRow, ...],
+    *,
+    selected: str | None = None,
+    error: str | None = None,
+) -> str:
     """새 포스트 — 줄글 영상 컨셉을 적으면 대본 생성까지 (feedr Composer 매핑).
 
     컨셉은 refine과 같은 경로로 프로필 revision에 반영된 뒤 대본 생성이 돈다.
@@ -172,11 +202,13 @@ def render_compose(channels: tuple[ChannelRow, ...], *, error: str | None = None
         )
         return _page("새 포스트", body, active="compose", max_width="680px")
     err = f'<div class="error">{escape(error)}</div>' if error else ""
+    picked = selected if any(c.channel_id == selected for c in channels) else channels[0].channel_id
     chips = "".join(
         f'<label class="chip-radio"><input type="radio" name="channel_id" '
-        f'value="{escape(c.channel_id, quote=True)}"{" checked" if i == 0 else ""}>'
+        f'value="{escape(c.channel_id, quote=True)}"'
+        f'{" checked" if c.channel_id == picked else ""}>'
         f"{_PLATFORM_ICON.get(c.platform, '📺')} {escape(c.handle)}</label>"
-        for i, c in enumerate(channels)
+        for c in channels
     )
     body = (
         f"{head}{err}"
@@ -477,19 +509,11 @@ def render_channel(
     video_enabled: bool = False,
     character_error: str | None = None,
 ) -> str:
-    """만들어진 계정의 프로필 화면 — 캐릭터·미세조정, 영상은 관리 탭으로."""
+    """채널 프로필 탭 — 컨셉·캐릭터·미세조정. 대본·영상은 영상 탭이 맡는다."""
     note = f"<p>운영자 지침: {escape(profile.note)}</p>" if profile.note else ""
-    video_tab = (
-        f'<a href="/channels/{channel.channel_id}/videos">'
-        '<button type="button">영상 관리</button></a> '
-        if video_enabled
-        else ""
-    )
     body = (
-        f'<p class="meta">{escape(channel.platform)} · {escape(channel.handle)} · '
-        f"{escape(channel.mode)}</p>"
-        f"{video_tab}"
-        f"{_summary_card(profile)}"
+        _channel_head(channel, "profile", video_enabled=video_enabled)
+        + f"{_summary_card(profile)}"
         f"{_character_card(channel.channel_id, profile, character_error)}"
         f"{_recommendation_block(profile.recommendation)}{note}"
         '<div class="card"><h3>미세 조정</h3>'
@@ -501,10 +525,7 @@ def render_channel(
         '<a href="/channels"><button class="secondary" type="button">내 채널 목록</button></a>'
     )
     return _page(
-        f"계정 — {channel.handle}",
-        f"<h1>계정이 만들어졌어요</h1>{body}",
-        active="channels",
-        max_width="680px",
+        f"계정 — {channel.handle}", body, active="channels", max_width="680px"
     )
 
 
@@ -547,38 +568,38 @@ def render_videos(
     items: tuple[VideoItemView, ...],
     script_job: ScriptJobView | None,
 ) -> str:
-    """영상 관리 탭 — 새 대본 생성부터 대본 승인 → 렌더 → 완성 영상까지 한 화면."""
-    parts = []
+    """영상 탭 — 대본 승인 → 렌더 → 완성 영상 관리. **생성 입구는 새 포스트 하나**다:
+    같은 기능의 버튼을 두 곳에 두면 컨셉을 쓸 수 있는 쪽(새 포스트)만 남기는 게 맞다."""
+    parts = [_channel_head(channel, "videos", video_enabled=True)]
     refreshing = script_job is not None and script_job.state == "running"
     refreshing = refreshing or any(i.state == "rendering" for i in items)
     if refreshing:
         parts.append(_AUTO_REFRESH)
-    parts.append('<div class="card"><h3>새 대본 만들기</h3>')
+    compose_url = f"/compose?channel={channel.channel_id}"
     if script_job is not None and script_job.state == "running":
-        parts.append("<p>대본 생성 중… (트렌드 조사 + 에이전트, 1~2분)</p>")
-    else:
-        if script_job is not None and script_job.state == "failed":
-            parts.append('<p class="error">대본 생성 실패 — 로그 끝부분:</p>')
-            parts.append(f"<pre {_PRE_STYLE}>{escape(script_job.log_tail)}</pre>")
         parts.append(
-            "<p class='meta'>영상을 바로 만들지 않아요 — 대본이 먼저 나오고, "
-            "확인 후 영상으로 만듭니다.</p>"
+            '<div class="card"><p>대본 생성 중… (트렌드 조사 + 에이전트, 1~2분)</p></div>'
         )
-    disabled = " disabled" if script_job is not None and script_job.state == "running" else ""
-    parts.append(
-        f'<form method="post" action="/channels/{channel.channel_id}/videos/script">'
-        f'<button type="submit"{disabled}>새 대본 만들기</button></form></div>'
-    )
+    elif script_job is not None and script_job.state == "failed":
+        parts.append(
+            '<div class="card"><p class="error">대본 생성 실패 — 로그 끝부분:</p>'
+            f"<pre {_PRE_STYLE}>{escape(script_job.log_tail)}</pre></div>"
+        )
+    else:
+        parts.append(
+            f'<p class="meta" style="margin-bottom:16px">새 대본은 '
+            f'<a href="{compose_url}">새 포스트</a>에서 컨셉과 함께 만듭니다.</p>'
+        )
     if not items:
-        parts.append('<p class="empty">아직 만든 대본이 없습니다.</p>')
+        parts.append(
+            '<div class="card"><p class="empty">아직 만든 대본이 없습니다.</p>'
+            f'<p style="text-align:center"><a href="{compose_url}">'
+            "<button type='button'>새 포스트에서 만들기</button></a></p></div>"
+        )
     parts.extend(_script_card(i, channel.channel_id) for i in items)
-    parts.append(
-        f'<a href="/channels/{channel.channel_id}">'
-        '<button class="secondary" type="button">← 계정으로</button></a>'
-    )
     return _page(
         f"영상 관리 — {channel.handle}",
-        f"<h1>영상 관리</h1>{''.join(parts)}",
+        "".join(parts),
         active="channels",
         max_width="760px",
     )

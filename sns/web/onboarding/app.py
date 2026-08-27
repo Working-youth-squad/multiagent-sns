@@ -425,9 +425,11 @@ def create_app(
         return RedirectResponse(f"/channels/{channel_id}", status_code=303)
 
     @app.get("/compose", response_class=HTMLResponse)
-    def compose_form() -> HTMLResponse:
-        """새 포스트 — 채널 고르고 줄글 컨셉을 적으면 대본 생성이 돈다."""
-        return HTMLResponse(render_compose(store.list_channels()))
+    def compose_form(channel: str | None = None) -> HTMLResponse:
+        """새 포스트 — 채널 고르고 줄글 컨셉을 적으면 대본 생성이 돈다.
+
+        ?channel=은 영상 탭에서 넘어올 때의 프리셀렉트."""
+        return HTMLResponse(render_compose(store.list_channels(), selected=channel))
 
     @app.post("/compose", response_model=None)
     def compose_submit(

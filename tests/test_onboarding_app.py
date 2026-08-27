@@ -74,7 +74,8 @@ def test_interview_then_create_saves_profile() -> None:
     assert saved.character_style == "flat_vector"
 
     detail = client.get(f"/channels/{channel_id}")
-    assert "계정이 만들어졌어요" in detail.text
+    assert "demo" in detail.text  # 채널 헤더(핸들)
+    assert "프로필" in detail.text  # 탭바
     assert "플랫 벡터" in detail.text
 
 
@@ -337,7 +338,8 @@ def test_videos_tab_script_first_then_render(tmp_path: Path) -> None:
     assert f"/channels/{ch}/videos" in detail.text  # 채널 페이지 → 영상 관리 탭 링크
 
     tab = client.get(f"/channels/{ch}/videos")
-    assert "새 대본 만들기" in tab.text
+    # 생성 입구는 새 포스트로 통일 — 탭에는 링크만 남는다.
+    assert f"/compose?channel={ch}" in tab.text
     assert "대본 승인 대기" in tab.text and "설탕 없이 굽는 법" in tab.text
     assert "영상 만들기" in tab.text  # 수락 버튼 — 영상은 아직 없다
 
@@ -364,7 +366,7 @@ def test_videos_tab_shows_running_script_job() -> None:
     _walk_interview(client)
     ch = _create_channel(client)
     tab = client.get(f"/channels/{ch}/videos")
-    assert "대본 생성 중" in tab.text and "disabled" in tab.text
+    assert "대본 생성 중" in tab.text
 
 
 def test_compose_form_lists_channels_or_prompts_onboarding() -> None:
@@ -406,6 +408,10 @@ def test_compose_applies_note_and_starts_script() -> None:
 
     assert client.post("/compose", data={"channel_id": "nope"}).status_code == 404
 
+    # 영상 탭에서 넘어오는 ?channel= 프리셀렉트
+    form = client.get(f"/compose?channel={ch}")
+    assert f'value="{ch}" checked' in form.text
+
 
 def test_compose_without_manager_shows_error() -> None:
     store = InMemoryOnboardingStore()
@@ -422,7 +428,7 @@ def test_video_routes_404_without_manager() -> None:
     client = _client(InMemoryOnboardingStore())
     _walk_interview(client)
     ch = _create_channel(client)
-    assert "영상 관리" not in client.get(f"/channels/{ch}").text
+    assert f"/channels/{ch}/videos" not in client.get(f"/channels/{ch}").text  # 영상 탭 숨김
     assert client.get(f"/channels/{ch}/videos").status_code == 404
     assert client.post(f"/channels/{ch}/videos/script").status_code == 404
 
