@@ -102,14 +102,19 @@ class SubprocessVideoManager:
         if job is not None and job[0].poll() is None:
             return  # 이미 진행 중 — 중복 기동 방지
         log = LOG_DIR / f"script-{_safe(handle)}.log"
-        self._scripts[handle] = (_spawn(log, handle, "--script-only"), log)
+        # 영상 탭·새 포스트는 영상 전용 흐름 — --format 없이 돌리면 기본값 card라
+        # run_profile_cycle이 "--script-only는 영상 포맷 전용"으로 즉시 중단한다.
+        self._scripts[handle] = (_spawn(log, handle, "--format", "video", "--script-only"), log)
 
     def start_render(self, handle: str, item_id: str) -> None:
         job = self._renders.get(item_id)
         if job is not None and job[0].poll() is None:
             return
         log = LOG_DIR / f"render-{_safe(item_id)}.log"
-        self._renders[item_id] = (_spawn(log, handle, "--render-item", item_id), log)
+        self._renders[item_id] = (
+            _spawn(log, handle, "--format", "video", "--render-item", item_id),
+            log,
+        )
 
     def script_job(self, handle: str) -> ScriptJobView | None:
         job = self._scripts.get(handle)
