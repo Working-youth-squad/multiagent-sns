@@ -35,6 +35,7 @@ from sns.web.onboarding.render import (
     VideoItemView,
     render_channel,
     render_channels,
+    render_compose,
     render_create,
     render_entry,
     render_link,
@@ -395,22 +396,57 @@ def create_app(
             return HTMLResponse(render_not_found(), status_code=404)
         return FileResponse(Path(item.video_path), media_type="video/mp4")
 
-    @app.post("/channels/{channel_id}/refine", response_model=None)
-    def refine(channel_id: str, note: str = Form(default="")) -> HTMLResponse | RedirectResponse:
+    def _apply_note(channel_id: str, note: str) -> bool:
+        """줄글 한 줄을 프로필에 반영(새 revision, FR-W2) — refine·compose 공용.
+
+        False = 프로필 없음(404 사유). 빈 줄글은 반영 없이 성공으로 통과한다.
+        """
         profile = store.latest_profile(channel_id)
         if profile is None:
-            return HTMLResponse(render_not_found(), status_code=404)
+            return False
         text = note.strip()
-        if text:
-            revised = profile
-            if refine_fn is not None:
-                try:
-                    revised = refine_fn(profile, text)
-                except Exception:  # LLM 실패 시 줄글 원문 보존으로 폴백
-                    revised = profile
-            if revised == profile:
-                revised = replace(profile, note=text)
-            store.save_profile(channel_id, revised)  # 개정 = 새 revision (FR-W2)
+        if not text:
+            return True
+        revised = profile
+        if refine_fn is not None:
+            try:
+                revised = refine_fn(profile, text)
+            except Exception:  # LLM 실패 시 줄글 원문 보존으로 폴백
+                revised = profile
+        if revised == profile:
+            revised = replace(profile, note=text)
+        store.save_profile(channel_id, revised)
+        return True
+
+    @app.post("/channels/{channel_id}/refine", response_model=None)
+    def refine(channel_id: str, note: str = Form(default="")) -> HTMLResponse | RedirectResponse:
+        if not _apply_note(channel_id, note):
+            return HTMLResponse(render_not_found(), status_code=404)
         return RedirectResponse(f"/channels/{channel_id}", status_code=303)
+
+    @app.get("/compose", response_class=HTMLResponse)
+    def compose_form() -> HTMLResponse:
+        """새 포스트 — 채널 고르고 줄글 컨셉을 적으면 대본 생성이 돈다."""
+        return HTMLResponse(render_compose(store.list_channels()))
+
+    @app.post("/compose", response_model=None)
+    def compose_submit(
+        channel_id: str = Form(default=""), note: str = Form(default="")
+    ) -> HTMLResponse | RedirectResponse:
+        """컨셉 반영(refine과 같은 경로) → 대본 생성 기동 → 영상 관리 탭으로."""
+        channel = _find_channel(channel_id)
+        if channel is None:
+            return HTMLResponse(render_not_found(), status_code=404)
+        if video_manager is None:
+            return HTMLResponse(
+                render_compose(
+                    store.list_channels(),
+                    error="영상 배선이 없습니다 — scripts/run_onboarding_web.py로 실행하세요.",
+                )
+            )
+        if not _apply_note(channel.channel_id, note):
+            return HTMLResponse(render_not_found(), status_code=404)
+        video_manager.start_script(channel.handle)
+        return RedirectResponse(f"/channels/{channel.channel_id}/videos", status_code=303)
 
     return app

@@ -367,6 +367,57 @@ def test_videos_tab_shows_running_script_job() -> None:
     assert "대본 생성 중" in tab.text and "disabled" in tab.text
 
 
+def test_compose_form_lists_channels_or_prompts_onboarding() -> None:
+    store = InMemoryOnboardingStore()
+    client = _client(store, video_manager=FakeVideoManager())
+    empty = client.get("/compose")
+    assert "먼저 채널을 만들어주세요" in empty.text
+
+    _walk_interview(client)
+    _create_channel(client)
+    form = client.get("/compose")
+    assert "새 포스트" in form.text and "영상 컨셉" in form.text
+    assert "demo" in form.text  # 채널 선택 칩
+    assert "대본 만들기" in form.text
+
+
+def test_compose_applies_note_and_starts_script() -> None:
+    """줄글 컨셉 → 프로필 revision 반영(refine과 같은 경로) → 대본 생성 기동."""
+    store = InMemoryOnboardingStore()
+    manager = FakeVideoManager()
+    client = _client(store, video_manager=manager)
+    _walk_interview(client)
+    ch = _create_channel(client)
+
+    r = client.post(
+        "/compose",
+        data={"channel_id": ch, "note": "밈 스타일로, 이모지를 많이"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/channels/{ch}/videos"
+    assert manager.script_started == ["demo"]
+    saved = store.latest_profile(ch)
+    assert saved is not None and saved.note == "밈 스타일로, 이모지를 많이"
+
+    # 빈 컨셉은 프로필을 건드리지 않고 대본 생성만 돈다.
+    r = client.post("/compose", data={"channel_id": ch}, follow_redirects=False)
+    assert r.status_code == 303 and manager.script_started == ["demo", "demo"]
+
+    assert client.post("/compose", data={"channel_id": "nope"}).status_code == 404
+
+
+def test_compose_without_manager_shows_error() -> None:
+    store = InMemoryOnboardingStore()
+    client = _client(store)
+    _walk_interview(client)
+    ch = _create_channel(client)
+    r = client.post("/compose", data={"channel_id": ch})
+    assert r.status_code == 200 and "영상 배선이 없습니다" in r.text
+    assert store.latest_profile(ch) is not None
+    assert store.latest_profile(ch).note is None  # 배선 없으면 프로필도 무변경
+
+
 def test_video_routes_404_without_manager() -> None:
     client = _client(InMemoryOnboardingStore())
     _walk_interview(client)

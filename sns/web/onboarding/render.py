@@ -74,6 +74,14 @@ form button{margin-top:12px}
 .card h3{margin:0 0 8px;font-size:15px;font-weight:700}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
 .grid .card{margin-bottom:0}
+.chip-row{display:flex;flex-wrap:wrap;gap:8px}
+.chip-radio{display:inline-flex;align-items:center;gap:8px;padding:8px 14px;
+  border-radius:999px;font-size:14px;font-weight:600;border:1px solid var(--border);
+  background:#fff;cursor:pointer}
+.chip-radio:has(input:checked){border-color:var(--primary);
+  background:var(--primary-light)}
+.chip-radio input{margin:0}
+button.big{padding:12px 28px;font-size:15px}
 """
 
 
@@ -141,6 +149,46 @@ def render_channels(channels: tuple[ChannelRow, ...]) -> str:
         f"{rows}{start}"
     )
     return _page("내 채널", body, active="channels", max_width="960px")
+
+
+def render_compose(channels: tuple[ChannelRow, ...], *, error: str | None = None) -> str:
+    """새 포스트 — 줄글 영상 컨셉을 적으면 대본 생성까지 (feedr Composer 매핑).
+
+    컨셉은 refine과 같은 경로로 프로필 revision에 반영된 뒤 대본 생성이 돈다.
+    """
+    # ponytail: 컨셉이 프로필 revision으로 영구히 남는다(기존 refine 동작 그대로) —
+    # 1회성 지시가 필요해지면 run_profile_cycle에 컨셉 인자를 추가한다.
+    head = (
+        "<h1>새 포스트</h1>"
+        '<p class="page-sub">영상 컨셉을 적으면 대본부터 만들어 드려요 — '
+        "대본을 확인한 뒤 영상으로 만듭니다</p>"
+    )
+    if not channels:
+        body = (
+            f"{head}"
+            '<div class="card"><p class="empty">먼저 채널을 만들어주세요.</p>'
+            '<p style="text-align:center"><a href="/">'
+            '<button type="button">계정 인터뷰 시작</button></a></p></div>'
+        )
+        return _page("새 포스트", body, active="compose", max_width="680px")
+    err = f'<div class="error">{escape(error)}</div>' if error else ""
+    chips = "".join(
+        f'<label class="chip-radio"><input type="radio" name="channel_id" '
+        f'value="{escape(c.channel_id, quote=True)}"{" checked" if i == 0 else ""}>'
+        f"{_PLATFORM_ICON.get(c.platform, '📺')} {escape(c.handle)}</label>"
+        for i, c in enumerate(channels)
+    )
+    body = (
+        f"{head}{err}"
+        f'<div class="card"><form method="post" action="/compose"{_SLOW_SUBMIT}>'
+        "<label>채널</label>"
+        f'<div class="chip-row">{chips}</div>'
+        '<label for="compose-note">영상 컨셉</label>'
+        '<textarea id="compose-note" name="note" placeholder="예: 신입 개발자 면접 꿀팁을 '
+        '밈 스타일로, 이모지를 많이 (비워두면 채널 프로필 그대로)"></textarea>'
+        '<button type="submit" class="big">대본 만들기</button></form></div>'
+    )
+    return _page("새 포스트", body, active="compose", max_width="680px")
 
 
 def render_step(step: int, state: Mapping[str, str], *, error: str | None = None) -> str:
