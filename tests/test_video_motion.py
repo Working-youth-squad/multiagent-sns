@@ -159,9 +159,16 @@ def test_caption_band_makes_text_readable_on_bright_background() -> None:
     spec = parse_video_spec(MOTION_DICT)
     render = render_motion_video(spec, synthesize=tone_wav)
     frame = _frame_at(render.mp4, 0.8)  # 텍스트 라이즈+페이드(0.4s)가 끝난 뒤
-    y = round(spec.height * 0.76) + 20  # 자막 첫 줄 밴드 안쪽
-    row = [frame.getpixel((x, y)) for x in range(spec.width // 2 - 200, spec.width // 2 + 200, 8)]
-    darkest = min(sum(p[:3]) for p in row)
-    brightest = max(sum(p[:3]) for p in row)
+    # 자막 첫 줄 영역 전체를 스캔한다 — 한 줄(row)만 찍으면 폰트 메트릭(맑은고딕 vs
+    # Noto CJK)에 따라 글리프 잉크를 비껴가 CI에서만 깨졌다.
+    top = round(spec.height * 0.76)
+    cap = round(spec.width / 16)  # _CAPTION_DIV와 같은 값 — 첫 줄 높이만큼 훑는다
+    region = [
+        frame.getpixel((x, y))
+        for y in range(top, top + cap, 6)
+        for x in range(spec.width // 2 - 200, spec.width // 2 + 200, 8)
+    ]
+    darkest = min(sum(p[:3]) for p in region)
+    brightest = max(sum(p[:3]) for p in region)
     assert darkest < 330, f"밴드가 없다 — 가장 어두운 픽셀 {darkest}"  # 반투명 검정
     assert brightest > 600, f"흰 글자가 없다 — 가장 밝은 픽셀 {brightest}"
