@@ -75,8 +75,9 @@ def create_app(store: ApprovalStore, rerender_video: RerenderVideo | None = None
     app = FastAPI(title="hybrid 승인 대기")
 
     @app.get("/", response_class=HTMLResponse)
-    def list_pending() -> HTMLResponse:
-        return HTMLResponse(render_list(store.list_pending()))
+    def list_pending(channel: str = "") -> HTMLResponse:
+        """?channel=<handle>이면 그 채널만 — 칩 필터의 목적지."""
+        return HTMLResponse(render_list(store.list_pending(), selected=channel))
 
     @app.get("/items/{content_item_id}", response_class=HTMLResponse)
     def item_detail(content_item_id: str, rerendered: int = 0) -> HTMLResponse:

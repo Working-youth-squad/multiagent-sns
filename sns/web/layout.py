@@ -89,6 +89,12 @@ form{margin:0}
 .badge.queued{color:#3B5BDB;background:#EEF2FF}
 .badge.review{color:#7C3AED;background:#F5F3FF}
 .badge.neutral{color:#6B7280;background:#F9FAFB}
+.chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 20px}
+.chips a{display:inline-block;padding:6px 14px;border:1px solid var(--border);
+  border-radius:999px;font-size:13px;font-weight:600;color:var(--text);background:#fff}
+.chips a:hover{border-color:var(--primary);text-decoration:none}
+.chips a.on{border-color:var(--primary);background:var(--primary-light);
+  color:var(--primary)}
 .error{padding:12px 16px;border-radius:var(--radius);margin-bottom:16px;
   font-size:14px;font-weight:600;color:#DC2626;background:#FEF2F2}
 .notice{padding:12px 16px;border-radius:var(--radius);margin-bottom:16px;

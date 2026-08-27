@@ -8,6 +8,7 @@
 import os
 from collections.abc import Mapping
 from html import escape
+from urllib.parse import quote
 
 from sns.web.approve.store import PendingItem
 from sns.web.layout import page
@@ -36,15 +37,51 @@ def _page(title: str, body: str, *, max_width: str = "760px") -> str:
     return page(title, body, active="queue", extra_css=_EXTRA_CSS, max_width=max_width)
 
 
-def render_list(items: tuple[PendingItem, ...]) -> str:
+def render_list(items: tuple[PendingItem, ...], *, selected: str = "") -> str:
+    """승인 대기 목록 — **채널별로 분류**해 보여준다. `selected`(handle)가 오면 그
+    채널만, 기본은 채널별 섹션으로 그룹. 칩이 채널 필터 링크다."""
+    handles: list[str] = []
+    for item in items:
+        if item.handle not in handles:
+            handles.append(item.handle)
+
+    chips = ""
+    if handles:
+        links = [
+            f'<a class="{"on" if not selected else ""}" href="{URL_PREFIX}/">전체</a>'
+        ] + [
+            f'<a class="{"on" if selected == h else ""}" '
+            f'href="{URL_PREFIX}/?channel={quote(h)}">{escape(h)}</a>'
+            for h in handles
+        ]
+        chips = f'<div class="chips">{"".join(links)}</div>'
+
     if not items:
-        rows = '<div class="card"><p class="empty">승인 대기 중인 항목이 없습니다.</p></div>'
+        sections = '<div class="card"><p class="empty">승인 대기 중인 항목이 없습니다.</p></div>'
+    elif selected:
+        picked = [i for i in items if i.handle == selected]
+        rows = (
+            f'<div class="card-list">{"".join(_list_row(i) for i in picked)}</div>'
+            if picked
+            else '<div class="card"><p class="empty">이 채널에는 승인 대기 항목이 없습니다.</p></div>'
+        )
+        sections = (
+            f'<h2>{escape(selected)} <span class="count">{len(picked)}</span></h2>{rows}'
+        )
     else:
-        rows = f'<div class="card-list">{"".join(_list_row(i) for i in items)}</div>'
+        parts = []
+        for handle in handles:
+            group = [i for i in items if i.handle == handle]
+            parts.append(
+                f'<h2>{escape(handle)} <span class="count">{len(group)}</span></h2>'
+                f'<div class="card-list">{"".join(_list_row(i) for i in group)}</div>'
+            )
+        sections = "".join(parts)
+
     body = (
         "<h1>대기열</h1>"
         '<p class="page-sub">생성된 초안을 확인하고 승인하면 발행됩니다</p>'
-        f'<h2>승인 대기 <span class="count">{len(items)}</span></h2>{rows}'
+        f"{chips}{sections}"
     )
     return _page("hybrid 승인 대기", body)
 

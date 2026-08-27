@@ -97,6 +97,16 @@ def test_render_detail_notice_banner() -> None:
     assert "재렌더 완료" in html
 
 
+def test_render_list_groups_by_channel_and_filters() -> None:
+    """대기열은 채널별로 분류된다 — 칩은 필터 링크, 기본은 채널별 섹션."""
+    two = (ITEM, replace(ITEM, content_item_id="ci-2", handle="second"))
+    html = render_list(two)
+    assert "?channel=demo" in html and "?channel=second" in html  # 채널 칩
+    assert html.count('<div class="card-list">') == 2  # 채널별 그룹 섹션
+    only = render_list(two, selected="second")
+    assert "/items/ci-2" in only and "/items/ci-1" not in only
+
+
 def test_urls_respect_mount_prefix(monkeypatch) -> None:
     """통합 서버(run_web.py)가 /queue에 마운트할 때 내부 링크가 프리픽스를 따른다."""
     import importlib

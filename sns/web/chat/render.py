@@ -19,11 +19,21 @@ CLI가 이미 지키고 있고 화면에서 깨뜨리기 쉬운 순서로:
 """
 
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from html import escape
 
 from sns.chat.drafts import SEED_DONE, ExportItem
 from sns.chat.store import ChatMessage, Conversation
 from sns.web.layout import page
+
+
+@dataclass(frozen=True)
+class ChatChannel:
+    """채널 선택 UI에 필요한 만큼만 — 배선(run_chat_web)이 프로필에서 조립한다."""
+
+    channel_id: str
+    label: str
+    suggestions: tuple[str, ...] = ()  # 이 채널과 어울리는 대화 주제 제안(프로필 기반)
 
 # 챗봇 전용 스타일 — 골격·토큰은 [sns.web.layout] 공용. 클래스명은 테스트와
 # 랭킹/초안 규율이 물고 있으므로 유지하고 색·모양만 feedr 토큰으로 바꾼다.
@@ -58,6 +68,10 @@ td.undef{text-align:right;color:var(--muted);font-style:italic}
 .composer input[type=text]{flex:1;width:auto}
 .back{display:inline-block;font-size:13px;color:var(--muted);font-weight:600;
   margin-bottom:12px}
+.chip{background:#fff;color:var(--text);border:1px solid var(--border);
+  padding:6px 14px;font-size:13px;font-weight:600;margin:2px 6px 2px 0;
+  border-radius:999px;cursor:pointer}
+.chip:hover{border-color:var(--primary);background:var(--primary-light)}
 .draft{background:#fff;border:1px solid var(--border);border-radius:16px;
   padding:20px;margin-bottom:16px}
 .draft h3{margin:0 0 2px;font-size:15px;font-weight:700}
@@ -112,35 +126,91 @@ def render_not_found() -> str:
     )
 
 
-def render_index(conversations: Sequence[Conversation], *, error: str | None = None) -> str:
-    """대화 목록 + 새 대화 시작."""
+def render_index(
+    conversations: Sequence[Conversation],
+    *,
+    channels: Sequence[ChatChannel] = (),
+    selected: str | None = None,
+    error: str | None = None,
+) -> str:
+    """대화 목록 + 새 대화 시작 — **채널을 먼저 고른다.**
+
+    채널 칩(링크)으로 채널을 고르면 그 채널의 주제 제안과 대화 기록만 보인다.
+    `selected=None`은 전체 보기(채널 없이 시작하면 모든 hybrid 채널에 시드하는
+    기존 동작 그대로)다. 채널 배선이 없으면(`channels=()`) 예전 화면과 같다.
+    """
     err = f'<p class="fail">{escape(error)}</p>' if error else ""
+    picked = next((c for c in channels if c.channel_id == selected), None)
+
+    chips = ""
+    if channels:
+        links = [
+            f'<a class="{"on" if picked is None else ""}" href="/?channel=all">전체</a>'
+        ] + [
+            f'<a class="{"on" if picked is c else ""}" '
+            f'href="/?channel={escape(c.channel_id, quote=True)}">{escape(c.label)}</a>'
+            for c in channels
+        ]
+        chips = f'<div class="chips">{"".join(links)}</div>'
+
+    hidden = (
+        f'<input type="hidden" name="channel_id" '
+        f'value="{escape(picked.channel_id, quote=True)}">'
+        if picked
+        else ""
+    )
+    # 채널 프로필에서 온 주제 제안 — 누르면 입력란이 채워진다(온보딩 칩과 같은 관용구).
+    suggest = ""
+    if picked and picked.suggestions:
+        chips_html = "".join(
+            f'<button type="button" class="chip" '
+            f'onclick="this.form.text.value=this.textContent">{escape(s)}</button>'
+            for s in picked.suggestions
+        )
+        suggest = (
+            f"<p class='meta'>이 채널과 어울리는 주제 — 눌러서 채우기</p>{chips_html}"
+        )
     start = (
         '<div class="card"><form method="post" action="/conversations">'
-        '<label for="new-text">무엇을 다뤄볼까요?</label>'
+        f"{hidden}"
+        f'<label for="new-text">무엇을 다뤄볼까요?{f" — {escape(picked.label)}" if picked else ""}</label>'
+        f"{suggest}"
         '<input type="text" id="new-text" name="text" '
         'placeholder="어떤 주제를 다루고 싶으세요? (예: 개발자 취업)">'
         '<div class="actions"><button type="submit">새 대화 시작</button></div>'
         "</form></div>"
     )
-    if conversations:
+
+    labels = {c.channel_id: c.label for c in channels}
+    shown = [
+        c
+        for c in conversations
+        if picked is None or c.channel_id == picked.channel_id
+    ]
+    if shown:
         rows = "".join(
             '<div class="row"><div class="row-main">'
             f'<div class="row-title"><a href="/c/{escape(c.conversation_id)}">'
             f"{escape(c.title or '제목 없는 대화')}</a></div>"
-            f'<div class="meta">{c.created_at:%Y-%m-%d %H:%M}</div></div></div>'
-            for c in conversations
+            f'<div class="meta">{c.created_at:%Y-%m-%d %H:%M}</div></div>'
+            + (
+                f'<span class="badge neutral">{escape(labels[c.channel_id])}</span>'
+                if c.channel_id and c.channel_id in labels
+                else ""
+            )
+            + "</div>"
+            for c in shown
         )
         past = (
-            f'<h2>지난 대화 <span class="count">{len(conversations)}</span></h2>'
+            f'<h2>지난 대화 <span class="count">{len(shown)}</span></h2>'
             f'<div class="card-list">{rows}</div>'
         )
     else:
         past = ""
     body = (
         "<h1>AI 어시스턴트</h1>"
-        '<p class="page-sub">키워드를 함께 찾고, 대화로 초안까지 만듭니다</p>'
-        f"{err}{start}{past}"
+        '<p class="page-sub">채널을 고르고, 키워드를 찾고, 대화로 초안까지 만듭니다</p>'
+        f"{err}{chips}{start}{past}"
     )
     return _page("키워드 챗봇", body)
 
@@ -149,6 +219,7 @@ def render_conversation(
     conversation: Conversation,
     messages: Sequence[ChatMessage],
     *,
+    channel_label: str | None = None,
     error: str | None = None,
 ) -> str:
     """대화 1건 전체. 매 턴 이 함수가 처음부터 다시 그린다(hidden state 없음)."""
@@ -163,9 +234,14 @@ def render_conversation(
         "<button type='submit'>보내기</button></form></div>"
     )
     title = conversation.title or "키워드 챗봇"
+    channel = (
+        f'<p class="page-sub">채널: <span class="badge neutral">{escape(channel_label)}</span></p>'
+        if channel_label
+        else ""
+    )
     body = (
         '<a class="back" href="/">← 대화 목록</a>'
-        f"<h1>{escape(title)}</h1>{err}{turns}"
+        f"<h1>{escape(title)}</h1>{channel}{err}{turns}"
         f'<div id="bottom"></div>{composer}'
     )
     return _page(title, body)
