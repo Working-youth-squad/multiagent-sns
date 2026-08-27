@@ -22,9 +22,12 @@ from sns.onboarding.profile import (
     ChannelProfile,
 )
 from sns.onboarding.store import ChannelRow
+from sns.web.layout import page
 
 TOTAL_STEPS = 5
 SUBS_SEP = "|"  # hidden input에서 세부 주제를 잇는 구분자(쉼표는 직접 입력에 쓰인다)
+
+_PLATFORM_ICON = {"youtube": "▶️", "instagram": "📷"}
 
 
 @dataclass(frozen=True)
@@ -48,42 +51,36 @@ class ScriptJobView:
     log_tail: str = ""
 
 
-_STYLE = """<style>
-body{font-family:system-ui,-apple-system,"Malgun Gothic",sans-serif;max-width:640px;
-  margin:2rem auto;padding:0 1rem;color:#1a1a1a;line-height:1.5}
-.progress{height:6px;background:#eee;border-radius:3px;margin-bottom:1.5rem}
-.progress>div{height:100%;background:#2e7d32;border-radius:3px}
-.step-label{color:#666;font-size:.85rem;margin-bottom:.25rem}
-.choice{display:block;border:1px solid #ddd;border-radius:8px;padding:.8rem 1rem;
-  margin-bottom:.6rem;cursor:pointer}
-.choice:hover{border-color:#2e7d32}
-.choice input{margin-right:.6rem}
-.choice .desc{color:#666;font-size:.85rem;margin:.2rem 0 0 1.6rem}
-input[type=text]{width:100%;padding:.5rem;box-sizing:border-box;border:1px solid #ccc;
-  border-radius:6px;font-size:.95rem}
-textarea{width:100%;min-height:6rem;font-family:inherit;font-size:1rem;padding:.6rem;
-  box-sizing:border-box;border:1px solid #ccc;border-radius:6px}
-button{padding:.55rem 1.4rem;border:none;border-radius:6px;cursor:pointer;
-  font-size:.95rem;background:#2e7d32;color:#fff;margin-top:1rem}
-.secondary{background:#eee;color:#1a1a1a}
-.chip{background:#eef4ee;color:#1a1a1a;border:1px solid #cfe0cf;padding:.3rem .8rem;
-  font-size:.85rem;margin:.2rem .3rem .2rem 0;border-radius:999px}
-.chip:hover{border-color:#2e7d32}
-.error{color:#c62828;margin-bottom:1rem}
-.card{border:1px solid #ddd;border-radius:8px;padding:1rem;margin-bottom:1rem}
-.card h3{margin:0 0 .5rem}
-.meta{color:#666;font-size:.85rem}
-.item{border:1px solid #ddd;border-radius:8px;padding:1rem;margin-bottom:1rem}
-.empty{color:#666;text-align:center;padding:2rem 0}
-a{color:#2e7d32}
-</style>"""
+# 온보딩 전용 스타일 — 골격·토큰은 [sns.web.layout] 공용. 위저드는 bare(사이드바
+# 없음) 중앙 화면이다: hidden input으로 상태를 나르는 화면에서 사이드바는 곧
+# 진행 유실 버튼이라 숨긴다.
+_EXTRA_CSS = """
+.progress{height:6px;background:var(--border);border-radius:3px;margin-bottom:24px}
+.progress>div{height:100%;background:var(--primary);border-radius:3px}
+.step-label{color:var(--muted);font-size:13px;font-weight:600;margin-bottom:4px}
+h1{margin-bottom:16px}
+.choice{display:block;background:#fff;border:1px solid var(--border);
+  border-radius:var(--radius);padding:12px 16px;margin-bottom:8px;cursor:pointer;
+  font-size:15px}
+.choice:hover{border-color:var(--primary)}
+.choice:has(input:checked){border-color:var(--primary);background:var(--primary-light)}
+.choice input{margin-right:10px}
+.choice .desc{color:var(--muted);font-size:13px;margin:2px 0 0 26px}
+form button{margin-top:12px}
+.chip{background:#fff;color:var(--text);border:1px solid var(--border);
+  padding:6px 14px;font-size:13px;font-weight:600;margin:2px 6px 2px 0;
+  border-radius:999px}
+.chip:hover{border-color:var(--primary);background:var(--primary-light)}
+.card h3{margin:0 0 8px;font-size:15px;font-weight:700}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:16px}
+.grid .card{margin-bottom:0}
+"""
 
 
-def _page(title: str, body: str) -> str:
-    return (
-        f"<!doctype html><html><head><meta charset='utf-8'>"
-        f"<title>{escape(title)}</title>{_STYLE}</head><body>{body}</body></html>"
-    )
+def _page(
+    title: str, body: str, *, active: str | None = None, max_width: str = "560px"
+) -> str:
+    return page(title, body, active=active, extra_css=_EXTRA_CSS, max_width=max_width)
 
 
 def render_entry() -> str:
@@ -124,16 +121,26 @@ def render_link(*, error: str | None = None) -> str:
 def render_channels(channels: tuple[ChannelRow, ...]) -> str:
     """만들어진 채널 목록 — 생성은 여기가 아니라 인터뷰 완료 화면에서 한다."""
     if not channels:
-        rows = '<p class="empty">아직 만든 계정이 없습니다.</p>'
+        rows = '<div class="card"><p class="empty">아직 만든 계정이 없습니다.</p></div>'
     else:
-        rows = "".join(
-            f'<div class="item"><a href="/channels/{c.channel_id}">'
-            f"{escape(c.handle)}</a>"
-            f'<div class="meta">{escape(c.platform)} · {escape(c.mode)}</div></div>'
+        cards = "".join(
+            f'<div class="card"><h3>{_PLATFORM_ICON.get(c.platform, "📺")} '
+            f'<a href="/channels/{c.channel_id}">{escape(c.handle)}</a></h3>'
+            f'<div class="meta">{escape(c.platform)} · '
+            f'<span class="badge neutral">{escape(c.mode)}</span></div></div>'
             for c in channels
         )
-    start = '<a href="/"><button type="button">새 계정 인터뷰 시작</button></a>'
-    return _page("내 채널", f"<h1>내 채널</h1>{rows}{start}")
+        rows = f'<div class="grid">{cards}</div>'
+    start = (
+        '<p style="margin-top:16px"><a href="/">'
+        '<button type="button">새 계정 인터뷰 시작</button></a></p>'
+    )
+    body = (
+        "<h1>채널</h1>"
+        '<p class="page-sub">만들어진 계정과 프로필을 관리합니다</p>'
+        f"{rows}{start}"
+    )
+    return _page("내 채널", body, active="channels", max_width="960px")
 
 
 def render_step(step: int, state: Mapping[str, str], *, error: str | None = None) -> str:
@@ -374,7 +381,9 @@ def render_create(
         f'{_back_button(5)}<button type="submit">{button}</button></form></div>'
         '<a href="/">← 처음부터 다시 하기</a>'
     )
-    return _page("온보딩 — 컨셉 확정", f"<h1>이렇게 계정을 시작할게요</h1>{body}")
+    return _page(
+        "온보딩 — 컨셉 확정", f"<h1>이렇게 계정을 시작할게요</h1>{body}", max_width="640px"
+    )
 
 
 _PRE_STYLE = (
@@ -443,7 +452,12 @@ def render_channel(
         '<button type="submit">반영하기</button></form></div>'
         '<a href="/channels"><button class="secondary" type="button">내 채널 목록</button></a>'
     )
-    return _page(f"계정 — {channel.handle}", f"<h1>계정이 만들어졌어요</h1>{body}")
+    return _page(
+        f"계정 — {channel.handle}",
+        f"<h1>계정이 만들어졌어요</h1>{body}",
+        active="channels",
+        max_width="680px",
+    )
 
 
 def _script_card(item: VideoItemView, channel_id: str) -> str:
@@ -514,7 +528,12 @@ def render_videos(
         f'<a href="/channels/{channel.channel_id}">'
         '<button class="secondary" type="button">← 계정으로</button></a>'
     )
-    return _page(f"영상 관리 — {channel.handle}", f"<h1>영상 관리</h1>{''.join(parts)}")
+    return _page(
+        f"영상 관리 — {channel.handle}",
+        f"<h1>영상 관리</h1>{''.join(parts)}",
+        active="channels",
+        max_width="760px",
+    )
 
 
 def _recommendation_block(recommendation: Mapping[str, object] | None) -> str:
@@ -537,6 +556,7 @@ def _recommendation_block(recommendation: Mapping[str, object] | None) -> str:
 
 def render_not_found() -> str:
     body = (
-        '<p class="empty">채널 또는 프로필을 찾을 수 없습니다.</p><p><a href="/">← 처음으로</a></p>'
+        '<div class="card"><p class="empty">채널 또는 프로필을 찾을 수 없습니다.</p>'
+        '<p style="text-align:center"><a href="/">← 처음으로</a></p></div>'
     )
-    return _page("대상 없음", body)
+    return _page("대상 없음", body, active="channels")
