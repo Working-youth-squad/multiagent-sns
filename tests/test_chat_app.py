@@ -116,7 +116,8 @@ def test_second_turn_appends_without_hidden_state() -> None:
     cid = _start(client)
 
     page = client.get(f"/c/{cid}")
-    assert "hidden" not in page.text
+    # 공용 CSS의 overflow:hidden에 오탐하지 않게 폼 hidden input만 조준한다.
+    assert 'type="hidden"' not in page.text
 
     client.post(f"/c/{cid}/messages", data={"text": "연봉 쪽으로"}, follow_redirects=False)
     bodies = [m.body for m in store.messages(cid) if m.role in ("user", "assistant")]

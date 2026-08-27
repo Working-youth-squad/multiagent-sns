@@ -23,82 +23,75 @@ from html import escape
 
 from sns.chat.drafts import SEED_DONE, ExportItem
 from sns.chat.store import ChatMessage, Conversation
+from sns.web.layout import page
 
-_STYLE = """<style>
-body{font-family:system-ui,-apple-system,"Malgun Gothic",sans-serif;max-width:760px;
-  margin:2rem auto;padding:0 1rem 6rem;color:#1a1a1a;line-height:1.5}
-h1{font-size:1.3rem}
-.turn{margin-bottom:1rem;display:flex}
+# 챗봇 전용 스타일 — 골격·토큰은 [sns.web.layout] 공용. 클래스명은 테스트와
+# 랭킹/초안 규율이 물고 있으므로 유지하고 색·모양만 feedr 토큰으로 바꾼다.
+_EXTRA_CSS = """
+.main{padding-bottom:110px}
+.turn{margin-bottom:14px;display:flex}
 .turn.user{justify-content:flex-end}
-.bubble{max-width:80%;padding:.7rem .95rem;border-radius:12px;white-space:pre-wrap;
-  word-break:break-word}
-.user .bubble{background:#2e7d32;color:#fff;border-bottom-right-radius:3px}
-.assistant .bubble{background:#f1f3f1;border-bottom-left-radius:3px}
-.system .bubble{background:#fff8e1;border:1px solid #ffe082;color:#5d4037;
-  font-size:.88rem;max-width:100%}
-.ranking{border:1px solid #ddd;border-radius:10px;padding:.9rem 1rem;margin-bottom:1rem;
-  background:#fff}
-.ranking h3{margin:0 0 .35rem;font-size:1rem}
-.mode{font-size:.85rem;margin:0 0 .2rem}
-.mode.active{color:#2e7d32}
-.mode.passthrough{color:#ef6c00}
-.mode.off{color:#666}
-.reason{color:#666;font-size:.8rem;margin:0 0 .6rem}
-table{border-collapse:collapse;width:100%;font-size:.88rem}
-th,td{text-align:left;padding:.32rem .5rem;border-bottom:1px solid #eee}
-th{color:#666;font-weight:600;font-size:.8rem}
+.bubble{max-width:80%;padding:10px 16px;border-radius:16px;white-space:pre-wrap;
+  word-break:break-word;font-size:15px}
+.user .bubble{background:var(--primary);color:#fff;border-bottom-right-radius:4px}
+.assistant .bubble{background:var(--bg-gray);border:1px solid var(--border);
+  border-bottom-left-radius:4px}
+.system .bubble{background:#FFFBEB;color:#92400E;font-size:13px;max-width:100%}
+.ranking{background:#fff;border:1px solid var(--border);border-radius:16px;
+  padding:20px;margin-bottom:16px}
+.ranking h3{margin:0 0 6px;font-size:15px;font-weight:700}
+.mode{font-size:13px;font-weight:600;margin:0 0 2px}
+.mode.active{color:#16A34A}
+.mode.passthrough{color:#D97706}
+.mode.off{color:var(--muted)}
+.reason{color:var(--muted);font-size:12px;margin:0 0 10px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--border)}
+th{color:var(--muted);font-weight:700;font-size:12px}
 td.num{text-align:right;font-variant-numeric:tabular-nums}
-td.undef{text-align:right;color:#999;font-style:italic}
-.note{color:#666;font-size:.8rem;margin:.55rem 0 0}
-.fail{color:#c62828}
-.composer{position:fixed;bottom:0;left:0;right:0;background:#fff;border-top:1px solid #ddd;
-  padding:.7rem 1rem}
-.composer form{max-width:760px;margin:0 auto;display:flex;gap:.5rem}
-.composer input[type=text]{flex:1;padding:.6rem;border:1px solid #ccc;border-radius:8px;
-  font-size:1rem}
-button{padding:.6rem 1.2rem;border:none;border-radius:8px;cursor:pointer;font-size:.95rem;
-  background:#2e7d32;color:#fff}
-.item{border:1px solid #ddd;border-radius:8px;padding:.8rem 1rem;margin-bottom:.7rem}
-.item a{color:#1a1a1a;text-decoration:none}
-.item a:hover{text-decoration:underline}
-.meta{color:#666;font-size:.82rem}
-.empty{color:#666;text-align:center;padding:3rem 0}
-.back{display:inline-block;margin-bottom:1rem;color:#666}
-.draft{border:1px solid #cfe0cf;border-left:4px solid #2e7d32;border-radius:10px;
-  padding:.9rem 1rem;margin-bottom:1rem;background:#fbfdfb}
-.draft h3{margin:0 0 .1rem;font-size:1rem}
-.draft .meta{margin-bottom:.7rem}
-.card{display:flex;gap:.9rem;align-items:flex-start;border-top:1px solid #e6efe6;
-  padding-top:.75rem;margin-top:.75rem}
-.card:first-of-type{border-top:none;padding-top:0;margin-top:0}
+td.undef{text-align:right;color:var(--muted);font-style:italic}
+.note{color:var(--muted);font-size:12px;margin:8px 0 0}
+.fail{color:#DC2626;font-weight:600}
+.composer{position:fixed;bottom:0;left:220px;right:0;background:#fff;
+  border-top:1px solid var(--border);padding:14px 16px}
+.composer form{max-width:760px;margin:0 auto;display:flex;gap:8px}
+.composer input[type=text]{flex:1;width:auto}
+.back{display:inline-block;font-size:13px;color:var(--muted);font-weight:600;
+  margin-bottom:12px}
+.draft{background:#fff;border:1px solid var(--border);border-radius:16px;
+  padding:20px;margin-bottom:16px}
+.draft h3{margin:0 0 2px;font-size:15px;font-weight:700}
+.draft .meta{margin-bottom:10px}
+.draft .card{display:flex;gap:14px;align-items:flex-start;background:transparent;
+  border:none;border-radius:0;padding:12px 0 0;margin:12px 0 0;
+  border-top:1px solid var(--border)}
+.draft .card:first-of-type{border-top:none;padding-top:0;margin-top:0}
 .card img,.card video{width:150px;height:auto;max-height:230px;object-fit:contain;
-  border-radius:8px;border:1px solid #ddd;flex-shrink:0;background:#f4f4f4}
-.card .who{font-size:.82rem;color:#666;margin:0 0 .3rem}
-.card .preview{white-space:pre-wrap;word-break:break-word;font-size:.9rem;margin:0}
-.card .rest{color:#888;font-size:.8rem}
-.badge{display:inline-block;font-size:.75rem;padding:.1rem .5rem;border-radius:999px;
-  border:1px solid #ccc;color:#555;margin-left:.35rem}
-.badge.needs_review{border-color:#ef6c00;color:#ef6c00}
-.badge.passed{border-color:#2e7d32;color:#2e7d32}
-.badge.blocked{border-color:#c62828;color:#c62828}
-.approve{display:inline-block;margin-top:.5rem;font-size:.85rem}
-.actions{margin-top:.5rem;display:flex;gap:.75rem;flex-wrap:wrap;align-items:center}
-.actions a{font-size:.85rem}
-.export-grid{display:flex;gap:1.2rem;align-items:flex-start;flex-wrap:wrap}
-.export-grid img,.export-grid video{width:270px;height:auto;border:1px solid #ddd;
-  border-radius:8px;background:#f4f4f4}
+  border-radius:var(--radius);border:1px solid var(--border);flex-shrink:0;
+  background:var(--bg-gray)}
+.card .who{font-size:13px;color:var(--muted);margin:0 0 4px}
+.card .preview{white-space:pre-wrap;word-break:break-word;font-size:14px;margin:0}
+.card .rest{color:var(--muted);font-size:12px}
+.badge{margin-left:6px;color:var(--muted);background:var(--bg-gray)}
+.badge.needs_review{color:#7C3AED;background:#F5F3FF}
+.badge.passed{color:#16A34A;background:#F0FDF4}
+.badge.blocked{color:#DC2626;background:#FEF2F2}
+.approve{display:inline-block;margin-top:6px;font-size:13px}
+.actions a{font-size:13px}
+.export-grid{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
+.export-grid img,.export-grid video{width:270px;height:auto;
+  border:1px solid var(--border);border-radius:var(--radius);background:var(--bg-gray)}
 .export-side{flex:1;min-width:260px}
-.caption{width:100%;min-height:22rem;font-family:inherit;font-size:.95rem;padding:.6rem;
-  box-sizing:border-box;border:1px solid #ccc;border-radius:8px;line-height:1.5}
-.step{border-left:3px solid #cfe0cf;padding:.1rem 0 .1rem .8rem;margin:.5rem 0;color:#444;
-  font-size:.9rem}
-.warn{background:#fff8e1;border:1px solid #ffe082;color:#5d4037;border-radius:8px;
-  padding:.7rem .9rem;font-size:.88rem;margin:1rem 0}
-.noimg{width:150px;height:150px;border-radius:8px;border:1px dashed #ccc;flex-shrink:0;
-  display:flex;align-items:center;justify-content:center;color:#999;font-size:.78rem;
-  text-align:center;padding:.4rem;box-sizing:border-box}
-a{color:#2e7d32}
-</style>"""
+.caption{min-height:22rem;line-height:1.5}
+.step{border-left:3px solid var(--primary);padding:2px 0 2px 12px;margin:8px 0;
+  font-size:14px}
+.warn{background:#FFFBEB;color:#B45309;border-radius:var(--radius);
+  padding:12px 16px;font-size:13px;font-weight:600;margin:16px 0}
+.noimg{width:150px;height:150px;border-radius:var(--radius);
+  border:1px dashed var(--border);flex-shrink:0;display:flex;align-items:center;
+  justify-content:center;color:var(--muted);font-size:12px;text-align:center;padding:6px}
+@media(max-width:720px){.composer{left:0}}
+"""
 
 # filter_mode 3값 → 사람이 읽는 문장. 뭉개지 않으려고 상수로 못박는다(규율 2).
 FILTER_MODE_TEXT: dict[str, str] = {
@@ -109,11 +102,7 @@ FILTER_MODE_TEXT: dict[str, str] = {
 
 
 def _page(title: str, body: str) -> str:
-    return (
-        f"<!doctype html><html lang='ko'><head><meta charset='utf-8'>"
-        f"<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        f"<title>{escape(title)}</title>{_STYLE}</head><body>{body}</body></html>"
-    )
+    return page(title, body, active="chat", extra_css=_EXTRA_CSS)
 
 
 def render_not_found() -> str:
@@ -127,23 +116,33 @@ def render_index(conversations: Sequence[Conversation], *, error: str | None = N
     """대화 목록 + 새 대화 시작."""
     err = f'<p class="fail">{escape(error)}</p>' if error else ""
     start = (
-        '<form method="post" action="/conversations">'
-        '<input type="text" name="text" '
-        'placeholder="어떤 주제를 다루고 싶으세요? (예: 개발자 취업)" '
-        "style='width:100%;padding:.6rem;border:1px solid #ccc;border-radius:8px;font-size:1rem'>"
-        '<button type="submit" style="margin-top:.6rem">새 대화 시작</button></form>'
+        '<div class="card"><form method="post" action="/conversations">'
+        '<label for="new-text">무엇을 다뤄볼까요?</label>'
+        '<input type="text" id="new-text" name="text" '
+        'placeholder="어떤 주제를 다루고 싶으세요? (예: 개발자 취업)">'
+        '<div class="actions"><button type="submit">새 대화 시작</button></div>'
+        "</form></div>"
     )
     if conversations:
         rows = "".join(
-            f'<div class="item"><a href="/c/{escape(c.conversation_id)}">'
-            f"{escape(c.title or '제목 없는 대화')}</a>"
-            f'<div class="meta">{c.created_at:%Y-%m-%d %H:%M}</div></div>'
+            '<div class="row"><div class="row-main">'
+            f'<div class="row-title"><a href="/c/{escape(c.conversation_id)}">'
+            f"{escape(c.title or '제목 없는 대화')}</a></div>"
+            f'<div class="meta">{c.created_at:%Y-%m-%d %H:%M}</div></div></div>'
             for c in conversations
         )
-        past = f"<h2 style='font-size:1rem;margin-top:2rem'>지난 대화</h2>{rows}"
+        past = (
+            f'<h2>지난 대화 <span class="count">{len(conversations)}</span></h2>'
+            f'<div class="card-list">{rows}</div>'
+        )
     else:
         past = ""
-    return _page("키워드 챗봇", f"<h1>키워드 챗봇</h1>{err}{start}{past}")
+    body = (
+        "<h1>AI 어시스턴트</h1>"
+        '<p class="page-sub">키워드를 함께 찾고, 대화로 초안까지 만듭니다</p>'
+        f"{err}{start}{past}"
+    )
+    return _page("키워드 챗봇", body)
 
 
 def render_conversation(
